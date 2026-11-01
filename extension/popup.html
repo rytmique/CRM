@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <title>Agency Bot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icon32.png" alt="" width="20" height="20">
+    <strong>Agency Bot</strong>
+    <span id="who" class="muted"></span>
+    <button id="logout" class="link" hidden>Вийти</button>
+  </header>
+
+  <section id="login-view" hidden>
+    <form id="login-form">
+      <label>Адреса панелі<input id="server" type="url" required placeholder="https://panel.example.com"></label>
+      <label>Логін (email)<input id="email" type="text" required autocomplete="username"></label>
+      <label>Пароль<input id="password" type="password" required autocomplete="current-password"></label>
+      <button type="submit" class="primary">Увійти</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="main-view" hidden>
+    <label>Анкета
+      <select id="profile"></select>
+    </label>
+    <p id="profile-note" class="muted small"></p>
+
+    <div class="row">
+      <button id="start" class="primary">▶ Старт</button>
+      <button id="stop" class="danger" hidden>■ Стоп</button>
+      <button id="inbox" title="Перевірити вхідні зараз">💌</button>
+      <button id="probe" title="Перевірити, чи бот бачить чоловіків на поточній сторінці">🔍</button>
+    </div>
+
+    <div id="status" class="card">
+      <div class="status-line"><span id="dot" class="dot"></span><b id="status-text">Не запущено</b></div>
+      <div id="status-msg" class="muted small"></div>
+      <div class="stats">
+        <div><b id="s-sent">0</b><span>надіслано</span></div>
+        <div><b id="s-replies">0</b><span>відповідей</span></div>
+        <div><b id="s-remaining">—</b><span>лишилось сьогодні</span></div>
+      </div>
+    </div>
+
+    <details id="invite-box">
+      <summary>Поточний інвайт</summary>
+      <p id="invite" class="invite"></p>
+    </details>
+
+    <ol id="log" class="log"></ol>
+    <p id="main-info" class="notice" role="status"></p>
+    <p id="main-error" class="error" role="alert"></p>
+    <a id="panel-link" href="#" target="_blank" class="small">Відкрити панель керівника →</a>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>
