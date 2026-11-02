@@ -19,8 +19,8 @@ import botRoutes from './routes/bot.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = true, log = console }) {
-  const cfg = { publicUrl: publicUrl.replace(/\/$/, ''), demoSite };
+export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = true, persistent = true, log = console }) {
+  const cfg = { publicUrl: publicUrl.replace(/\/$/, ''), demoSite, persistent };
   const app = express();
   app.disable('x-powered-by');
   // Behind Caddy/nginx in another container: TRUST_PROXY=1 so the login limiter sees real client IPs.
@@ -42,7 +42,7 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   });
   app.use(express.json({ limit: '1mb' }));
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true, time: now() }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, time: now(), persistentStorage: cfg.persistent }));
   app.use('/api/auth', authRoutes(db));
 
   const api = express.Router();

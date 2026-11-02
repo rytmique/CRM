@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { requireRole, hashPassword, destroyUserSessions } from '../auth.js';
 import { tx, now } from '../db.js';
 import { bad, notFound, str, int, licenseKey, updateSql } from '../util.js';
@@ -94,6 +97,16 @@ export default function adminRoutes(db, cfg) {
     db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(password), owner.id);
     destroyUserSessions(db, owner.id);
     res.json({ email: owner.email, password });
+  });
+
+  /** Whole database as one file (consistent snapshot via VACUUM INTO). */
+  r.get('/backup', (req, res, next) => {
+    const file = path.join(os.tmpdir(), `agency-backup-${crypto.randomBytes(6).toString('hex')}.db`);
+    try {
+      db.exec(`VACUUM INTO '${file}'`);
+    } catch (e) { return next(e); }
+    const day = new Date().toISOString().slice(0, 10);
+    res.download(file, `agency-backup-${day}.db`, () => fs.rm(file, { force: true }, () => {}));
   });
 
   r.get('/licenses', (req, res) => {

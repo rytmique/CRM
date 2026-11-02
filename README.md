@@ -9,7 +9,15 @@
 
 ---
 
-## Найпростіше: поставити на сервер одним кліком
+## Найпростіше: Railway (без сервера і без паспорта, ~$5/міс)
+
+1. railway.com → Login через GitHub → план Hobby → **New Project → Deploy from GitHub repo** → цей репозиторій.
+2. Сервіс → Settings: **Root Directory** `/agency-crm`, **Branch** `agency-crm`. Variables: `PORT=3000`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (+ `ANTHROPIC_API_KEY`). Networking → **Generate Domain** (порт 3000). Правий клік по сервісу → **Attach Volume** → `/data`. Deploy.
+3. Відкрий `*.up.railway.app` → Агенції → + Нова агенція → «Скопіювати повідомлення».
+
+Адресу (`RAILWAY_PUBLIC_DOMAIN`) і диск (`RAILWAY_VOLUME_MOUNT_PATH`) панель бере сама. Без диска в адмінці червоне попередження. Бекап — Агенції → «⬇ Бекап». Забув пароль адміна — змінна `RESET_ADMIN_PASSWORD`, Deploy, потім видалити.
+
+## Свій сервер (VPS) одним кліком
 
 1. Купи VPS з Ubuntu 24.04 (IP і пароль root прийдуть листом).
 2. Двічі клікни **`deploy.bat`** → 5 питань → чекай «ГОТОВО» з адресою панелі.

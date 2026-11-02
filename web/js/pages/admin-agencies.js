@@ -1,5 +1,5 @@
 import { h, field, input, formData, busy, toast, modal, badge, empty, fmtInt, fmtDate, copy, safe, confirmDialog } from '../ui.js';
-import { get, post, patch } from '../api.js';
+import { get, post, patch, session } from '../api.js';
 
 export function showKeys(keys) {
   const text = keys.join('\n');
@@ -39,14 +39,35 @@ export function accessModal({ title, email, password, licenses = 0, days = 0 }) 
   });
 }
 
+/** Downloads the whole database as one file (Bearer auth, so via fetch + blob). */
+async function downloadBackup(btn) {
+  await busy(btn, async () => {
+    const res = await fetch('/api/admin/backup', { headers: { authorization: `Bearer ${session.token}` } });
+    if (!res.ok) throw new Error('Не вдалося зробити бекап');
+    const blob = await res.blob();
+    const name = (res.headers.get('content-disposition') || '').match(/filename="?([^";]+)"?/)?.[1] || 'agency-backup.db';
+    const a = h('a', { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('Бекап завантажено — збережи файл у надійне місце');
+  }).catch(() => {});
+}
+
 export default async function adminAgencies(main) {
   const page = h('div.page');
   main.replaceChildren(page);
 
   async function load() {
-    const { agencies } = await get('/api/admin/agencies');
+    const [{ agencies }, health] = await Promise.all([get('/api/admin/agencies'), get('/api/health')]);
+    const backupBtn = h('button.btn', { title: 'Уся база одним файлом', onclick: () => downloadBackup(backupBtn) }, '⬇ Бекап');
     page.replaceChildren(
-      h('div.page-head', h('h1', 'Агенції', h('span.count', fmtInt(agencies.length))), h('button.btn.primary', { onclick: openForm }, '+ Нова агенція')),
+      health.persistentStorage === false ? h('div.alert.err', { role: 'alert' },
+        h('b', '⚠ Диск не підключено — після наступного оновлення всі дані зникнуть.'),
+        h('div', 'Railway → твій сервіс → правий клік → Attach Volume → шлях /data. Потім зайди сюди знову.')) : null,
+      h('div.page-head', h('h1', 'Агенції', h('span.count', fmtInt(agencies.length))),
+        h('div.row-wrap', backupBtn, h('button.btn.primary', { onclick: openForm }, '+ Нова агенція'))),
       h('div.card.table-wrap', agencies.length ? h('table.table',
         h('thead', h('tr', h('th', 'Агенція'), h('th', 'Керівник'), h('th.num', 'Операторів'), h('th.num', 'Анкет'), h('th.num', 'Діючих ліцензій'), h('th.num', 'Інвайтів за 30 дн'), h('th', 'Створено'), h('th', 'Статус'), h('th', ''))),
         h('tbody', agencies.map((a) => h('tr',

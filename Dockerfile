@@ -7,6 +7,5 @@ COPY server ./server
 COPY web ./web
 COPY extension ./extension
 COPY demo-site ./demo-site
-VOLUME /data
 EXPOSE 3000
 CMD ["node", "--disable-warning=ExperimentalWarning", "server/index.js"]

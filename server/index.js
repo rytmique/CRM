@@ -4,14 +4,22 @@ import { spawn } from 'node:child_process';
 import { openDb } from './db.js';
 import { createApp, ensureAdmin } from './app.js';
 import { seedTestData } from './seed.js';
+import { hashPassword } from './auth.js';
 
 // Settings from .env next to package.json (variables already set in the environment win).
 try { process.loadEnvFile(path.resolve('.env')); } catch { /* no .env — defaults */ }
 
+// Railway (and similar hosts) tell us the public domain and where the volume is mounted.
+const ON_RAILWAY = Boolean(process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID);
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
-const DATA_DIR = path.resolve(process.env.DATA_DIR || 'data');
-const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const DATA_DIR = path.resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.DATA_DIR || 'data');
+const PUBLIC_URL = (process.env.PUBLIC_URL
+  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`)).replace(/\/$/, '');
+if (ON_RAILWAY) process.env.TRUST_PROXY = process.env.TRUST_PROXY || '1';
+// On Railway without a volume the database lives in the container and is wiped on every deploy.
+const PERSISTENT = !ON_RAILWAY || Boolean(process.env.RAILWAY_VOLUME_MOUNT_PATH);
+if (!PERSISTENT) console.warn('\n  [!] Диск (Volume) не підключено — дані зникнуть після наступного оновлення. Railway → сервіс → Volume → /data\n');
 const DEMO_SITE = process.env.DEMO_SITE !== '0';
 const TEST_MODE = process.env.TEST_SEED === '1';
 
@@ -36,10 +44,24 @@ if (admin) {
   console.log(`    пароль: ${admin.password}${admin.generated ? `   (згенеровано, збережено в ${path.join(DATA_DIR, 'admin-login.txt')})` : ''}\n`);
 }
 
+// Forgot the admin password on a host without a console (Railway): set RESET_ADMIN_PASSWORD, redeploy, log in, remove it.
+if (process.env.RESET_ADMIN_PASSWORD) {
+  if (process.env.RESET_ADMIN_PASSWORD.length < 8) {
+    console.warn('  [!] RESET_ADMIN_PASSWORD закороткий (мін. 8 символів) — пароль не змінено.');
+  } else {
+    const target = db.prepare("SELECT id, email FROM users WHERE role = 'admin' AND (email = ? OR ? = '') ORDER BY id LIMIT 1")
+      .get(process.env.ADMIN_EMAIL || '', process.env.ADMIN_EMAIL || '')
+      || db.prepare("SELECT id, email FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").get();
+    db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(process.env.RESET_ADMIN_PASSWORD), target.id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(target.id);
+    console.log(`\n  Пароль адміністратора ${target.email} змінено з RESET_ADMIN_PASSWORD. Видаліть цю змінну.\n`);
+  }
+}
+
 let seeded = null;
 if (TEST_MODE) seeded = seedTestData(db, cfg, { password: process.env.ADMIN_PASSWORD || 'test12345' });
 
-const app = createApp({ db, publicUrl: PUBLIC_URL, demoSite: DEMO_SITE });
+const app = createApp({ db, publicUrl: PUBLIC_URL, demoSite: DEMO_SITE, persistent: PERSISTENT });
 const server = app.listen(PORT, HOST, () => {
   console.log(`  Панель: ${PUBLIC_URL}${TEST_MODE ? '   [ТЕСТОВИЙ СТЕНД — окрема база, реальні дані не зачіпаються]' : ''}`);
   if (TEST_MODE) {

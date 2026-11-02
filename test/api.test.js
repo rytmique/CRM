@@ -276,6 +276,15 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal(stepOf('operator').done, true);
   assert.deepEqual((await call('GET', '/api/stats/onboarding', undefined, 'op')).data.steps, []);
 
+  // backup: admin downloads a real SQLite file; others can't
+  const bk = await fetch(`${base}/api/admin/backup`, { headers: { authorization: `Bearer ${tokens.admin}` } });
+  assert.equal(bk.status, 200);
+  assert.match(bk.headers.get('content-disposition') || '', /agency-backup-\d{4}-\d{2}-\d{2}\.db/);
+  const bkBuf = Buffer.from(await bk.arrayBuffer());
+  assert.equal(bkBuf.subarray(0, 15).toString(), 'SQLite format 3');
+  assert.equal((await call('GET', '/api/admin/backup', undefined, 'owner')).status, 403);
+  assert.equal((await call('GET', '/api/health')).data.persistentStorage, true);
+
   // admin resets the owner's password → old one stops working, new one works
   const agList = await call('GET', '/api/admin/agencies', undefined, 'admin');
   const reset = await call('POST', `/api/admin/agencies/${agList.data.agencies[0].id}/reset-owner`, {}, 'admin');
