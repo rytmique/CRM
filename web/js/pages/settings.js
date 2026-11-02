@@ -1,5 +1,6 @@
 import { h, field, input, textarea, busy, toast } from '../ui.js';
 import { get, put, post } from '../api.js';
+import { promptEditor } from './prompt-editor.js';
 
 const MODELS = [
   ['claude-opus-5-5', 'Claude Opus 5.5 — найкраща якість (за замовчуванням)'],
@@ -10,7 +11,8 @@ const MODELS = [
 export default async function settingsPage(main) {
   const page = h('div.page');
   main.replaceChildren(page);
-  const { settings: s, agencyName } = await get('/api/settings');
+  const [{ settings: s, agencyName, defaultPrompt, promptVars }, { profiles }] = await Promise.all([get('/api/settings'), get('/api/profiles')]);
+  const master = promptEditor({ value: s.ai.masterPrompt || defaultPrompt, defaultPrompt, promptVars, profiles, rows: 18 });
 
   const els = {
     agencyName: input('agencyName', agencyName),
@@ -35,7 +37,7 @@ export default async function settingsPage(main) {
       agencyName: els.agencyName.value,
       settings: {
         timezone: els.timezone.value || 'Europe/Kyiv',
-        ai: { model: els.model.value, apiKey: els.apiKey.value, language: els.language.value, instructions: els.instructions.value },
+        ai: { model: els.model.value, apiKey: els.apiKey.value, language: els.language.value, instructions: els.instructions.value, masterPrompt: master.value() },
         telegram: { botToken: els.botToken.value, chatId: els.chatId.value },
         defaults: { dailyLimit: Number(els.dailyLimit.value), minDelay: Number(els.minDelay.value), maxDelay: Number(els.maxDelay.value) },
         inboxCheckEvery: Number(els.inboxCheckEvery.value),
@@ -72,6 +74,9 @@ export default async function settingsPage(main) {
         field('Ключ Anthropic API', els.apiKey, s.ai.envKey && !s.ai.hasKey ? 'Ключ задано на сервері (ANTHROPIC_API_KEY). Можна вказати окремий для агенції.' : 'Без ключа інвайти генеруються простим шаблоном'),
         field('Мова інвайтів за замовчуванням', els.language),
         field('Додаткові інструкції для ШІ', els.instructions)),
+      h('section.card.span-all', h('h3', 'Майстер-промт для інвайтів', master.badge),
+        h('p.small.muted', 'Головна інструкція для ШІ: як саме писати інвайт. Діє на всі анкети агенції, крім тих, де задано свій промт. Дані анкети ШІ отримує автоматично; змінні — щоб вставити їх у конкретне місце промту. Зміни діють після «Зберегти налаштування».'),
+        master.el),
       h('section.card', h('h3', 'Розсилка (за замовчуванням)'),
         field('Денний ліміт на анкету', els.dailyLimit),
         h('div.pair', field('Пауза від, с', els.minDelay), field('до, с', els.maxDelay)),

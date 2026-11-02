@@ -215,6 +215,45 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal(seen.model, 'claude-opus-5-5');
   assert.equal(seen.fallbacks, 'default');
   assert.match(seen.messages[0].content, /Anna/);
+  assert.match(seen.system, /opening message a woman sends/, 'built-in prompt by default');
+
+  // Master prompt: placeholders filled, man's {name} left for the bot
+  const st0 = await call('GET', '/api/settings', undefined, 'owner');
+  assert.ok(st0.data.defaultPrompt.length > 200);
+  assert.ok(st0.data.promptVars.some(([k]) => k === '{her_name}'));
+  const master = 'You are {her_name}, {her_age}, from {her_city}. Write in {language}. Greet him as {name}. Profile:\n{profile}';
+  const putMp = await call('PUT', '/api/settings', { settings: { ai: { masterPrompt: master } } }, 'owner');
+  assert.equal(putMp.status, 200, JSON.stringify(putMp.data));
+  assert.equal(putMp.data.settings.ai.masterPrompt, master);
+  await call('POST', `/api/profiles/${p1.data.id}/invites/generate`, {}, 'owner');
+  assert.match(seen.system, /^You are Anna, 32, from Kyiv\. Write in English\. Greet him as \{name\}\./);
+  assert.match(seen.system, /Interests: yoga, travel, cooking/);
+
+  // Saving the built-in text means "use default"
+  const putDef = await call('PUT', '/api/settings', { settings: { ai: { masterPrompt: st0.data.defaultPrompt } } }, 'owner');
+  assert.equal(putDef.data.settings.ai.masterPrompt, '');
+  await call('PUT', '/api/settings', { settings: { ai: { masterPrompt: master } } }, 'owner');
+
+  // Profile's own prompt beats the master prompt; operators cannot set it
+  await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: 'Own prompt for {her_name} only.' }, 'owner');
+  await call('POST', `/api/profiles/${p1.data.id}/invites/generate`, {}, 'owner');
+  assert.equal(seen.system, 'Own prompt for Anna only.');
+  await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: 'hacked' }, 'op');
+  assert.equal((await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'owner')).data.profile.prompt, 'Own prompt for {her_name} only.');
+
+  // Preview: tries a prompt (with unsaved fields), saves nothing, owner only
+  const before = (await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner')).data.invites.length;
+  const pv = await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, { prompt: 'Test prompt for {her_name}, {her_city}.', fields: { city: 'Lviv' } }, 'owner');
+  assert.equal(pv.status, 200, JSON.stringify(pv.data));
+  assert.equal(seen.system, 'Test prompt for Anna, Lviv.');
+  assert.equal(pv.data.promptSource, 'override');
+  assert.match(pv.data.preview, /Michael/);
+  assert.equal((await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner')).data.invites.length, before, 'preview saves nothing');
+  const pvAgency = await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, {}, 'owner');
+  assert.equal(pvAgency.data.promptSource, 'agency', 'empty preview prompt → agency master prompt, not the profile one');
+  assert.equal((await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, { prompt: 'x' }, 'op')).status, 403);
+  await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: '' }, 'owner');
+  await call('PUT', '/api/settings', { settings: { ai: { masterPrompt: '' } } }, 'owner');
 
   // AI refusal surfaces as a clear error
   setAiClientFactory(() => ({ beta: { messages: { create: async () => ({ stop_reason: 'refusal', content: [] }) } } }));
@@ -222,7 +261,7 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
 
   // invites listing + activate older
   const invs = await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner');
-  assert.equal(invs.data.invites.length, 2);
+  assert.ok(invs.data.invites.length >= 2);
   const older = invs.data.invites[1];
   await call('POST', `/api/profiles/${p1.data.id}/invites/${older.id}/activate`, {}, 'owner');
   const invs2 = await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner');

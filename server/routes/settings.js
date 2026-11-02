@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireRole } from '../auth.js';
 import { bad, mask, mergeSettings, ah, int, str } from '../util.js';
 import { getSettings } from '../services.js';
+import { DEFAULT_PROMPT, PROMPT_VARS } from '../ai.js';
 import { sendTelegram } from '../telegram.js';
 
 const isMasked = (v) => typeof v === 'string' && v.includes('••••');
@@ -18,7 +19,7 @@ export default function settingsRoutes(db) {
 
   r.get('/', (req, res) => {
     const agency = db.prepare('SELECT name FROM agencies WHERE id = ?').get(req.user.agencyId);
-    res.json({ settings: view(getSettings(db, req.user.agencyId)), agencyName: agency?.name || '' });
+    res.json({ settings: view(getSettings(db, req.user.agencyId)), agencyName: agency?.name || '', defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS });
   });
 
   r.put('/', (req, res) => {
@@ -43,6 +44,12 @@ export default function settingsRoutes(db) {
         if (patch.ai[k] !== undefined) patch.ai[k] = str(patch.ai[k], { max: k === 'instructions' ? 2000 : 80 }) || '';
       }
       if (patch.ai.model === '') patch.ai.model = 'claude-opus-5-5';
+      if (patch.ai.masterPrompt !== undefined) {
+        const mp = String(patch.ai.masterPrompt ?? '').replace(/\r\n/g, '\n').trim();
+        if (mp.length > 8000) throw bad('Майстер-промт задовгий (макс. 8000 символів)');
+        // The built-in prompt saved as-is means "use the default" (so future improvements of it apply).
+        patch.ai.masterPrompt = mp === DEFAULT_PROMPT.trim() ? '' : mp;
+      }
     }
     const next = mergeSettings(cur, patch);
     db.prepare('UPDATE agencies SET settings = ? WHERE id = ?').run(JSON.stringify(next), req.user.agencyId);

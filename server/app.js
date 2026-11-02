@@ -23,7 +23,8 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   const cfg = { publicUrl: publicUrl.replace(/\/$/, ''), demoSite };
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', 'loopback');
+  // Behind Caddy/nginx in another container: TRUST_PROXY=1 so the login limiter sees real client IPs.
+  app.set('trust proxy', process.env.TRUST_PROXY === '1' ? true : 'loopback');
 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');

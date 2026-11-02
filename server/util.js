@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     model: 'claude-opus-5-5',
     language: 'English',
     instructions: '',
+    masterPrompt: '',
   },
   telegram: { botToken: '', chatId: '' },
   defaults: { dailyLimit: 150, minDelay: 40, maxDelay: 90 },

@@ -26,6 +26,7 @@ function readProfileBody(body, { creating }) {
     tone: str(b.tone, { max: 120 }),
     language: str(b.language, { max: 40 }),
     notes: str(b.notes, { max: 2000 }),
+    prompt: b.prompt === undefined ? undefined : (str(b.prompt, { max: 8000, field: 'промт анкети' }) || ''),
     status: oneOf(b.status, ['active', 'paused'], 'статус'),
     daily_limit: int(b.daily_limit, { min: 1, max: 5000, field: 'денний ліміт' }),
     min_delay: int(b.min_delay, { min: 5, max: 3600, field: 'мін. пауза' }),
@@ -164,6 +165,22 @@ export default function profileRoutes(db) {
     const gen = await generateInvite({ profile: p, settings, previous });
     const invite = insertInvite(db, { profileId: p.id, text: gen.text, source: gen.source, model: gen.model, userId: req.user.id });
     res.status(201).json({ invite, preview: personalize(invite.text, { name: 'Michael', age: 45, country: 'USA' }) });
+  }));
+
+  /** Try a prompt on this profile without saving anything (master prompt editor, profile prompt). */
+  r.post('/:id/invites/preview', requireRole('owner'), ah(async (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = getSettings(db, req.user.agencyId);
+    const prompt = str(req.body?.prompt, { max: 8000, field: 'промт' }) || '';
+    // Unsaved form values (profile editor) take part in the preview.
+    const draft = {};
+    const f = req.body?.fields && typeof req.body.fields === 'object' ? req.body.fields : {};
+    for (const k of ['name', 'city', 'country', 'bio', 'interests', 'looking_for', 'tone', 'language', 'notes']) {
+      if (typeof f[k] === 'string') draft[k] = f[k].slice(0, 3000);
+    }
+    if (f.age !== undefined && f.age !== null && f.age !== '') draft.age = Number(f.age) || p.age;
+    const gen = await generateInvite({ profile: { ...p, ...draft, prompt: '' }, settings, promptOverride: prompt });
+    res.json({ ...gen, preview: personalize(gen.text, { name: 'Michael', age: 45, country: 'USA' }) });
   }));
 
   r.post('/:id/invites', (req, res) => {

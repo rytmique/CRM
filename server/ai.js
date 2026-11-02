@@ -67,7 +67,43 @@ function mapError(e) {
   return e;
 }
 
-async function callClaude({ apiKey, model, language, instructions, profile, previous }) {
+/** The built-in base prompt; agencies can replace it with their own master prompt. */
+export const DEFAULT_PROMPT = SYSTEM_PROMPT;
+
+/** Placeholders a master prompt may use. {name} {age} {country} are NOT here: they stay in the invite for the man's data. */
+export const PROMPT_VARS = [
+  ['{her_name}', 'ім’я жінки'],
+  ['{her_age}', 'її вік'],
+  ['{her_city}', 'місто'],
+  ['{her_country}', 'країна'],
+  ['{about}', 'про себе'],
+  ['{interests}', 'інтереси'],
+  ['{looking_for}', 'кого шукає'],
+  ['{tone}', 'тон'],
+  ['{notes}', 'нотатки для ШІ'],
+  ['{language}', 'мова інвайту'],
+  ['{profile}', 'уся анкета одним блоком'],
+];
+
+export function fillPromptVars(template, profile, language) {
+  const vars = {
+    her_name: profile.name || '', her_age: profile.age ? String(profile.age) : '', her_city: profile.city || '',
+    her_country: profile.country || '', about: profile.bio || '', interests: profile.interests || '',
+    looking_for: profile.looking_for || '', tone: profile.tone || '', notes: profile.notes || '',
+    language, profile: profileBrief(profile),
+  };
+  return String(template).replace(/\{(her_name|her_age|her_city|her_country|about|interests|looking_for|tone|notes|language|profile)\}/g, (_, k) => vars[k]);
+}
+
+/** Which prompt applies: explicit override (preview) > the profile's own > the agency master prompt > built-in. */
+export function resolvePrompt({ profile, settings, override }) {
+  if (override && override.trim()) return { text: override, source: 'override' };
+  if (profile.prompt && profile.prompt.trim()) return { text: profile.prompt, source: 'profile' };
+  if (settings.ai.masterPrompt && settings.ai.masterPrompt.trim()) return { text: settings.ai.masterPrompt, source: 'agency' };
+  return { text: DEFAULT_PROMPT, source: 'default' };
+}
+
+async function callClaude({ apiKey, model, system, language, instructions, profile, previous }) {
   const client = clientFactory(apiKey);
   const userParts = [
     `Her profile:\n${profileBrief(profile)}`,
@@ -85,7 +121,7 @@ async function callClaude({ apiKey, model, language, instructions, profile, prev
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
       output_config: { effort: 'low' },
-      system: SYSTEM_PROMPT,
+      system,
       messages: [{ role: 'user', content: userParts.join('\n\n') }],
     });
   } catch (e) {
@@ -104,23 +140,26 @@ async function callClaude({ apiKey, model, language, instructions, profile, prev
  * Generates one invite for a profile.
  * Uses Claude when an API key is configured, otherwise a local template (so the system works out of the box).
  */
-export async function generateInvite({ profile, settings, previous = '' }) {
+export async function generateInvite({ profile, settings, previous = '', promptOverride = '' }) {
   const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
   const language = profile.language || settings.ai.language || 'English';
+  const prompt = resolvePrompt({ profile, settings, override: promptOverride });
   if (!apiKey) {
-    return { text: templateInvite(profile, previous), source: 'template', model: null };
+    return { text: templateInvite(profile, previous), source: 'template', model: null, promptSource: prompt.source };
   }
   const model = settings.ai.model || 'claude-opus-5-5';
-  let out = await callClaude({ apiKey, model, language, instructions: settings.ai.instructions, profile, previous });
+  const system = fillPromptVars(prompt.text, profile, language);
+  let out = await callClaude({ apiKey, model, system, language, instructions: settings.ai.instructions, profile, previous });
   if (inviteProblems(out.text).length) {
-    // One retry, telling the model what went wrong.
+    // One retry, telling the model what went wrong. Contacts/links are never allowed, whatever the prompt says:
+    // dating sites ban profiles for them.
     out = await callClaude({
-      apiKey, model, language, profile, previous,
-      instructions: `${settings.ai.instructions || ''}\nThe previous draft broke the rules (contacts, links or too short). Follow every rule strictly.`.trim(),
+      apiKey, model, system, language, profile, previous,
+      instructions: `${settings.ai.instructions || ''}\nThe previous draft was rejected: it contained contact details, links or messenger names, or was too short. Never include any of them.`.trim(),
     });
-    if (inviteProblems(out.text).length) throw new HttpError(422, 'ШІ двічі згенерував текст, що порушує правила. Спробуйте ще раз або напишіть вручну.');
+    if (inviteProblems(out.text).length) throw new HttpError(422, 'ШІ двічі згенерував текст із контактами/посиланнями або занадто короткий. Спробуйте ще раз або змініть промт.');
   }
-  return { text: out.text, source: 'ai', model: out.model };
+  return { text: out.text, source: 'ai', model: out.model, promptSource: prompt.source };
 }
 
 // ---------- local template fallback (no API key) ----------

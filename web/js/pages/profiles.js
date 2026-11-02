@@ -1,6 +1,7 @@
 import { h, field, input, textarea, select, formData, busy, toast, modal, confirmDialog, badge, avatar, empty, fmtInt, fmtDate, safe } from '../ui.js';
 import { get, post, patch, del } from '../api.js';
 import { botBadge } from './dashboard.js';
+import { promptEditor } from './prompt-editor.js';
 
 export function licenseBadge(lic) {
   if (!lic || lic.state === 'none') return badge('Без ліцензії', 'err');
@@ -66,8 +67,15 @@ export default async function profilesPage(main, { user }) {
   async function openForm(p = null) {
     await loadRefs();
     const freeLicenses = refs.licenses.filter((l) => (l.state === 'free') || (p && l.profile_id === p.id));
+    const { defaultPrompt, promptVars } = await get('/api/settings');
+    let form;
+    const ownPrompt = promptEditor({
+      value: p?.prompt || '', defaultPrompt, promptVars, fixedProfileId: p?.id, name: 'prompt', rows: 10, allowEmpty: true,
+      placeholder: 'Порожньо — діє майстер-промт агенції', getFields: () => formData(form),
+    });
+    if (!p) ownPrompt.el.querySelector('.btn.primary')?.remove();
     const licOptions = [['', '— без ліцензії —'], ...freeLicenses.map((l) => [l.id, `${l.key} · ${l.daysLeft} дн${l.profile_id ? ' (поточна)' : ''}`])];
-    const form = h('form.form-grid',
+    form = h('form.form-grid',
       h('h4.span-2', 'Основне'),
       field('Ім’я *', input('name', p?.name, { required: true, maxlength: 80 })),
       field('Вік', input('age', p?.age, { type: 'number', min: 18, max: 99 })),
@@ -87,6 +95,10 @@ export default async function profilesPage(main, { user }) {
       field('Тон', input('tone', p?.tone || 'warm', { placeholder: 'теплий, грайливий, скромний…' })),
       field('Мова інвайту', input('language', p?.language, { placeholder: 'з налаштувань (English)' })),
       h('div.span-2', field('Нотатки для ШІ', textarea('notes', p?.notes, { rows: 2, placeholder: 'Чого уникати, на що робити акцент' }))),
+      h('details.span-2.own-prompt', { open: Boolean(p?.prompt) },
+        h('summary', 'Свій промт для цієї анкети (необов’язково) ', ownPrompt.badge),
+        h('p.small.muted', 'Якщо заповнено — повністю замінює майстер-промт агенції для цієї анкети.'),
+        ownPrompt.el),
 
       h('h4.span-2', 'Розсилка'),
       field('Денний ліміт', input('daily_limit', p?.daily_limit, { type: 'number', min: 1, max: 5000, placeholder: 'з налаштувань' })),
@@ -145,7 +157,7 @@ export default async function profilesPage(main, { user }) {
     body.append(...[
       h('div.detail-head',
         avatar(p.name, p.photo_url),
-        h('div', h('div.row-wrap', licenseBadge(p.license), botBadge(p), p.status === 'paused' ? badge('Пауза', 'muted') : badge('Активна', 'ok')),
+        h('div', h('div.row-wrap', licenseBadge(p.license), botBadge(p), p.status === 'paused' ? badge('Пауза', 'muted') : badge('Активна', 'ok'), p.prompt ? badge('Свій промт', 'accent') : null),
           h('div.small.muted', [p.city, p.country].filter(Boolean).join(', '), p.site_name ? ` · ${p.site_name}` : '', p.operator_name ? ` · оператор: ${p.operator_name}` : '')),
         h('div.row-wrap.right',
           h('button.btn', { onclick: safe(async () => { await patch(`/api/profiles/${p.id}`, { status: p.status === 'active' ? 'paused' : 'active' }); toast(p.status === 'active' ? 'Анкету поставлено на паузу — бот зупиниться' : 'Анкету активовано'); m.close(); load(); openDetail(p.id); }) },

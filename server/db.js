@@ -129,10 +129,19 @@ CREATE INDEX IF NOT EXISTS idx_profiles_agency ON profiles(agency_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 `;
 
+/** Columns added after the first release: [table, column, definition]. */
+const MIGRATIONS = [
+  ['profiles', 'prompt', "TEXT NOT NULL DEFAULT ''"],
+];
+
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  for (const [table, column, def] of MIGRATIONS) {
+    const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+    if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
   return db;
 }
 

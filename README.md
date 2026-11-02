@@ -52,16 +52,17 @@ ADMIN_EMAIL=admin@local ADMIN_PASSWORD=admin12345 npm start
 
 Для тесту без реального сайту є вбудований **демо-сайт** (`/demo-site/`): він додається до кожної нової агенції як сайт «Демо-сайт (для тесту)». Чоловіки там фейкові, ~40% «відповідають» через кілька секунд — видно весь цикл.
 
-### Docker
+### Сервер (Docker + автоматичний HTTPS)
 
 ```bash
-docker build -t agency-crm .
-docker run -d -p 3000:3000 -v agency-data:/data \
-  -e PUBLIC_URL=https://panel.example.com -e ADMIN_EMAIL=... -e ADMIN_PASSWORD=... \
-  -e ANTHROPIC_API_KEY=sk-ant-... agency-crm
+curl -fsSL https://get.docker.com | sh
+git clone -b agency-crm https://github.com/rytmique/KENTAVR-.git /opt/agency
+cd /opt/agency/agency-crm
+cp .env.example .env && nano .env      # DOMAIN, PUBLIC_URL, ADMIN_EMAIL, ADMIN_PASSWORD, ANTHROPIC_API_KEY
+docker compose up -d --build            # панель + Caddy (HTTPS-сертифікат для DOMAIN отримується сам)
 ```
 
-У проді ставте панель за HTTPS (nginx/Caddy). Змінні — у `.env.example`.
+Оновлення: `git pull && docker compose up -d --build`. Дані — у `./data`. Скинути пароль будь-кого: `docker compose exec app node server/reset-password.js email@x НовийПароль`.
 
 ---
 
@@ -158,6 +159,8 @@ docker run -d -p 3000:3000 -v agency-data:/data \
 - Ключ: `ANTHROPIC_API_KEY` на сервері або окремо для агенції в Налаштуваннях (зберігається в БД, у UI маскується).
 - Увімкнено серверний `fallbacks: "default"`: якщо модель відмовить, запит автоматично повторюється на рекомендованій резервній моделі.
 - **Без ключа** система теж працює — інвайти збираються локальним шаблоном з полів анкети.
+- **Майстер-промт**: Налаштування → «Майстер-промт для інвайтів» — повністю замінює вбудований промт для всієї агенції. Змінні `{her_name}`, `{her_age}`, `{her_city}`, `{her_country}`, `{about}`, `{interests}`, `{looking_for}`, `{tone}`, `{notes}`, `{language}`, `{profile}`; кнопка «Перевірити на анкеті» генерує приклад без збереження. `{name}`, `{age}`, `{country}` лишаються для даних чоловіка.
+- **Свій промт анкети**: у формі анкети — перекриває майстер-промт. Порядок: анкета → агенція → вбудований. Фільтр контактів і посилань діє за будь-якого промту.
 
 ## Статистика
 
