@@ -31,9 +31,11 @@ if /i "%ANSWER%"=="n" goto :ask_new
 set "ADMIN_EMAIL="
 set "ADMIN_PASSWORD="
 set "CLAUDE_KEY="
+set "MODE=update"
 goto :pack
 
 :ask_new
+set "MODE=install"
 echo   Пароль і ключ - лише латинські літери, цифри, знаки - і _
 echo.
 :ask_ip
@@ -73,8 +75,17 @@ del "setup.env" >nul 2>nul
 if not "%TAR_ERR%"=="0" goto :pack_failed
 
 echo.
-echo   Зараз ДВІЧІ спитає пароль від СЕРВЕРА (root, з листа хостингу).
+echo   Далі кілька разів спитає пароль від СЕРВЕРА (root).
 echo   Під час введення символи не видно - це нормально, просто введи і Enter.
+if "%MODE%"=="update" goto :upload
+echo.
+echo   Спершу перевіряю вхід. Якщо сервер новий, він попросить ЗМІНИТИ пароль:
+echo     1) введи пароль з листа,  2) ще раз його ж,  3) двічі новий пароль.
+echo   Запам'ятай новий пароль - далі вводь саме його.
+echo.
+ssh -t -o StrictHostKeyChecking=accept-new root@%SERVER_IP% "echo   Вхід на сервер працює."
+
+:upload
 echo.
 scp -o StrictHostKeyChecking=accept-new "%PKG%" root@%SERVER_IP%:/root/agency-crm-deploy.tgz
 if errorlevel 1 goto :upload_failed
