@@ -3,3 +3,6 @@ data/
 e2e-out/
 .env
 data-test/
+deploy-settings.txt
+setup.env
+backups/

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import { requireRole, hashPassword, destroyUserSessions } from '../auth.js';
 import { tx, now } from '../db.js';
 import { bad, notFound, str, int, licenseKey, updateSql } from '../util.js';
@@ -6,6 +7,11 @@ import { licenseState } from '../services.js';
 import { demoSiteConfig } from '../sites.js';
 
 const DAY = 86400000;
+
+function randomPassword(len = 10) {
+  const abc = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from(crypto.randomBytes(len), (b) => abc[b % abc.length]).join('');
+}
 
 export function createAgency(db, cfg, { name, ownerName, ownerEmail, ownerPassword }) {
   return tx(db, () => {
@@ -78,6 +84,16 @@ export default function adminRoutes(db, cfg) {
       for (const u of db.prepare('SELECT id FROM users WHERE agency_id = ?').all(id)) destroyUserSessions(db, u.id);
     }
     res.json({ ok: true });
+  });
+
+  /** New random password for the agency owner (client forgot it) — shown once to the admin. */
+  r.post('/agencies/:id/reset-owner', (req, res) => {
+    const owner = db.prepare("SELECT id, email FROM users WHERE agency_id = ? AND role = 'owner' ORDER BY id LIMIT 1").get(Number(req.params.id));
+    if (!owner) throw notFound('У агенції немає керівника');
+    const password = randomPassword();
+    db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(password), owner.id);
+    destroyUserSessions(db, owner.id);
+    res.json({ email: owner.email, password });
   });
 
   r.get('/licenses', (req, res) => {

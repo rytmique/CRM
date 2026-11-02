@@ -93,6 +93,32 @@ export default function statsRoutes(db) {
     });
   });
 
+  /** "First steps" checklist for an agency owner. */
+  r.get('/onboarding', (req, res) => {
+    const u = req.user;
+    if (u.role !== 'owner') return res.json({ steps: [] });
+    const settings = getSettings(db, u.agencyId);
+    const sites = db.prepare('SELECT base_url, config FROM sites WHERE agency_id = ?').all(u.agencyId);
+    const ownSite = sites.some((s) => {
+      if (String(s.base_url).includes('/demo-site/')) return false;
+      try { const c = JSON.parse(s.config || '{}'); return Boolean(c.card && c.cardId && c.messageInput); } catch { return false; }
+    });
+    const operators = db.prepare("SELECT COUNT(*) AS n FROM users WHERE agency_id = ? AND role = 'operator'").get(u.agencyId).n;
+    const t = now();
+    const licensed = db.prepare(`SELECT COUNT(*) AS n FROM profiles p JOIN licenses l ON l.profile_id = p.id
+      WHERE p.agency_id = ? AND l.status = 'active' AND (l.expires_at IS NULL OR l.expires_at > ?)`).get(u.agencyId, t).n;
+    const botRan = db.prepare('SELECT 1 FROM profiles WHERE agency_id = ? AND bot_last_seen IS NOT NULL LIMIT 1').get(u.agencyId)
+      || db.prepare('SELECT 1 FROM messages WHERE agency_id = ? LIMIT 1').get(u.agencyId);
+    const steps = [
+      { key: 'site', title: 'Додай свій сайт знайомств', hint: 'Сайти → + Додати сайт. Підказки є біля кожного поля.', page: 'sites', done: ownSite },
+      { key: 'profile', title: 'Додай анкету й прив’яжи ліцензію', hint: 'Анкети → + Додати анкету: сайт, ліцензія, кілька слів про неї.', page: 'profiles', done: licensed > 0 },
+      { key: 'bot', title: 'Встанови розширення й запусти бота', hint: 'Розширення → Завантажити. Спершу 🧪 тест, потім Старт.', page: 'extension', done: Boolean(botRan) },
+      { key: 'ai', title: 'Підключи ШІ (ключ Claude)', hint: 'Налаштування → ШІ. Без ключа інвайти пише простий шаблон.', page: 'settings', done: Boolean(settings.ai.apiKey || process.env.ANTHROPIC_API_KEY), optional: true },
+      { key: 'operator', title: 'Додай операторів', hint: 'Якщо бота запускатиме хтось інший. Можна й самому.', page: 'operators', done: operators > 0, optional: true },
+    ];
+    res.json({ steps });
+  });
+
   /** Outreach log with filters + pagination. */
   r.get('/messages', (req, res) => {
     const u = req.user;

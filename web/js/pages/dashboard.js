@@ -16,6 +16,24 @@ function tile(label, value, sub, kind = '') {
   return h(`div.tile${kind ? `.${kind}` : ''}`, h('span.tile-label', label), h('b.tile-value', value), sub ? h('span.tile-sub', sub) : null);
 }
 
+const HIDE_KEY = 'agc_onboarding_hidden';
+const hidden = () => { try { return localStorage.getItem(HIDE_KEY) === '1'; } catch { return false; } };
+
+/** "First steps": only the next thing to do is highlighted. */
+function onboardingCard(steps, navigate, onHide) {
+  const required = steps.filter((s) => !s.optional);
+  if (!steps.length || (required.every((s) => s.done) && steps.every((s) => s.done || s.optional))) return null;
+  const doneCount = steps.filter((s) => s.done).length;
+  const next = steps.find((s) => !s.done && !s.optional) || steps.find((s) => !s.done);
+  return h('section.card.onboarding',
+    h('div.onb-head', h('h3', 'Перші кроки', h('span.count', `${doneCount} з ${steps.length}`)),
+      h('button.btn.sm.ghost', { onclick: onHide }, 'Сховати')),
+    h('ol.onb-list', steps.map((s) => h(`li${s === next ? '.next' : ''}${s.done ? '.done' : ''}`,
+      h('span.onb-mark', { 'aria-hidden': 'true' }, s.done ? '✓' : s === next ? '→' : ''),
+      h('div.onb-text', h('b', s.title, s.optional ? h('span.muted', ' · необов’язково') : ''), s === next || !s.done ? h('div.small.muted', s.hint) : null),
+      s.done ? null : h(`button.btn.sm${s === next ? '.primary' : ''}`, { onclick: () => navigate(s.page) }, s === next ? 'Зробити →' : 'Відкрити')))));
+}
+
 export default async function dashboard(main, { user, navigate }) {
   let days = 14;
   let timer;
@@ -25,7 +43,11 @@ export default async function dashboard(main, { user, navigate }) {
   const periodBtns = [7, 14, 30].map((d) => h('button.seg', { onclick: () => { days = d; load(); } }, `${d} днів`));
 
   async function load() {
-    const st = await get(`/api/stats/overview?days=${days}`);
+    const [st, onb] = await Promise.all([
+      get(`/api/stats/overview?days=${days}`),
+      user.role === 'owner' && !hidden() ? get('/api/stats/onboarding') : Promise.resolve({ steps: [] }),
+    ]);
+    const onboarding = onboardingCard(onb.steps, navigate, () => { try { localStorage.setItem(HIDE_KEY, '1'); } catch { /* ignore */ } load(); });
     periodBtns.forEach((b, i) => b.classList.toggle('on', [7, 14, 30][i] === days));
     const op = user.role === 'operator';
 
@@ -66,6 +88,7 @@ export default async function dashboard(main, { user, navigate }) {
 
     page.replaceChildren(
       h('div.page-head', h('h1', 'Дашборд'), h('div.seg-group', { role: 'group', 'aria-label': 'Період' }, periodBtns)),
+      onboarding,
       tiles,
       charts,
       h('div.grid-main',

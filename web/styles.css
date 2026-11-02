@@ -244,3 +244,19 @@ pre.keys { background: var(--surface-2); border: 1px solid var(--line); border-r
 .own-prompt summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .own-prompt[open] summary { margin-bottom: 8px; }
 .row-wrap select { width: auto; min-width: 160px; }
+
+/* ---------- first steps + access message ---------- */
+.onboarding { border-color: var(--accent); display: grid; gap: 8px; }
+.onb-head { display: flex; justify-content: space-between; align-items: center; }
+.onb-head h3 { margin: 0; }
+.onb-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.onb-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; }
+.onb-list li.next { background: var(--accent-soft); }
+.onb-list li.done { opacity: .55; }
+.onb-list li.done b { text-decoration: line-through; font-weight: 500; }
+.onb-mark { width: 24px; height: 24px; flex: none; border-radius: 50%; border: 2px solid var(--line-2); display: grid; place-items: center; font-weight: 700; font-size: 13px; color: var(--accent); }
+.onb-list li.done .onb-mark { border-color: var(--ok); color: var(--ok); }
+.onb-list li.next .onb-mark { border-color: var(--accent); }
+.onb-text { flex: 1; min-width: 0; }
+.stack { display: grid; gap: 12px; } .stack p { margin: 0; }
+.access-text { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; background: var(--surface-2); }

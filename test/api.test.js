@@ -267,11 +267,31 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   const invs2 = await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner');
   assert.equal(invs2.data.invites.find((i) => i.active).id, older.id);
 
+  // first-steps checklist: demo site doesn't count, licensed profile and bot run do
+  const onb = await call('GET', '/api/stats/onboarding', undefined, 'owner');
+  const stepOf = (k) => onb.data.steps.find((x) => x.key === k);
+  assert.equal(stepOf('site').done, false, 'demo site is not "your site"');
+  assert.equal(stepOf('profile').done, true);
+  assert.equal(stepOf('bot').done, true);
+  assert.equal(stepOf('operator').done, true);
+  assert.deepEqual((await call('GET', '/api/stats/onboarding', undefined, 'op')).data.steps, []);
+
+  // admin resets the owner's password → old one stops working, new one works
+  const agList = await call('GET', '/api/admin/agencies', undefined, 'admin');
+  const reset = await call('POST', `/api/admin/agencies/${agList.data.agencies[0].id}/reset-owner`, {}, 'admin');
+  assert.equal(reset.status, 200);
+  assert.equal(reset.data.email, 'owner@rose');
+  assert.ok(reset.data.password.length >= 10);
+  assert.equal((await call('GET', '/api/profiles', undefined, 'owner')).status, 401, 'old session closed');
+  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@rose', password: 'ownerpass1' })).status, 401);
+  await login('owner', 'owner@rose', reset.data.password);
+  assert.equal((await call('POST', `/api/admin/agencies/${agList.data.agencies[0].id}/reset-owner`, {}, 'owner')).status, 403);
+
   // suspended agency locks everyone out
   const agencies = await call('GET', '/api/admin/agencies', undefined, 'admin');
   await call('PATCH', `/api/admin/agencies/${agencies.data.agencies[0].id}`, { active: false }, 'admin');
   assert.equal((await call('GET', '/api/profiles', undefined, 'owner')).status, 401);
-  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@rose', password: 'ownerpass1' })).status, 403);
+  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@rose', password: reset.data.password })).status, 403);
 });
 
 test('extension zip is served with server url baked in', async () => {
