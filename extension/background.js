@@ -209,6 +209,31 @@ async function checkInbox(site, profileId = state.profileId) {
   }
 }
 
+const pageKey = (u) => { try { const x = new URL(u); return x.origin + x.pathname + x.search; } catch { return u; } };
+
+/** Sends one invite. Works whether "Write" opens a box on the search page or goes to the man's profile/chat page. */
+async function sendOne(tabId, site, man) {
+  const before = (await chrome.tabs.get(tabId)).url;
+  let opened;
+  try { opened = await inTab(tabId, 'open', { site, man }); } catch { opened = { ok: true }; } // page unloaded on click
+  if (!opened?.ok) return opened || { ok: false, error: 'немає відповіді від сторінки' };
+  await sleep(1200);
+  let tab = await chrome.tabs.get(tabId);
+  const left = tab.status === 'loading' || pageKey(tab.url) !== pageKey(before);
+  if (tab.status === 'loading') tab = await waitTabComplete(tabId);
+  if (left) await sleep(800);
+  let res;
+  try { res = await inTab(tabId, 'compose', { site, man }); } catch (e) { res = { ok: false, error: e.message }; }
+  if (left) {
+    // We went to his profile/chat page — return to the list of men.
+    await chrome.tabs.update(tabId, { url: before });
+    await sleep(500);
+    await waitTabComplete(tabId);
+    await sleep(800);
+  }
+  return res || { ok: false, error: 'немає відповіді від сторінки' };
+}
+
 async function run(profileId, tabId) {
   const cfg = await api(`/api/bot/profiles/${profileId}/config`);
   const site = cfg.site.config;
@@ -228,6 +253,8 @@ async function run(profileId, tabId) {
     let sinceInbox = 0;
     let failsInRow = 0;
     let emptyPages = 0;
+    let noGrowth = 0;
+    const tried = new Set(); // men already attempted in this run (a failing one is not retried in a loop)
 
     outer: while (!stopRequested) {
       await waitTabComplete(tabId);
@@ -236,7 +263,7 @@ async function run(profileId, tabId) {
       let allowed = [];
       if (scan.candidates.length) {
         const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: scan.candidates } });
-        allowed = f.allowed;
+        allowed = f.allowed.filter((m) => !tried.has(m.id));
         await setState({ remaining: f.remaining });
         if (f.remaining <= 0) { limitReached = true; break; }
         const skip = [f.skipped.contacted && `вже писали ${f.skipped.contacted}`, f.skipped.age && `не підходить вік ${f.skipped.age}`].filter(Boolean).join(', ');
@@ -251,8 +278,8 @@ async function run(profileId, tabId) {
         if (stopRequested) break outer;
         await setState({ message: `Пишу: ${man.name || man.id}${man.age ? `, ${man.age}` : ''}` });
         let res;
-        try { res = await inTab(tabId, 'send', { site, man }); } catch (e) { res = { ok: false, error: e.message }; }
-        res = res || { ok: false, error: 'немає відповіді від сторінки' };
+        tried.add(man.id);
+        try { res = await sendOne(tabId, site, man); } catch (e) { res = { ok: false, error: e.message }; }
         const r = await api(`/api/bot/profiles/${profileId}/sent`, {
           method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id },
         });
@@ -273,10 +300,24 @@ async function run(profileId, tabId) {
       }
       if (stopRequested) break;
       const fresh = await inTab(tabId, 'scan', { site });
-      if (!fresh?.hasNext) { await log('Сторінки закінчились'); break; }
-      await inTab(tabId, 'next', { site });
-      await waitForNavigation(tabId);
-      await setState({ page: state.page + 1 });
+      if (fresh?.hasNext) {
+        await inTab(tabId, 'next', { site });
+        await waitForNavigation(tabId);
+        await setState({ page: state.page + 1 });
+      } else if (site.nextPage) {
+        await log('Сторінки закінчились');
+        break;
+      } else {
+        // No pagination button configured → the site is an infinite feed: scroll for more men.
+        const m = await inTab(tabId, 'more', { site });
+        if (m?.grew) {
+          noGrowth = 0;
+          await setState({ page: state.page + 1 });
+        } else if (++noGrowth >= 2) {
+          await log('Список чоловіків закінчився');
+          break;
+        }
+      }
     }
   }
 

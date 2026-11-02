@@ -20,6 +20,13 @@
     return (el?.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
+  /** Same man must get the same ID in search and inbox: "/profile/123456", "/chat/123456?x" and "123456" → "123456". */
+  const normId = (v) => {
+    const raw = String(v || '').trim();
+    const m = raw.match(/\d{5,}/);
+    return m ? m[0] : raw;
+  };
+
   const visible = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
 
   async function waitFor(fn, timeout = 8000, step = 150) {
@@ -38,7 +45,7 @@
       const age = Number.parseInt((ageText.match(/\d{2}/) || [])[0], 10);
       return {
         el: card,
-        id: extract(card, site.cardId),
+        id: normId(extract(card, site.cardId)),
         name: extract(card, site.cardName),
         age: Number.isFinite(age) ? age : null,
         country: extract(card, site.cardCountry),
@@ -69,17 +76,23 @@
     }
   }
 
-  async function send({ site, man }) {
+  /** Step 1: click "Write" in the man's card. It may open a box here or go to his profile/chat page. */
+  async function open({ site, man }) {
     const card = cardsOf(site).find((c) => c.id === man.id);
     if (!card) return { ok: false, error: 'картку чоловіка не знайдено на сторінці' };
     card.el.scrollIntoView({ block: 'center' });
     await sleep(300);
+    if (!site.openChat) return { ok: true };
+    const btn = qs(card.el, site.openChat) || (card.el.matches(site.openChat) ? card.el : null);
+    if (!btn) return { ok: false, error: 'кнопку «Написати» не знайдено' };
+    const link = btn.closest('a[target]');
+    if (link) link.removeAttribute('target'); // keep the bot in the same tab
+    btn.click();
+    return { ok: true };
+  }
 
-    if (site.openChat) {
-      const btn = qs(card.el, site.openChat) || (card.el.matches(site.openChat) ? card.el : null);
-      if (!btn) return { ok: false, error: 'кнопку «Написати» не знайдено' };
-      btn.click();
-    }
+  /** Step 2: on whatever page the message box is — paste the text, send, confirm. */
+  async function compose({ site, man }) {
     const input = await waitFor(() => qsa(document, site.messageInput).find(visible));
     if (!input) return { ok: false, error: 'поле вводу не з’явилось' };
     await sleep(400);
@@ -119,6 +132,11 @@
     return result;
   }
 
+  async function send(p) {
+    const o = await open(p);
+    return o.ok ? compose(p) : o;
+  }
+
   function scan({ site }) {
     const nextEl = qs(document, site.nextPage);
     return {
@@ -126,6 +144,16 @@
       candidates: cardsOf(site).map(({ el, ...c }) => c),
       hasNext: Boolean(nextEl && visible(nextEl) && !nextEl.disabled && nextEl.getAttribute('aria-disabled') !== 'true'),
     };
+  }
+
+  /** Infinite feed: scroll to the last card and wait for new men to load. */
+  async function more({ site }) {
+    const seen = new Set(cardsOf(site).map((c) => c.id));
+    const cards = qsa(document, site.card);
+    (cards[cards.length - 1] || document.body).scrollIntoView({ block: 'end' });
+    window.scrollBy(0, Math.round(window.innerHeight / 2));
+    const grew = await waitFor(() => cardsOf(site).some((c) => !seen.has(c.id)), 6000, 250);
+    return { grew: Boolean(grew), count: cardsOf(site).length };
   }
 
   function next({ site }) {
@@ -141,7 +169,7 @@
     const unread = items.filter((it) => !site.inboxUnread || it.matches(site.inboxUnread) || qs(it, site.inboxUnread));
     return {
       total: items.length,
-      men: unread.map((it) => ({ id: extract(it, site.inboxId), name: extract(it, site.inboxName) })).filter((m) => m.id),
+      men: unread.map((it) => ({ id: normId(extract(it, site.inboxId)), name: extract(it, site.inboxName) })).filter((m) => m.id),
     };
   }
 
@@ -157,5 +185,5 @@
     };
   }
 
-  window.__agencyBot = { scan, send, next, inbox, probe };
+  window.__agencyBot = { scan, open, compose, send, next, more, inbox, probe };
 })();

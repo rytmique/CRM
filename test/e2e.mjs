@@ -55,7 +55,7 @@ try {
     bio: 'Paediatric nurse, loves long walks by the Dnipro and baking on Sundays.', operator_id: op.id, site_id: site.id, license_id: lic[0].id,
     daily_limit: 4, min_delay: 5, max_delay: 6,
   }, owner);
-  await api('POST', '/api/profiles', { name: 'Maria', age: 27, city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id, license_id: lic[1].id }, owner);
+  const maria = await api('POST', '/api/profiles', { name: 'Maria', age: 27, interests: 'dancing, books', city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id, license_id: lic[1].id }, owner);
   await api('POST', '/api/profiles', { name: 'Olha', age: 35, city: 'Odesa', country: 'Ukraine', site_id: site.id, status: 'paused' }, owner);
   await api('PUT', '/api/settings', { settings: { inboxCheckEvery: 2 } }, owner);
   log('data ready');
@@ -161,6 +161,41 @@ try {
   if (Object.keys(sent).length !== 4) fail(`demo site received ${Object.keys(sent).length} messages`);
   if (Object.values(sent).some((m) => m.text.includes('{name}'))) fail('placeholder leaked into a sent message');
   log('demo site received 4 personalised messages, e.g.:', Object.values(sent)[0].text);
+
+  // ---------- second run: a site where you write from the man's profile page ----------
+  await popup.bringToFront();
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  const profileSite = await api('POST', '/api/sites', { name: 'Демо: писати з профілю', config: {
+    searchUrl: `${BASE}/demo-site/search.html`, card: '.man-card', cardId: 'a.man-name@href', cardName: '.man-name', cardAge: '.man-age',
+    openChat: 'a.man-name', messageInput: '#profile-chat textarea', sendButton: '#profile-chat .btn-send', sentConfirm: '#profile-chat .sent-ok',
+  } }, owner);
+  await api('PATCH', `/api/profiles/${maria.id}`, { site_id: profileSite.id, daily_limit: 2, min_delay: 5, max_delay: 6 }, owner);
+  await popup.selectOption('#profile', String(maria.id));
+  await popup.click('#start');
+  const t1 = Date.now();
+  const mariaDone = () => st?.profileId === maria.id && ['limit', 'watching', 'error', 'stopped'].includes(st.status);
+  do { await sleep(1000); st = await readState(); } while (!mariaDone() && Date.now() - t1 < 90000);
+  if (st.status === 'error') fail(`profile-page run error: ${st.message}\n${st.log.map((l) => l.text).join('\n')}`);
+  if (st.sent !== 2) fail(`profile-page run sent ${st.sent}: ${st.log.map((l) => l.text).join(' | ')}`);
+  const sentAfter = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_sent') || '{}'));
+  if (!['100000', '100037'].every((id) => sentAfter[id]?.text.includes('Maria'))) fail('profile-page run did not write from Maria');
+  const back = context.pages().find((p) => p !== sitePage && p.url().includes('/demo-site/search.html'));
+  if (!back) fail('bot did not return to the search list after writing from a profile page');
+  log('profile-page flow ok: 2 sent, bot returned to the list');
+
+  // ---------- adapter on an infinite feed + IDs taken from links ----------
+  const feed = await context.newPage();
+  await feed.goto(`${BASE}/demo-site/search.html?feed=1`);
+  await feed.addScriptTag({ path: path.join(ROOT, 'extension', 'content.js') });
+  const feedSite = { card: '.man-card', cardId: 'a.man-name@href', cardName: '.man-name', cardAge: '.man-age' };
+  const first = await feed.evaluate((site) => window.__agencyBot.scan({ site }), feedSite);
+  if (first.candidates.length !== 8 || first.hasNext) fail(`feed scan: ${first.candidates.length} cards, hasNext ${first.hasNext}`);
+  if (first.candidates[0].id !== '100000') fail(`id from link not normalised: ${first.candidates[0].id}`);
+  const grown = await feed.evaluate((site) => window.__agencyBot.more({ site }), feedSite);
+  if (!grown.grew || grown.count !== 16) fail(`feed did not load more: ${JSON.stringify(grown)}`);
+  await feed.close();
+  log('infinite feed + link IDs ok');
 
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();

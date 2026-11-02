@@ -39,17 +39,34 @@ function el(tag, attrs = {}, ...kids) {
   return e;
 }
 
+function card(m) {
+  return el('div', { class: 'man-card', 'data-man-id': m.id },
+    el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
+    el('div', { class: 'info' },
+      el('a', { class: 'man-name', href: `profile.html?id=${m.id}` }, m.name),
+      el('div', { class: 'meta' }, el('span', { class: 'man-age' }, `${m.age} y.o.`), ' · ', el('span', { class: 'man-country' }, m.country))),
+    el('button', { class: 'btn-write', type: 'button', onclick: () => openChat(m) }, 'Write'));
+}
+
+// Infinite feed variant (search.html?feed=1): no pager, more men load when you scroll to the end.
+function renderFeed() {
+  const list = document.getElementById('results');
+  let shown = 0;
+  const load = () => { for (const end = Math.min(shown + PER_PAGE, PER_PAGE * PAGES); shown < end; shown++) list.append(card(man(shown))); };
+  load();
+  const sentinel = el('div', { id: 'sentinel', style: 'height:1px' });
+  list.after(sentinel);
+  new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting) && shown < PER_PAGE * PAGES) setTimeout(load, 600);
+  }).observe(sentinel);
+}
+
 function renderSearch() {
+  if (new URLSearchParams(location.search).get('feed')) return renderFeed();
   const page = Math.min(PAGES, Math.max(1, Number(new URLSearchParams(location.search).get('page')) || 1));
   const list = document.getElementById('results');
   for (let i = (page - 1) * PER_PAGE; i < page * PER_PAGE; i++) {
-    const m = man(i);
-    list.append(el('div', { class: 'man-card', 'data-man-id': m.id },
-      el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
-      el('div', { class: 'info' },
-        el('div', { class: 'man-name' }, m.name),
-        el('div', { class: 'meta' }, el('span', { class: 'man-age' }, `${m.age} y.o.`), ' · ', el('span', { class: 'man-country' }, m.country))),
-      el('button', { class: 'btn-write', type: 'button', onclick: () => openChat(m) }, 'Write')));
+    list.append(card(man(i)));
   }
   const pager = document.getElementById('pager');
   pager.append(el('span', {}, `Page ${page} / ${PAGES}`));
@@ -107,7 +124,28 @@ function renderInbox() {
   }
 }
 
+function renderProfile() {
+  const id = new URLSearchParams(location.search).get('id');
+  const m = Array.from({ length: PER_PAGE * PAGES }, (_, i) => man(i)).find((x) => x.id === id) || { id, name: 'Unknown', age: '', country: '' };
+  document.getElementById('profile').append(el('div', { class: 'man-card' },
+    el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
+    el('div', { class: 'info' }, el('div', { class: 'man-name' }, m.name), el('div', { class: 'meta' }, `${m.age} y.o. · ${m.country}`))));
+  const box = document.getElementById('profile-chat');
+  box.querySelector('.btn-send').addEventListener('click', () => {
+    const text = box.querySelector('textarea').value.trim();
+    const status = box.querySelector('.status');
+    if (!text) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    setTimeout(() => {
+      const sent = store.get('demo_sent', {});
+      sent[m.id] = { text, at: Date.now() };
+      store.set('demo_sent', sent);
+      status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
+    }, 400);
+  });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  if (document.getElementById('profile-chat')) renderProfile();
   if (document.getElementById('results')) { renderSearch(); initModal(); }
   if (document.getElementById('dialogs')) renderInbox();
   const reset = document.getElementById('reset');

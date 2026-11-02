@@ -8,11 +8,11 @@
 export const SITE_FIELDS = [
   { key: 'searchUrl', group: 'Пошук', label: 'URL сторінки пошуку чоловіків', hint: 'Звідси бот починає розсилку' },
   { key: 'card', group: 'Пошук', label: 'Картка чоловіка', hint: 'CSS-селектор одного чоловіка у видачі', required: true },
-  { key: 'cardId', group: 'Пошук', label: 'ID чоловіка', hint: '@data-id або .link@href — унікальний ID', required: true },
+  { key: 'cardId', group: 'Пошук', label: 'ID чоловіка', hint: '@data-id або a@href. Якщо в значенні є число з 5+ цифр — ID буде саме воно', required: true },
   { key: 'cardName', group: 'Пошук', label: 'Ім’я', hint: '.name' },
   { key: 'cardAge', group: 'Пошук', label: 'Вік', hint: '.age (з тексту береться перше число)' },
   { key: 'cardCountry', group: 'Пошук', label: 'Країна', hint: '.country' },
-  { key: 'nextPage', group: 'Пошук', label: 'Кнопка «Наступна сторінка»', hint: 'Якщо порожньо — тільки поточна сторінка' },
+  { key: 'nextPage', group: 'Пошук', label: 'Кнопка «Наступна сторінка»', hint: 'Якщо порожньо — бот гортає список вниз (нескінченна стрічка)' },
   { key: 'openChat', group: 'Відправка', label: 'Кнопка «Написати» в картці', hint: 'Якщо порожньо — поле вводу шукається одразу', required: true },
   { key: 'messageInput', group: 'Відправка', label: 'Поле вводу повідомлення', hint: 'textarea / input / [contenteditable]', required: true },
   { key: 'sendButton', group: 'Відправка', label: 'Кнопка «Надіслати»', hint: 'Якщо порожньо — натискається Enter', required: false },
@@ -22,7 +22,7 @@ export const SITE_FIELDS = [
   { key: 'inboxUrl', group: 'Вхідні', label: 'URL сторінки вхідних', hint: 'Бот періодично перевіряє тут відповіді' },
   { key: 'inboxItem', group: 'Вхідні', label: 'Діалог у вхідних', hint: 'CSS-селектор одного діалогу' },
   { key: 'inboxUnread', group: 'Вхідні', label: 'Ознака непрочитаного', hint: 'Селектор всередині діалогу або .unread на самому діалозі' },
-  { key: 'inboxId', group: 'Вхідні', label: 'ID чоловіка в діалозі', hint: 'Той самий формат, що й ID у пошуку' },
+  { key: 'inboxId', group: 'Вхідні', label: 'ID чоловіка в діалозі', hint: 'Має дати те саме число, що й ID у пошуку (напр. a@href)' },
   { key: 'inboxName', group: 'Вхідні', label: 'Ім’я в діалозі', hint: '.name' },
   { key: 'chatUrl', group: 'Вхідні', label: 'Посилання на чат', hint: 'Шаблон з {id}, для сповіщень у Telegram' },
 ];
