@@ -11,8 +11,8 @@
 
 ## Найпростіше: Railway (без сервера і без паспорта, ~$5/міс)
 
-1. railway.com → Login через GitHub → план Hobby → **New Project → Deploy from GitHub repo** → цей репозиторій.
-2. Сервіс → Settings: **Root Directory** `/agency-crm`, **Branch** `agency-crm`. Variables: `PORT=3000`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (+ `ANTHROPIC_API_KEY`). Networking → **Generate Domain** (порт 3000). Правий клік по сервісу → **Attach Volume** → `/data`. Deploy.
+1. railway.com → Login через GitHub → план Hobby → **New Project → Deploy from GitHub repo** → `rytmique/CRM` (гілка `main`).
+2. Сервіс → Variables: `PORT=3000`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (+ `ANTHROPIC_API_KEY`). Networking → **Generate Domain** (порт 3000). Правий клік по сервісу → **Attach Volume** → `/data`. Deploy.
 3. Відкрий `*.up.railway.app` → Агенції → + Нова агенція → «Скопіювати повідомлення».
 
 Адресу (`RAILWAY_PUBLIC_DOMAIN`) і диск (`RAILWAY_VOLUME_MOUNT_PATH`) панель бере сама. Без диска в адмінці червоне попередження. Бекап — Агенції → «⬇ Бекап». Забув пароль адміна — змінна `RESET_ADMIN_PASSWORD`, Deploy, потім видалити.
@@ -54,7 +54,7 @@
 Потрібен Node.js 22.13+ (SQLite вбудований, нічого компілювати не треба).
 
 ```bash
-cd agency-crm
+git clone https://github.com/rytmique/CRM.git && cd CRM
 npm install
 ADMIN_EMAIL=admin@local ADMIN_PASSWORD=admin12345 npm start
 # панель: http://localhost:3000
@@ -72,8 +72,8 @@ ADMIN_EMAIL=admin@local ADMIN_PASSWORD=admin12345 npm start
 
 ```bash
 curl -fsSL https://get.docker.com | sh
-git clone -b agency-crm https://github.com/rytmique/KENTAVR-.git /opt/agency
-cd /opt/agency/agency-crm
+git clone https://github.com/rytmique/CRM.git /opt/agency
+cd /opt/agency
 cp .env.example .env && nano .env      # DOMAIN, PUBLIC_URL, ADMIN_EMAIL, ADMIN_PASSWORD, ANTHROPIC_API_KEY
 docker compose up -d --build            # панель + Caddy (HTTPS-сертифікат для DOMAIN отримується сам)
 ```

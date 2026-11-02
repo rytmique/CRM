@@ -108,7 +108,7 @@ exit /b 1
 
 :pack_failed
 echo.
-echo   [!] Не вдалося запакувати файли. Запусти deploy.bat з папки agency-crm.
+echo   [!] Не вдалося запакувати файли. deploy.bat має лежати в папці програми, поруч із папками server і web.
 echo.
 pause
 exit /b 1
