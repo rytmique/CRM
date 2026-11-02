@@ -25,7 +25,10 @@ function fmtTime(t) {
 
 function render(s) {
   current = s;
-  const [label, cls] = STATUS[s.status] || STATUS.idle;
+  let [label, cls] = STATUS[s.status] || STATUS.idle;
+  if (s.test) label = { running: '🧪 Тест іде', stopped: '🧪 Тест завершено', error: '🧪 Тест: є проблеми' }[s.status] || label;
+  document.body.classList.toggle('testing', Boolean(s.test) && s.status !== 'idle');
+  $('s-sent-label').textContent = s.test ? 'перевірено' : 'надіслано';
   $('status-text').textContent = s.profileName && s.status !== 'idle' ? `${label} — ${s.profileName}` : label;
   $('dot').className = `dot ${cls}`;
   $('status-msg').textContent = s.message || '';
@@ -36,6 +39,7 @@ function render(s) {
   $('start').hidden = active;
   $('stop').hidden = !active;
   $('profile').disabled = active;
+  $('test-mode').disabled = active;
   $('invite-box').hidden = !s.inviteText;
   $('invite').textContent = s.inviteText || '';
   if (active && s.profileId) $('profile').value = String(s.profileId);
@@ -139,11 +143,19 @@ $('login-form').addEventListener('submit', async (e) => {
 
 $('logout').addEventListener('click', async () => { await send('logout'); init(); });
 $('profile').addEventListener('change', updateNote);
+$('test-mode').addEventListener('change', () => {
+  $('start').textContent = $('test-mode').checked ? '🧪 Тест' : '▶ Старт';
+  chrome.storage.local.set({ testMode: $('test-mode').checked });
+});
+chrome.storage.local.get('testMode').then(({ testMode }) => {
+  $('test-mode').checked = Boolean(testMode);
+  $('start').textContent = testMode ? '🧪 Тест' : '▶ Старт';
+});
 
 $('start').addEventListener('click', async () => {
   $('main-error').textContent = '';
   try {
-    await send('start', { profileId: Number($('profile').value), tabId: await activeTabId() });
+    await send('start', { profileId: Number($('profile').value), tabId: await activeTabId(), test: $('test-mode').checked });
   } catch (e) { $('main-error').textContent = e.message; }
 });
 $('stop').addEventListener('click', () => send('stop').catch((e) => { $('main-error').textContent = e.message; }));

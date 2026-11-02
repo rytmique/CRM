@@ -96,10 +96,12 @@ export default function botRoutes(db) {
     const contactedByAgency = db.prepare("SELECT 1 FROM messages WHERE agency_id = ? AND site_id IS ? AND man_id = ? AND status = 'sent' LIMIT 1");
     const skipped = { contacted: 0, age: 0, limit: 0 };
     const allowed = [];
+    // Test mode in the extension never sends, so it is not bound by the daily limit.
+    const cap = req.body?.test ? 5 : remaining;
     for (const m of men) {
       if (contacted.get(p.id, m.id) || (settings.dedupeAcrossAgency && contactedByAgency.get(p.agency_id, p.site_id, m.id))) { skipped.contacted++; continue; }
       if (m.age && ((p.target_age_min && m.age < p.target_age_min) || (p.target_age_max && m.age > p.target_age_max))) { skipped.age++; continue; }
-      if (allowed.length >= remaining) { skipped.limit++; continue; }
+      if (allowed.length >= cap) { skipped.limit++; continue; }
       allowed.push({ ...m, text: personalize(invite.text, m), invite_id: invite.id });
     }
     res.json({ allowed, remaining, skipped });

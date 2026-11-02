@@ -28,6 +28,10 @@
       <select id="profile"></select>
     </label>
     <p id="profile-note" class="muted small"></p>
+    <label class="check" title="Бот проходить увесь шлях на сайті, але не натискає «Надіслати». Ліміт не витрачається.">
+      <input type="checkbox" id="test-mode">
+      <span>🧪 Тест-режим <span class="muted">— усе, крім натискання «Надіслати»</span></span>
+    </label>
 
     <div class="row">
       <button id="start" class="primary">▶ Старт</button>
@@ -40,7 +44,7 @@
       <div class="status-line"><span id="dot" class="dot"></span><b id="status-text">Не запущено</b></div>
       <div id="status-msg" class="muted small"></div>
       <div class="stats">
-        <div><b id="s-sent">0</b><span>надіслано</span></div>
+        <div><b id="s-sent">0</b><span id="s-sent-label">надіслано</span></div>
         <div><b id="s-replies">0</b><span>відповідей</span></div>
         <div><b id="s-remaining">—</b><span>лишилось сьогодні</span></div>
       </div>

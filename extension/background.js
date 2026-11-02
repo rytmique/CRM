@@ -14,7 +14,7 @@ const EMPTY_STATE = {
   status: 'idle', // idle | running | waiting | watching | limit | stopped | error
   profileId: null, profileName: '', siteName: '', tabId: null,
   sent: 0, failed: 0, replies: 0, remaining: null, dailyLimit: null, page: 0,
-  message: '', inviteText: '', startedAt: null, log: [],
+  message: '', inviteText: '', startedAt: null, log: [], test: false,
 };
 let state = { ...EMPTY_STATE };
 let running = false;
@@ -179,14 +179,23 @@ async function pause(limits) {
   if (!stopRequested) await setState({ status: 'running' });
 }
 
-async function checkInbox(site, profileId = state.profileId) {
-  if (!site.inboxUrl || !site.inboxItem) return 0;
+/** Opens the inbox in a background tab and returns { total, men: unread }. */
+async function scanInbox(site) {
   let tab;
   try {
     tab = await chrome.tabs.create({ url: site.inboxUrl, active: false });
     await waitTabComplete(tab.id);
     await sleep(1500);
-    const res = await inTab(tab.id, 'inbox', { site });
+    return (await inTab(tab.id, 'inbox', { site })) || { total: 0, men: [] };
+  } finally {
+    if (tab) chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+async function checkInbox(site, profileId = state.profileId) {
+  if (!site.inboxUrl || !site.inboxItem) return 0;
+  try {
+    const res = await scanInbox(site);
     if (!res?.men?.length) return 0;
     const r = await api(`/api/bot/profiles/${profileId}/replies`, { method: 'POST', body: { men: res.men } });
     if (r.new > 0) {
@@ -204,18 +213,16 @@ async function checkInbox(site, profileId = state.profileId) {
   } catch (e) {
     await log(`Не вдалося перевірити вхідні: ${e.message}`, 'warn');
     return 0;
-  } finally {
-    if (tab) chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
 
 const pageKey = (u) => { try { const x = new URL(u); return x.origin + x.pathname + x.search; } catch { return u; } };
 
 /** Sends one invite. Works whether "Write" opens a box on the search page or goes to the man's profile/chat page. */
-async function sendOne(tabId, site, man) {
+async function sendOne(tabId, site, man, dry = false) {
   const before = (await chrome.tabs.get(tabId)).url;
   let opened;
-  try { opened = await inTab(tabId, 'open', { site, man }); } catch { opened = { ok: true }; } // page unloaded on click
+  try { opened = await inTab(tabId, 'open', { site, man, dry }); } catch { opened = { ok: true }; } // page unloaded on click
   if (!opened?.ok) return opened || { ok: false, error: 'немає відповіді від сторінки' };
   await sleep(1200);
   let tab = await chrome.tabs.get(tabId);
@@ -223,7 +230,7 @@ async function sendOne(tabId, site, man) {
   if (tab.status === 'loading') tab = await waitTabComplete(tabId);
   if (left) await sleep(800);
   let res;
-  try { res = await inTab(tabId, 'compose', { site, man }); } catch (e) { res = { ok: false, error: e.message }; }
+  try { res = await inTab(tabId, 'compose', { site, man, dry }); } catch (e) { res = { ok: false, error: e.message }; }
   if (left) {
     // We went to his profile/chat page — return to the list of men.
     await chrome.tabs.update(tabId, { url: before });
@@ -239,7 +246,7 @@ async function run(profileId, tabId) {
   const site = cfg.site.config;
   if (!site.card || !site.cardId || !site.messageInput) throw new Error('Сайт у панелі налаштовано не повністю (картка, ID, поле вводу)');
   await setState({
-    ...EMPTY_STATE, log: state.log, status: 'running', profileId, profileName: cfg.profile.name, siteName: cfg.site.name,
+    ...EMPTY_STATE, log: state.log, status: 'running', test: false, profileId, profileName: cfg.profile.name, siteName: cfg.site.name,
     remaining: cfg.limits.remaining, dailyLimit: cfg.limits.dailyLimit, page: 1, inviteText: cfg.invite.text, startedAt: Date.now(),
   });
   await log(`Старт: ${cfg.profile.name} на «${cfg.site.name}». Ліміт на сьогодні: ${cfg.limits.remaining}`);
@@ -335,19 +342,120 @@ async function run(profileId, tabId) {
   }
 }
 
-async function start(profileId, tabId) {
+const TEST_MEN = 3;
+
+/**
+ * Test mode: walks the whole flow on the real site but never presses "Send".
+ * Nothing is recorded on the server and the daily limit is untouched.
+ */
+async function runTest(profileId, tabId) {
+  const cfg = await api(`/api/bot/profiles/${profileId}/config`);
+  const site = cfg.site.config;
+  if (!site.card || !site.cardId || !site.messageInput) throw new Error('Сайт у панелі налаштовано не повністю (картка, ID, поле вводу)');
+  await setState({
+    ...EMPTY_STATE, log: state.log, status: 'running', test: true, profileId, profileName: cfg.profile.name, siteName: cfg.site.name,
+    page: 1, inviteText: cfg.invite.text, startedAt: Date.now(),
+  });
+  await log(`🧪 Тест-режим: ${cfg.profile.name} на «${cfg.site.name}». Нічого не надсилається, ліміт не витрачається`);
+  const problems = [];
+  const warn = async (text) => log(`⚠ ${text}`, 'warn');
+
+  tabId = await prepareTab(tabId, site);
+  await setState({ tabId });
+
+  // 1. Search page
+  const scan = await inTab(tabId, 'scan', { site });
+  const men = scan?.candidates || [];
+  if (!men.length) {
+    problems.push('На сторінці пошуку не знайдено жодного чоловіка — перевірте «Картка» та «ID»');
+  } else {
+    const sample = men.slice(0, 3).map((c) => `${c.name || '?'}${c.age ? ` ${c.age}` : ''} [${c.id}]`).join('; ');
+    await log(`✓ Пошук: чоловіків на сторінці ${men.length}. Напр.: ${sample}`);
+    if (new Set(men.map((c) => c.id)).size < men.length) problems.push('ID повторюються в різних картках — селектор «ID» бере не те');
+    const noName = men.filter((c) => !c.name).length;
+    const noAge = men.filter((c) => !c.age).length;
+    if (noName) await warn(`Без імені: ${noName} з ${men.length} — перевірте «Ім’я» (без імені інвайт піде без звертання)`);
+    if (site.cardAge && noAge) await warn(`Без віку: ${noAge} з ${men.length} — перевірте «Вік»`);
+  }
+
+  // 2. Writing (without sending)
+  if (men.length && !stopRequested) {
+    const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: men, test: true } });
+    const pick = f.allowed.slice(0, TEST_MEN);
+    if (!pick.length) await warn('Усім чоловікам на цій сторінці анкета вже писала — перевірку відправки пропущено');
+    for (const man of pick) {
+      if (stopRequested) break;
+      await setState({ message: `🧪 Перевіряю: ${man.name || man.id}` });
+      let res;
+      try { res = await sendOne(tabId, site, man, true); } catch (e) { res = { ok: false, error: e.message }; }
+      if (res.ok) {
+        await setState({ sent: state.sent + 1 });
+        await log(`✓ ${man.name || man.id}: чат відкрито, текст вставлено${site.sendButton ? ', «Надіслати» знайдено' : ''} — НЕ надіслано`);
+      } else {
+        await setState({ failed: state.failed + 1 });
+        problems.push(`${man.name || man.id}: ${res.error}`);
+        await log(`✗ ${man.name || man.id}: ${res.error}`, 'warn');
+      }
+      await sleep(1500);
+    }
+  }
+
+  // 3. Next page / infinite feed (checked, not followed)
+  if (men.length && !stopRequested) {
+    const fresh = await inTab(tabId, 'scan', { site });
+    if (site.nextPage) {
+      if (fresh?.hasNext) await log('✓ Кнопка «Наступна сторінка» є');
+      else await warn('Кнопку «Наступна сторінка» не знайдено (або це остання сторінка)');
+    } else {
+      const m = await inTab(tabId, 'more', { site });
+      if (m?.grew) await log(`✓ Список догружається при прокрутці (уже ${m.count})`);
+      else await warn('При прокрутці нові чоловіки не з’явились. Якщо на сайті є сторінки — вкажіть «Наступна сторінка»');
+    }
+  }
+
+  // 4. Inbox
+  if (!stopRequested) {
+    if (!site.inboxUrl || !site.inboxItem) {
+      problems.push('Вхідні не налаштовано — бот не побачить відповідей');
+    } else {
+      try {
+        const r = await scanInbox(site);
+        const names = r.men.slice(0, 5).map((m) => `${m.name || '?'} [${m.id}]`).join(', ');
+        if (r.total) await log(`✓ Вхідні: діалогів ${r.total}, непрочитаних ${r.men.length}${names ? `: ${names}` : ''}`);
+        else await warn('У вхідних не знайдено діалогів. Нормально для нової анкети; інакше перевірте «Діалог у вхідних»');
+      } catch (e) {
+        problems.push(`Вхідні не відкрились: ${e.message}`);
+      }
+    }
+  }
+
+  if (stopRequested) { await log('🧪 Тест перервано'); return; }
+  if (problems.length) {
+    for (const p of problems) await log(`✗ ${p}`, 'error');
+    throw new Error(`тест знайшов проблем: ${problems.length}. Виправте налаштування сайту в панелі й запустіть тест ще раз`);
+  }
+  await setState({ message: 'Тест пройдено. Можна запускати справжню розсилку' });
+  await log('🧪 Тест пройдено ✓ Можна запускати справжню розсилку', 'reply');
+}
+
+async function start(profileId, tabId, test = false) {
   if (running) return;
   running = true;
   stopRequested = false;
   keepAlive(true);
   try {
+    if (test) {
+      await runTest(profileId, tabId);
+      await setState({ status: 'stopped' });
+      return;
+    }
     await run(profileId, tabId);
     await setState({ status: 'stopped', message: 'Зупинено' });
     await heartbeat(true, 'idle');
   } catch (e) {
     await setState({ status: 'error' });
-    await log(`Помилка: ${e.message}`, 'error');
-    await heartbeat(true, 'error');
+    await log(`${test ? '🧪 ' : ''}Помилка: ${e.message}`, 'error');
+    if (!test) await heartbeat(true, 'error');
   } finally {
     running = false;
     keepAlive(false);
@@ -386,10 +494,10 @@ const handlers = {
   async profiles() {
     return api('/api/bot/profiles');
   },
-  async start({ profileId, tabId }) {
+  async start({ profileId, tabId, test }) {
     if (running) throw new Error('Бот уже працює');
     unseenReplies = 0;
-    start(Number(profileId), tabId);
+    start(Number(profileId), tabId, Boolean(test));
     return {};
   },
   async stop() {

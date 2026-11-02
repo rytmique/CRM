@@ -32,3 +32,7 @@ summary { cursor: pointer; font-weight: 600; font-size: 12px; }
 .log .warn { color: var(--warn); } .log .error { color: var(--err); } .log .reply { color: var(--accent); font-weight: 600; }
 a { color: var(--accent); }
 .notice { color: var(--ink); margin: 0; background: var(--soft); border-radius: 8px; padding: 8px 10px; font-size: 12px; } .notice:empty { display: none; }
+.check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.check .muted { font-weight: 400; }
+body.testing .card { border-color: var(--accent); border-style: dashed; }

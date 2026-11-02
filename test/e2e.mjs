@@ -119,6 +119,25 @@ try {
   await popup.waitForSelector('#profile option[value]', { state: 'attached' });
   await popup.selectOption('#profile', String(anna.id));
   await popup.screenshot({ path: path.join(OUT, '10-popup-ready.png') });
+  // ---------- test mode first: the whole flow on the site, but nothing is sent ----------
+  await popup.check('#test-mode');
+  await popup.click('#start');
+  let ts;
+  const tt = Date.now();
+  do { await sleep(1000); ts = await popup.evaluate(async () => (await chrome.storage.local.get('state')).state); }
+  while (!(ts?.test && ['stopped', 'error'].includes(ts.status)) && Date.now() - tt < 90000);
+  await popup.bringToFront();
+  await popup.screenshot({ path: path.join(OUT, '10b-popup-test-mode.png') });
+  if (ts.status !== 'stopped' || !ts.log.some((l) => l.text.includes('Тест пройдено'))) fail(`test mode: ${ts.status}\n${ts.log.map((l) => l.text).join('\n')}`);
+  if (ts.sent !== 3) fail(`test mode checked ${ts.sent} men, expected 3`);
+  const testTab = context.pages().find((p) => p.url().includes('/demo-site/'));
+  const sentInTest = await testTab.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('demo_sent') || '{}')).length);
+  if (sentInTest) fail(`test mode actually sent ${sentInTest} messages`);
+  if ((await api('GET', '/api/stats/overview?days=1', null, owner)).today.sent) fail('test mode recorded sends on the server');
+  await testTab.close();
+  await popup.uncheck('#test-mode');
+  log('test mode ok: 3 men checked end to end, nothing sent, nothing recorded');
+
   // Start from the popup page (its "active tab" is the extension page, so the bot opens the site search in a new tab).
   await popup.click('#start');
   log('bot started');
@@ -128,7 +147,7 @@ try {
   const t0 = Date.now();
   while (Date.now() - t0 < 120000) {
     st = await readState();
-    if (['limit', 'watching', 'error', 'stopped'].includes(st?.status)) break;
+    if (st && !st.test && st.startedAt >= t0 - 5000 && ['limit', 'watching', 'error', 'stopped'].includes(st.status)) break;
     await sleep(1000);
   }
   if (st.status === 'error') fail(`bot error: ${st.message}\n${st.log.map((l) => l.text).join('\n')}`);

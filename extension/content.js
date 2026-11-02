@@ -76,11 +76,32 @@
     }
   }
 
+  /** Test mode: outline an element and show a short label next to it. */
+  function flash(el, label) {
+    if (!el) return;
+    const prev = [el.style.outline, el.style.outlineOffset];
+    el.style.outline = '3px solid #d6336c';
+    el.style.outlineOffset = '2px';
+    let tag;
+    if (label) {
+      const r = el.getBoundingClientRect();
+      tag = document.createElement('div');
+      tag.textContent = label;
+      Object.assign(tag.style, {
+        position: 'fixed', zIndex: 2147483647, left: `${Math.max(4, r.left)}px`, top: `${Math.max(4, r.top - 30)}px`,
+        background: '#d6336c', color: '#fff', font: '600 12px/1.4 system-ui, sans-serif', padding: '4px 8px', borderRadius: '6px', pointerEvents: 'none',
+      });
+      document.documentElement.append(tag);
+    }
+    setTimeout(() => { [el.style.outline, el.style.outlineOffset] = prev; tag?.remove(); }, 2500);
+  }
+
   /** Step 1: click "Write" in the man's card. It may open a box here or go to his profile/chat page. */
-  async function open({ site, man }) {
+  async function open({ site, man, dry }) {
     const card = cardsOf(site).find((c) => c.id === man.id);
     if (!card) return { ok: false, error: 'картку чоловіка не знайдено на сторінці' };
     card.el.scrollIntoView({ block: 'center' });
+    if (dry) { flash(card.el, '🧪 тест: цей чоловік'); await sleep(900); }
     await sleep(300);
     if (!site.openChat) return { ok: true };
     const btn = qs(card.el, site.openChat) || (card.el.matches(site.openChat) ? card.el : null);
@@ -92,13 +113,28 @@
   }
 
   /** Step 2: on whatever page the message box is — paste the text, send, confirm. */
-  async function compose({ site, man }) {
+  async function compose({ site, man, dry }) {
     const input = await waitFor(() => qsa(document, site.messageInput).find(visible));
     if (!input) return { ok: false, error: 'поле вводу не з’явилось' };
     await sleep(400);
     setInputValue(input, man.text);
     await sleep(300);
     if (!valueOf(input).trim()) return { ok: false, error: 'не вдалося вставити текст' };
+
+    if (dry) {
+      // Test mode: check that "Send" is there, show it, then wipe the text — nothing is sent.
+      const btn = site.sendButton ? await waitFor(() => qsa(document, site.sendButton).find((b) => visible(b) && !b.disabled), 4000) : null;
+      if (site.sendButton && !btn) { setInputValue(input, ''); return { ok: false, error: 'кнопка «Надіслати» недоступна' }; }
+      flash(input, '🧪 текст вставлено');
+      await sleep(1200);
+      if (btn) flash(btn, '🧪 тут бот натиснув би «Надіслати»');
+      await sleep(1800);
+      setInputValue(input, '');
+      if (input.isContentEditable) input.textContent = '';
+      if (site.closeChat) qsa(document, site.closeChat).find(visible)?.click();
+      await sleep(300);
+      return { ok: true, dry: true };
+    }
 
     const prevConfirm = new Set(qsa(document, site.sentConfirm));
     if (site.sendButton) {
