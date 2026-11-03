@@ -277,7 +277,7 @@
   function pickField(key, el) {
     const c = ctx.config;
     last[key] = el;
-    if (key === 'card' || key === 'inboxItem') {
+    if (key === 'card' || key === 'inboxItem' || key === 'taskItem') {
       const box = containerFor(el);
       if (!box) throw new Error('не бачу, що картки повторюються. Клікніть на порожнє місце в картці');
       c[key] = box.sel;

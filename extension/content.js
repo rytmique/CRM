@@ -375,8 +375,10 @@
   /** The site's hints "Please write him letter / message". */
   function tasks({ site }) {
     return qsa(document, site.taskItem).filter(visible).map((el, index) => {
-      const nameText = extract(el, site.taskName) || '';
-      const text = extract(el, site.taskText) || (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const all = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      // "Gene, 65" — taught, or found in the hint's own text
+      const nameText = extract(el, site.taskName) || (all.match(/[^\s,][^,]{0,40}?,\s*\d{2}\b/) || [''])[0];
+      const text = extract(el, site.taskText) || all;
       const age = Number.parseInt((nameText.match(/\b(1[89]|[2-9]\d)\b/) || [])[0], 10);
       return {
         index, name: nameText.split(',')[0].trim(), age: Number.isFinite(age) ? age : null,

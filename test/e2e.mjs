@@ -510,6 +510,64 @@ try {
   await popup.click('#test-mode'); // back to normal
   log('full test run ok: hints walked as for real, nothing sent');
 
+  // ---------- 🎯 teach an operator desk by clicking (what an admin does by hand), then the quick test ----------
+  const deskTaught = await api('POST', '/api/sites', { name: 'Робочий стіл (мишкою)', config: { searchUrl: `${BASE}/demo-site/desk.html` } }, owner);
+  await api('PUT', `/api/sites/${deskTaught.id}/scenario`, { scenario: { human: { ...FAST, reactFrom: 0, reactTo: 1, idleChance: 0 } } }, owner);
+  await api('PATCH', `/api/profiles/${kate.id}`, { site_id: deskTaught.id }, owner);
+  await sitePage.goto(`${BASE}/demo-site/desk.html`);
+  const deskTabId = await popup.evaluate(async () => (await chrome.tabs.query({})).find((t) => t.url.includes('desk.html')).id);
+  const tRes = await popup.evaluate(({ pid, tid }) => new Promise((r) => chrome.runtime.sendMessage({ type: 'teach', profileId: pid, tabId: tid }, r)), { pid: kate.id, tid: deskTabId });
+  if (!tRes?.ok) fail(`desk teach: ${tRes?.error}`);
+  await sitePage.bringToFront();
+  const dp = sitePage.locator('#__agency_teach');
+  await dp.locator('.panel').waitFor();
+  const dTab = (name) => dp.getByRole('button', { name: new RegExp(`^${name}`) }).click();
+  const dRow = (label) => dp.locator('.row').filter({ hasText: label });
+  const dPick = async (label, sel, opts) => { await dRow(label).getByRole('button', { name: '🎯 Вибрати' }).click(); await sitePage.click(sel, opts); await sleep(250); };
+  const dFold = () => dp.locator('button[title="Згорнути"]').click();
+  await dTab('Підказки');
+  await dPick('Підказка «напиши йому»', '.task >> nth=1', { position: { x: 6, y: 6 } });
+  await dFold(); await sitePage.click('.task >> nth=1'); await sleep(400); await dFold(); // the operator opens a chat as usual
+  await dTab('Відправка');
+  await dPick('Поле вводу повідомлення', '.tr-dst');
+  await dPick('Кнопка «Надіслати»', '.btn-send');
+  await dPick('Ім’я в шапці відкритого чату', '.ch-name');
+  await dPick('ID у шапці відкритого чату', '.ch-id');
+  await dPick('Лічильник «Залишилося N повідомлень»', '.left-msgs');
+  await dFold(); await sitePage.click('.btn-letter'); await sleep(300); await dFold(); // the operator presses the envelope
+  await dTab('Листи');
+  await dPick('Кнопка «Лист»', '.btn-letter');
+  await dPick('Поле теми листа', '.letter-subject');
+  await dPick('Лічильник «Залишилося N листів»', '.left-letters');
+  await dFold(); await sitePage.click('.btn-chat-mode'); await sleep(300); await dFold();
+  await dTab('Його сторінка');
+  await dPick('Пошук чоловіка за ID', '.find-id');
+  await dTab('Вхідні');
+  await dRow('URL сторінки вхідних').getByRole('button', { name: '📍 Ця сторінка' }).click();
+  await dPick('Діалог у вхідних', '.chat-item >> nth=2', { position: { x: 4, y: 4 } });
+  await dTab('Підказки');
+  await sleep(300);
+  await sitePage.screenshot({ path: path.join(OUT, '29-teach-desk.png') });
+  await dp.getByRole('button', { name: '💾 Зберегти' }).click();
+  await dp.locator('.msg', { hasText: 'Збережено' }).waitFor();
+  await dp.locator('button[title="Закрити"]').click();
+  const dcfg = (await api('GET', '/api/sites', null, owner)).sites.find((x) => x.id === deskTaught.id).config;
+  const dWant = { taskItem: '.task', taskName: '.t-name', taskText: '.t-text', taskOpen: '@self', sendButton: '.btn-send', chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs', inboxItem: '.chat-item' };
+  for (const [k, v] of Object.entries(dWant)) if (dcfg[k] !== v) fail(`desk taught ${k} = ${dcfg[k]}, expected ${v}\n${JSON.stringify(dcfg, null, 1)}`);
+  for (const k of ['messageInput', 'letterOpen', 'letterSubject', 'letterLeft', 'findInput', 'inboxUrl']) if (!dcfg[k]) fail(`desk not taught: ${k}`);
+  await popup.bringToFront(); await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${kate.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(kate.id));
+  if (!(await popup.isChecked('#test-mode'))) await popup.click('#test-mode');
+  if (await popup.isChecked('#test-full')) await popup.click('#test-full');
+  await popup.click('#start');
+  const t8 = Date.now();
+  do { await sleep(1000); st = await readState(); } while (!(st.startedAt >= t8 - 5000 && ['stopped', 'error'].includes(st.status)) && Date.now() - t8 < 180000);
+  const dLog = st.log.map((l) => l.text).join('\n');
+  if (!/Тест пройдено/.test(dLog) || !/Чат з підказки відкрився/.test(dLog)) fail(`desk taught by clicks — test:\n${dLog}`);
+  await popup.click('#test-mode');
+  log('desk taught by clicking ok: hints, chat header, envelope, search by ID, inbox — the quick test passes');
+
   // ---------- 📋 report for the developer: no names, no IDs ----------
   const rep = await popup.evaluate(({ pid }) => new Promise((r) => chrome.tabs.query({}, (tabs) => {
     const t = tabs.find((x) => x.url.includes('/demo-site/desk.html'));
