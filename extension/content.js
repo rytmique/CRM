@@ -158,6 +158,7 @@
     input.dispatchEvent(new Event('input', { bubbles: true }));
     const base = Math.min(60000 / Math.max(60, cpm), 25000 / Math.max(1, text.length));
     for (const ch of text) {
+      if (window.__agencyBotStop) return false; // Stop pressed: leave it, nothing is sent
       const key = { key: ch, bubbles: true };
       input.dispatchEvent(new KeyboardEvent('keydown', key));
       if (input.isContentEditable) document.execCommand('insertText', false, ch);
@@ -171,6 +172,7 @@
     }
     input.dispatchEvent(new Event('change', { bubbles: true }));
     if (norm(valueOf(input)) !== norm(text)) setInputValue(input, text); // the site's editor fought back
+    return true;
   }
 
   function pressEnter(el) {
@@ -237,7 +239,9 @@
     if (!input) return { ok: false, error: 'поле вводу не з’явилось' };
     await sleep(dry ? rand(300, 800) : rand(think[0], think[1]) * 1000);
     if (!man.text) return { ok: true, empty: true }; // a message with files only
-    if (typing && !dry) await typeText(input, man.text, cpm);
+    if (typing && !dry) {
+      if ((await typeText(input, man.text, cpm)) === false) { setInputValue(input, ''); return { ok: false, error: 'зупинено' }; }
+    }
     else setInputValue(input, man.text);
     await sleep(rand(300, 900));
     if (!valueOf(input).trim()) return { ok: false, error: 'не вдалося вставити текст' };
@@ -248,6 +252,7 @@
   /** Press "Send" (or Enter) and wait for the site to confirm. Test mode: only shows the button and wipes the text. */
   async function submit({ site, dry }) {
     const input = qsa(document, site.messageInput).find(visible);
+    if (window.__agencyBotStop && !dry) { if (input) setInputValue(input, ''); return { ok: false, error: 'зупинено' }; }
     if (dry) {
       const btn = site.sendButton ? await waitFor(() => qsa(document, site.sendButton).find((b) => visible(b) && !b.disabled), 4000) : null;
       if (input) setInputValue(input, '');

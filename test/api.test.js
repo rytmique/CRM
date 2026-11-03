@@ -713,10 +713,15 @@ test('setup wizard follows a new operator from nothing to a running bot', async 
   await login('admin7', 'root@test', 'rootpass123');
   await call('POST', '/api/admin/agencies', { name: 'Lotus', ownerName: 'L', ownerEmail: 'owner@lotus', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin7');
   await login('lotus', 'owner@lotus', 'ownerpass1');
-  await call('POST', '/api/operators', { name: 'New', email: 'new@lotus', password: 'newpass1' }, 'lotus');
+  const newOp = (await call('POST', '/api/operators', { name: 'New', email: 'new@lotus', password: 'newpass1' }, 'lotus')).data;
   await login('newop', 'new@lotus', 'newpass1');
   const steps = async () => Object.fromEntries((await call('GET', '/api/stats/setup', undefined, 'newop')).data.steps.map((s) => [s.key, s.done]));
   assert.deepEqual(await steps(), { site: false, profile: false, extension: false, teach: false, test: false, start: false });
+  // a profile on the ready demo site (like the test stand) does not tick the wizard: it is about the real site
+  const demoSite = (await call('GET', '/api/sites', undefined, 'newop')).data.sites.find((x) => x.base_url.includes('/demo-site/'));
+  await call('POST', '/api/profiles', { name: 'Demo girl', site_id: demoSite.id, operator_id: newOp.id }, 'lotus'); // no license taken
+  assert.deepEqual(await steps(), { site: false, profile: false, extension: false, teach: false, test: false, start: false });
+  assert.equal((await call('GET', '/api/stats/setup', undefined, 'newop')).data.demoOnly, true);
 
   const site = (await call('POST', '/api/sites', { name: 'Real site', base_url: 'https://dating.example/', config: { searchUrl: 'https://dating.example/search' } }, 'newop')).data;
   const p = (await call('POST', '/api/profiles', { name: 'Ola', site_id: site.id }, 'newop')).data;
@@ -890,4 +895,14 @@ test('payment for the bot: % of the operator earnings, a bigger sum → a bigger
   // the admin sees what each agency owes
   const all = (await call('GET', `/api/admin/billing?month=${month}`, undefined, 'admin10')).data;
   assert.equal(all.agencies.find((a) => a.id === ag.id).fee, 350);
+});
+
+test('invite variants: two bot starts at once still give 3, not 5', async () => {
+  await login('admin11', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Poppy', ownerName: 'P', ownerEmail: 'owner@poppy', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin11');
+  await login('poppy', 'owner@poppy', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'poppy')).data.sites[0];
+  const p = (await call('POST', '/api/profiles', { name: 'Lida', site_id: site.id, license_id: 'auto' }, 'poppy')).data;
+  await Promise.all([1, 2, 3].map(() => call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'poppy')));
+  assert.equal(inviteStats(db, p.id).length, 3);
 });

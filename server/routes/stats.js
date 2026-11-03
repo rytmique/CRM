@@ -129,12 +129,15 @@ export default function statsRoutes(db) {
     const scope = profileScope(u);
     const profiles = db.prepare(`SELECT p.id, p.name, p.site_id, p.test_at, p.test_ok, p.test_info, p.bot_last_seen, p.status
       FROM profiles p WHERE ${scope.where} ORDER BY p.id DESC`).all(...scope.params);
-    const wanted = Number(req.query.profile_id) || 0;
-    const p = profiles.find((x) => x.id === wanted) || profiles[0] || null;
     const sites = db.prepare('SELECT id, name, base_url, config FROM sites WHERE agency_id = ? ORDER BY id').all(u.agencyId).map((s) => {
       const c = JSON.parse(s.config || '{}');
-      return { id: s.id, name: s.name, demo: String(s.base_url).includes('/demo-site/'), searchUrl: c.searchUrl || '', ready: siteReady(c), config: c };
+      const demo = String(s.base_url).includes('/demo-site/') || String(c.searchUrl || '').includes('/demo-site/');
+      return { id: s.id, name: s.name, demo, searchUrl: c.searchUrl || '', ready: siteReady(c), config: c };
     });
+    // The wizard is about the user's REAL site: demo sites and demo profiles (test stand) never tick its steps by themselves.
+    const onDemo = (x) => !x.site_id || sites.find((s) => s.id === x.site_id)?.demo;
+    const wanted = Number(req.query.profile_id) || 0;
+    const p = profiles.find((x) => x.id === wanted) || profiles.find((x) => !onDemo(x)) || null;
     const site = p?.site_id ? sites.find((s) => s.id === p.site_id) : null;
     const t = now();
     const extension = Boolean(db.prepare(`SELECT 1 FROM sessions s JOIN users x ON x.id = s.user_id
@@ -143,7 +146,7 @@ export default function statsRoutes(db) {
     const sent = p ? db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent'").get(p.id).n : 0;
     const missing = site ? siteMissing(site.config) : [];
     const steps = [
-      { key: 'site', done: sites.some((s) => !s.demo) || Boolean(site) },
+      { key: 'site', done: sites.some((s) => !s.demo) || Boolean(wanted && site) },
       { key: 'profile', done: Boolean(p && site && license?.valid), license: license?.state || 'none' },
       { key: 'extension', done: extension },
       { key: 'teach', done: Boolean(site?.ready), missing },
@@ -153,7 +156,8 @@ export default function statsRoutes(db) {
     res.json({
       steps, done: steps.every((x) => x.done),
       profile: p ? { id: p.id, name: p.name, site_id: p.site_id } : null,
-      profiles: profiles.map((x) => ({ id: x.id, name: x.name })),
+      profiles: profiles.map((x) => ({ id: x.id, name: x.name, demo: Boolean(onDemo(x)) })),
+      demoOnly: profiles.length > 0 && profiles.every(onDemo),
       site: site ? { id: site.id, name: site.name, searchUrl: site.searchUrl, demo: site.demo } : null,
       sites: sites.map(({ config, ...x }) => x),
       role: u.role,

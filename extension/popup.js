@@ -158,7 +158,15 @@ function showLogin(info) {
   $('login-view').hidden = false;
   $('logout').hidden = true;
   $('who').textContent = '';
-  if (!$('server').value) $('server').value = info.defaultServer;
+  // What was typed survives the popup closing (it closes on any click outside)
+  chrome.storage.session.get('loginDraft').then(({ loginDraft: d }) => {
+    $('server').value = d?.server || $('server').value || info.defaultServer;
+    if (d?.email) $('email').value = d.email;
+    if (d?.password) $('password').value = d.password;
+  }).catch(() => { if (!$('server').value) $('server').value = info.defaultServer; });
+}
+for (const id of ['server', 'email', 'password']) {
+  $(id).addEventListener('input', () => chrome.storage.session.set({ loginDraft: { server: $('server').value, email: $('email').value, password: $('password').value } }).catch(() => {}));
 }
 
 async function init() {
@@ -174,6 +182,7 @@ $('login-form').addEventListener('submit', async (e) => {
   try {
     await send('login', { server: $('server').value, email: $('email').value, password: $('password').value });
     $('password').value = '';
+    chrome.storage.session.remove('loginDraft').catch(() => {});
     await init();
   } catch (err) {
     $('login-error').textContent = err.message;
@@ -205,6 +214,14 @@ $('start').addEventListener('click', async () => {
   } catch (e) { $('main-error').textContent = e.message; }
 });
 $('stop').addEventListener('click', () => send('stop').catch((e) => { $('main-error').textContent = e.message; }));
+const SPEED_TEXT = { 1: '🐢🐢 дуже повільно', 2: '🐢 повільно', 3: 'звичайний', 4: '⚡ швидко', 5: '⚡⚡ дуже швидко' };
+const showSpeed = (v) => { $('speed').value = String(v); $('speed-text').textContent = SPEED_TEXT[v] || SPEED_TEXT[3]; };
+chrome.storage.local.get('speed').then(({ speed }) => showSpeed(speed || 3));
+$('speed').addEventListener('input', () => {
+  const v = Number($('speed').value);
+  showSpeed(v);
+  chrome.storage.local.set({ speed: v }); // the running bot picks it up at once
+});
 $('autopilot').addEventListener('change', async () => {
   $('main-error').textContent = '';
   const on = $('autopilot').checked;

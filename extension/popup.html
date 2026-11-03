@@ -15,7 +15,8 @@
 
   <section id="login-view" hidden>
     <form id="login-form">
-      <label>Адреса панелі<input id="server" type="url" required placeholder="https://panel.example.com"></label>
+      <label>Адреса панелі<input id="server" type="text" required placeholder="http://localhost:3001"></label>
+      <p class="muted small">Те, що в рядку браузера панелі, без /demo-site/… (напр. http://localhost:3001)</p>
       <label>Логін (email)<input id="email" type="text" required autocomplete="username"></label>
       <label>Пароль<input id="password" type="password" required autocomplete="current-password"></label>
       <button type="submit" class="primary">Увійти</button>
@@ -36,6 +37,11 @@
     <label class="check sub" id="test-full-row" hidden title="Після перевірки бот проходить до 15 чоловіків як насправді: підказки, сторінки, текст у полі — але нічого не надсилає й не натискає">
       <input type="checkbox" id="test-full">
       <span>Повний прогін <span class="muted">— як насправді, до 15 чоловіків, без відправки</span></span>
+    </label>
+    <label class="speed" title="Множить усі паузи бота й час друку. Швидше — більший ризик, що сайт насторожиться">
+      <span>Темп</span>
+      <input type="range" id="speed" min="1" max="5" step="1" value="3">
+      <b id="speed-text">звичайний</b>
     </label>
     <label class="check" title="Бот сам вмикається в робочі дні й години зі сценарію і сам вимикається після. Браузер має бути відкритий.">
       <input type="checkbox" id="autopilot">

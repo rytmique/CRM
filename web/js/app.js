@@ -159,7 +159,7 @@ async function route() {
   if (!location.hash && session.user.role !== 'admin') {
     try {
       const s = await get('/api/stats/setup');
-      if (s.steps.filter((x) => x.done).length <= 1) key = 'setup';
+      if (!s.profiles.length) key = 'setup'; // nothing yet: start with the wizard
     } catch { /* the dashboard then */ }
   }
   const item = items.find((i) => i[0] === key) || items[0];

@@ -121,7 +121,7 @@ export default function botRoutes(db, cfg) {
 
   r.get('/profiles', (req, res) => {
     const scope = profileScope(req.user);
-    const rows = db.prepare(`SELECT p.id, p.name, p.age, p.photo_url, p.status, p.site_profile_id, p.test_ok, s.name AS site_name, s.base_url, s.config AS site_config
+    const rows = db.prepare(`SELECT p.id, p.name, p.age, p.photo_url, p.status, p.site_profile_id, p.site_id, p.test_ok, s.name AS site_name, s.base_url, s.config AS site_config
       FROM profiles p LEFT JOIN sites s ON s.id = p.site_id WHERE ${scope.where} ORDER BY p.name COLLATE NOCASE`).all(...scope.params);
     const settings = getSettings(db, req.user.agencyId);
     const day = dayKey(now(), settings.timezone);

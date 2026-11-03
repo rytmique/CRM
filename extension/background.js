@@ -25,7 +25,17 @@ let unseenReplies = 0;
 /** The operator's pauses for the current run (seconds, [from, to]) and typing speed. */
 const DEFAULT_PACE = { think: [2, 6], actionGap: [2, 6], pageGap: [3, 8], react: [20, 90], idleChance: 30, cpm: 600 };
 let pace = { ...DEFAULT_PACE };
-const between = ([a, b]) => rand(a, b) * 1000;
+/** The popup's tempo slider: 1 🐢🐢 … 3 normal … 5 ⚡⚡ — multiplies every pause, divides typing time. */
+const SPEED = { 1: 2, 2: 1.5, 3: 1, 4: 0.6, 5: 0.35 };
+let speedMul = 1;
+chrome.storage.local.get('speed').then(({ speed }) => { speedMul = SPEED[speed] || 1; });
+chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.speed) speedMul = SPEED[ch.speed.newValue] || 1; });
+const between = ([a, b]) => rand(a, b) * 1000 * speedMul;
+/** A pause that ends at once when Stop is pressed. */
+async function nap(ms) {
+  const end = Date.now() + ms;
+  while (!stopRequested && Date.now() < end) await sleep(Math.min(250, end - Date.now()));
+}
 
 async function setState(patch) {
   state = { ...state, ...patch };
@@ -141,14 +151,33 @@ function waitForNavigation(tabId, timeout = 30000) {
   });
 }
 
-async function inTab(tabId, cmd, payload) {
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-  const [res] = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (c, p) => window.__agencyBot[c](p),
-    args: [cmd, payload],
-  });
-  return res?.result;
+/** Calls that only read the page: safe to repeat when the page was still changing under them. */
+const READ_ONLY = new Set(['scan', 'probe', 'blocked', 'tasks', 'chatHeader', 'chatIs', 'waitChat', 'leftCount', 'inbox', 'attachedCount', 'attachCheck']);
+const PAGE_GONE = /Frame with ID|was removed|No frame|frame was removed|Receiving end does not exist|The tab was closed|Cannot access contents of the page/i;
+
+async function inTab(tabId, cmd, payload, retry = true) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  } catch (e) {
+    // the page was being replaced while we came in: wait for it and try once more
+    if (!retry || !PAGE_GONE.test(e.message)) throw e;
+    await sleep(800);
+    await waitTabComplete(tabId).catch(() => null);
+    return inTab(tabId, cmd, payload, false);
+  }
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (c, p, stop) => { window.__agencyBotStop = stop; return window.__agencyBot[c](p); },
+      args: [cmd, payload, stopRequested],
+    });
+    return res?.result;
+  } catch (e) {
+    if (!retry || !READ_ONLY.has(cmd) || !PAGE_GONE.test(e.message)) throw e;
+    await sleep(800);
+    await waitTabComplete(tabId).catch(() => null);
+    return inTab(tabId, cmd, payload, false);
+  }
 }
 
 const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
@@ -340,7 +369,7 @@ async function guard(ctx, tabId = ctx.tabId) {
 }
 
 async function pause(limits, slow = 1) {
-  const total = rand(limits.minDelay, limits.maxDelay) * 1000 * slow;
+  const total = rand(limits.minDelay, limits.maxDelay) * 1000 * slow * speedMul;
   const end = Date.now() + total;
   await setState({ status: 'waiting' });
   while (Date.now() < end && !stopRequested) {
@@ -390,10 +419,17 @@ async function checkInbox(site, profileId = state.profileId) {
 const pageKey = (u) => { try { const x = new URL(u); return x.origin + x.pathname + x.search; } catch { return u; } };
 
 async function navigate(tabId, url) {
+  const noHash = (u) => String(u || '').split('#')[0];
   await chrome.tabs.update(tabId, { url });
-  await sleep(500);
+  // wait until the browser really started the new page (or is already on it), then until it has loaded
+  for (let i = 0; i < 40; i++) {
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (!t) throw new Error('Вкладку з сайтом закрито');
+    if (t.status === 'loading' || (noHash(t.url) === noHash(url) && t.status === 'complete' && i > 1)) break;
+    await sleep(150);
+  }
   await waitTabComplete(tabId);
-  await sleep(rand(900, 1700));
+  await nap(rand(900, 1700));
 }
 
 // ---------------- attachments ----------------
@@ -538,7 +574,7 @@ async function writeHere(tabId, site, m, dry, typing) {
     const sj = await inTab(tabId, 'fillSubject', { sel: site.letterSubject, text: subject, dry });
     if (!sj?.ok) return sj || { ok: false, error: 'поле теми листа не знайдено' };
   }
-  const f = await inTab(tabId, 'fill', { site: s, man: m, dry, typing, think: pace.think, cpm: pace.cpm });
+  const f = await inTab(tabId, 'fill', { site: s, man: m, dry, typing, think: pace.think.map((x) => x * speedMul), cpm: pace.cpm / speedMul });
   if (!f?.ok) return f || { ok: false, error: 'немає відповіді від сторінки' };
   const a = m.files?.length ? await attachFiles(tabId, s, m.files, dry).catch((e) => ({ ok: false, error: e.message })) : { ok: true };
   if (site.translateButton) {
@@ -602,8 +638,9 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
   };
   for (const [i, a] of actions.entries()) {
     if (stopRequested || msgError) break;
-    if (i > 0 && !dry) await sleep(between(pace.actionGap)); // like → (pause) → message, as a person would
-    if (a.do === 'pause') { await sleep(a.seconds * 1000); continue; }
+    if (i > 0 && !dry) await nap(between(pace.actionGap)); // like → (pause) → message, as a person would
+    if (stopRequested) break;
+    if (a.do === 'pause') { await nap(a.seconds * 1000 * speedMul); continue; }
     if (a.do === 'view') {
       if (!dry && Math.random() * 100 >= (a.chance ?? 100)) continue;
       if (where === 'card' && !(await goToHim())) { warnings.push('немає посилання на його профіль — перегляд пропущено'); continue; }
@@ -949,7 +986,7 @@ async function run(profileId, tabId) {
       if (await advance(tabId, site)) {
         noGrowth = 0;
         await setState({ page: state.page + 1 });
-        await sleep(between(pace.pageGap));
+        await nap(between(pace.pageGap));
       } else if (site.nextPage) {
         await log('Сторінки закінчились');
         break;
@@ -998,6 +1035,7 @@ async function fullDryRun(ctx, tabId, listUrl) {
   const { site, profileId } = ctx;
   ctx.tabId = tabId;
   const short = (range) => Math.min(TEST_MAX_WAIT, between(range));
+  const sleep = nap; // the test stops at once too
   const stats = { men: 0, chat: 0, letters: 0, errors: 0 };
   const seen = new Set();
   await log(`🧪 Повний прогін: до ${FULL_TEST_MEN} чоловіків, як насправді, але НІЧОГО не надсилаю. Паузи справжні, але не довші 15 с`);
@@ -1366,16 +1404,21 @@ const handlers = {
     return { on: true, schedule: scheduleText(human) };
   },
   async login({ server, email, password }) {
-    const base = String(server || DEFAULT_SERVER).trim().replace(/\/+$/, '');
+    // Only the panel's address counts: "http://localhost:3001/demo-site/desk.html" → "http://localhost:3001"
+    let raw = String(server || DEFAULT_SERVER).trim();
+    if (!/^https?:\/\//i.test(raw)) raw = `http://${raw}`;
+    let base;
+    try { base = new URL(raw).origin; } catch { throw new Error('Невірна адреса панелі. Приклад: http://localhost:3001'); }
     let res;
     try {
       res = await fetch(`${base}/api/auth/login`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password, kind: 'bot' }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: String(email || '').trim(), password, kind: 'bot' }),
       });
     } catch {
-      throw new Error('Сервер недоступний. Перевірте адресу панелі.');
+      throw new Error(`Панель за адресою ${base} не відповідає. Перевірте, що вона запущена (чорне вікно start-test.bat) і адреса та сама, що в браузері панелі.`);
     }
-    const data = await res.json().catch(() => ({}));
+    const data = await res.json().catch(() => null);
+    if (!data) throw new Error(`За адресою ${base} немає панелі. Вкажіть адресу панелі, напр. http://localhost:3001`);
     if (!res.ok) throw new Error(data.error || 'Не вдалося увійти');
     await chrome.storage.local.set({ auth: { server: base, token: data.token, user: data.user } });
     return { user: data.user };
@@ -1400,6 +1443,7 @@ const handlers = {
   },
   async stop() {
     stopRequested = true;
+    if (state.tabId) chrome.scripting.executeScript({ target: { tabId: state.tabId }, func: () => { window.__agencyBotStop = true; } }).catch(() => {});
     await log('Зупиняю…');
     // Stopped by hand during working hours: the autopilot leaves it off until the next working day.
     const ap = await getAutopilot();

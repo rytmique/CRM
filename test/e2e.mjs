@@ -117,7 +117,7 @@ try {
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extId}/popup.html`);
   await popup.waitForSelector('#login-form');
-  await popup.fill('#server', BASE);
+  await popup.fill('#server', `${BASE}/demo-site/desk.html`); // as people type it: a page of the panel, not the panel — must still log in
   await popup.fill('#email', 'ira@e2e');
   await popup.fill('#password', 'ira123');
   await popup.click('#login-form button[type=submit]');

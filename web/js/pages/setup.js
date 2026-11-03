@@ -37,8 +37,10 @@ export default async function setupPage(main, { navigate }) {
     page.replaceChildren(...[
       h('div.page-head', h('h1', '🚀 Підключення'), h('span.muted', `${doneCount} з ${s.steps.length}`)),
       h('div.progress', h('i', { style: `width:${Math.round((doneCount / s.steps.length) * 100)}%` })),
+      s.demoOnly && !s.profile ? h('div.callout', '🧪 Анкети, що вже є (', s.profiles.map((p) => p.name).join(', '), '), — на демо-сайтах, для проби. Майстер рахує лише ваш справжній сайт: почніть з кроку 1.') : null,
       s.profiles.length > 1 ? h('div.row-wrap', h('span.small.muted', 'Анкета:'), h('select', { onchange: (e) => { profileId = Number(e.target.value); openKey = null; load(true); } },
-        s.profiles.map((p) => h('option', { value: p.id, selected: p.id === s.profile?.id }, p.name)))) : null,
+        !s.profile ? h('option', { value: '', selected: true }, '— ваша справжня анкета ще не створена —') : null,
+        s.profiles.map((p) => h('option', { value: p.id, selected: p.id === s.profile?.id }, `${p.name}${p.demo ? ' (демо)' : ''}`)))) : null,
       s.done && !openKey ? h('section.card.setup-done',
         h('h2', '🎉 Готово — бот працює'),
         h('p', 'Далі все саме: бот пише новим чоловікам, робить повторні спроби, а ви відповідаєте тим, хто відповів (прийде сповіщення).'),

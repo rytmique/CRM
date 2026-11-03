@@ -81,7 +81,15 @@ export function bestOf(variants) {
  * Keeps `settings.ai.variants` live variants: retires the clearly worse ones, writes new ones.
  * Returns what changed, for the log.
  */
+const busy = new Set(); // profiles being optimized right now: two calls at once must not both add variants
+
 export async function optimizeProfile(db, profile, settings) {
+  if (busy.has(profile.id)) return { retired: [], added: [] };
+  busy.add(profile.id);
+  try { return await optimizeOnce(db, profile, settings); } finally { busy.delete(profile.id); }
+}
+
+async function optimizeOnce(db, profile, settings) {
   const want = Math.max(1, Math.min(5, Number(settings.ai.variants) || 1));
   const live = inviteStats(db, profile.id);
   const out = { retired: [], added: [] };
@@ -100,6 +108,7 @@ export async function optimizeProfile(db, profile, settings) {
   if (settings.ai.autoOptimize === false && still >= 1) return out;
   for (let n = still; n < want; n++) {
     const texts = inviteStats(db, profile.id).map((v) => v.text);
+    if (texts.length >= want) break; // counted again: something else may have added one meanwhile
     const gen = await generateInvite({
       profile, settings, previous: texts.join('\n---\n'),
       bestExample: best && best.replies > 0 ? best.text : '',
