@@ -105,6 +105,21 @@ export function siteMissing(c = {}) {
 /** Fills {id} in a URL template. */
 export const fillUrl = (tpl, id) => (tpl ? String(tpl).replaceAll('{id}', encodeURIComponent(id)) : '');
 
+/** The demo "operator desk" (demo-site/desk.html): the site's hints, ID only in the chat header, letters, counters. */
+export function deskSiteConfig(publicUrl) {
+  const base = `${publicUrl.replace(/\/$/, '')}/demo-site`;
+  return {
+    searchUrl: `${base}/desk.html`,
+    taskItem: '.task', taskName: '.t-name', taskText: '.t-text', taskOpen: '@self',
+    messageInput: '.tr-dst', sendButton: '.btn-send', sentConfirm: '.chat .sent-ok', sendError: '.chat .send-error',
+    chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs', translateButton: '.btn-translate',
+    letterOpen: '.btn-letter', letterSubject: '.letter-subject', letterLeft: '.left-letters',
+    findInput: '.find-id', inboxUrl: `${base}/desk.html`, inboxItem: '.chat-item', inboxUnread: '.ci-unread', inboxName: '.ci-name', inboxText: '.ci-last',
+    actions: [{ key: 'like', name: 'Лайк', sel: '.btn-like', where: 'page' }],
+    marks: [],
+  };
+}
+
 export function demoSiteConfig(publicUrl) {
   const base = `${publicUrl.replace(/\/$/, '')}/demo-site`;
   return {

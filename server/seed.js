@@ -5,6 +5,7 @@ import { insertInvite, getSettings } from './services.js';
 import { templateInvite } from './ai.js';
 import { dayKey } from './util.js';
 import { sanitizeScenario } from './scenario.js';
+import { deskSiteConfig } from './sites.js';
 
 const DAY = 86400000;
 
@@ -80,6 +81,23 @@ export function seedTestData(db, cfg, { password = 'test12345' } = {}) {
       ],
       human: { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: true, spread: false },
     })), site.id);
+  }
+  // "Робочий стіл" like the user's site: hints → chat or letter, ID from the chat header — ready to run.
+  if (site) {
+    const deskId = Number(db.prepare('INSERT INTO sites (agency_id, name, base_url, config, scenario, created_at) VALUES (?,?,?,?,?,?)').run(
+      agencyId, 'Демо: робочий стіл (як у вас)', `${cfg.publicUrl.replace(/\/$/, '')}/demo-site/`, JSON.stringify(deskSiteConfig(cfg.publicUrl)),
+      JSON.stringify(sanitizeScenario({
+        steps: [{ actions: [{ do: 'message', text: 'invite' }] }, { wait: 0.05, actions: [{ do: 'message', text: 'followup' }] }],
+        human: { windows: '0-24', perHour: 0, breakEvery: 0, typing: true, spread: false, reactFrom: 5, reactTo: 15, idleChance: 20, thinkFrom: 1, thinkTo: 3, actionGapFrom: 1, actionGapTo: 3 },
+      })), t0).lastInsertRowid);
+    const olena = { name: 'Olena', age: 31, city: 'Kharkiv', country: 'Ukraine', interests: 'books, cooking, long walks', looking_for: 'a warm and reliable man',
+      bio: 'Teacher of English, loves cosy evenings with a good book.' };
+    const keys = [...Object.keys(olena), 'agency_id', 'operator_id', 'site_id', 'daily_limit', 'min_delay', 'max_delay', 'created_at'];
+    const vals = [...Object.values(olena), agencyId, operatorId, deskId, 10, 5, 10, t0];
+    const oid = Number(db.prepare(`INSERT INTO profiles (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`).run(...vals).lastInsertRowid);
+    const l = licenses[2];
+    if (l) db.prepare('UPDATE licenses SET profile_id = ?, activated_at = ?, expires_at = ? WHERE id = ?').run(oid, t0, t0 + l.days * DAY, l.id);
+    insertInvite(db, { profileId: oid, text: templateInvite(olena), source: 'template', userId: operatorId });
   }
   return { owner: 'owner@test', operator: 'operator@test', password };
 }
