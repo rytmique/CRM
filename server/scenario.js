@@ -31,6 +31,8 @@ export const DEFAULT_SCENARIO = Object.freeze({
     thinkFrom: 2, thinkTo: 6, // after his chat opened, before typing
     actionGapFrom: 2, actionGapTo: 6, // between actions of a step (like → message)
     pageGapFrom: 3, pageGapTo: 8, // before the next page of the list
+    reactFrom: 20, reactTo: 90, // the site hinted "write him": a person does not jump at it in a second
+    idleChance: 30, // % — between men sometimes just scroll the list and look around, like a person
   },
   afterReply: { attempts: 10, silenceHours: 48, everyHours: 48 },
 });
@@ -126,6 +128,8 @@ export function sanitizeScenario(input) {
       ...pair(hm, 'think', 0, 120, d),
       ...pair(hm, 'actionGap', 0, 300, d),
       ...pair(hm, 'pageGap', 0, 600, d),
+      ...pair(hm, 'react', 0, 1800, d),
+      idleChance: Math.round(num(hm.idleChance, 0, 100, d.idleChance)),
       typing: hm.typing === undefined ? d.typing : Boolean(hm.typing),
       // working days, 1 = Monday … 7 = Sunday (agency time zone); none picked = every day
       days: (() => {

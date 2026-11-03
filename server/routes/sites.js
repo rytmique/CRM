@@ -3,14 +3,14 @@ import { requireRole } from '../auth.js';
 import { now } from '../db.js';
 import { notFound, forbidden, str } from '../util.js';
 import { canEditSite } from '../services.js';
-import { SITE_FIELDS, sanitizeSiteConfig, demoSiteConfig } from '../sites.js';
+import { SITE_FIELDS, sanitizeSiteConfig, demoSiteConfig, siteReady } from '../sites.js';
 import { siteScenario, sanitizeScenario, DEFAULT_SCENARIO } from '../scenario.js';
 
 export default function siteRoutes(db, cfg) {
   const r = Router();
 
   const out = (s, user) => ({
-    ...s, config: JSON.parse(s.config || '{}'), scenario: siteScenario(s), customScenario: Boolean(s.scenario),
+    ...s, config: JSON.parse(s.config || '{}'), scenario: siteScenario(s), customScenario: Boolean(s.scenario), ready: siteReady(JSON.parse(s.config || '{}')),
     can_edit: canEditSite(db, user, s), can_delete: user.role === 'owner',
   });
 

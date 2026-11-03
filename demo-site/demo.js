@@ -257,11 +257,141 @@ function captcha() {
   document.body.append(box);
 }
 
+// ---------- operator desk (desk.html): chat list, the open chat, the site's "write him" hints ----------
+const allMen = () => Array.from({ length: PER_PAGE * PAGES }, (_, i) => man(i));
+const label = (m) => `${m.name}, ${m.age}`;
+
+/** Hints the "site" gives: 5 men from the last pages; the 2nd is a glitch that opens another man's chat. */
+function deskTasks() {
+  let t = store.get('demo_tasks', null);
+  if (!t) {
+    const men = allMen();
+    const pick = [20, 22, 25, 27, 29].map((i) => men[i]);
+    const first = (m) => m.name.split('_')[0].toLowerCase();
+    const other = men.slice(23).find((m) => first(m) !== first(pick[1]) && !pick.includes(m));
+    t = pick.map((m, i) => ({ id: m.id, via: i === 2 || i === 4 ? 'letter' : 'chat', opens: i === 1 ? other.id : m.id, at: Date.now() - (5 - i) * 600000 }));
+    store.set('demo_tasks', t);
+  }
+  return t;
+}
+
+function renderDesk() {
+  const men = allMen();
+  const byId = (id) => men.find((m) => m.id === id) || { id, name: id, age: '' };
+  const box = document.querySelector('.chat');
+  let current = null;
+  const left = (id) => ({
+    msgs: Math.max(0, MSGS_PER_MAN - (store.get('demo_sent', {})[id]?.count || 0)),
+    letters: Math.max(0, LETTERS_PER_MAN - (store.get('demo_letters', {})[id]?.count || 0)),
+  });
+
+  function showMode() {
+    const letter = box.dataset.mode === 'letter';
+    const l = current ? left(current.id) : { msgs: 0, letters: 0 };
+    box.querySelector('.left-msgs').textContent = `Залишилося ${l.msgs} повідомлень`;
+    box.querySelector('.left-letters').textContent = `Залишилося ${l.letters} листів`;
+    box.querySelector('.left-msgs').hidden = letter;
+    box.querySelector('.left-letters').hidden = !letter;
+    box.querySelector('.letter-subject').hidden = !letter;
+  }
+
+  function openChat(id) {
+    current = byId(id);
+    box.dataset.mode = 'chat';
+    box.querySelector('.ch-name').textContent = label(current);
+    box.querySelector('.ch-id').textContent = `ID ${current.id}`;
+    const sent = store.get('demo_sent', {})[id];
+    box.querySelector('.msgs').replaceChildren(...(sent?.history || []).map((t) => el('div', { class: 'msg' }, t)));
+    box.querySelector('.status').innerHTML = '';
+    const read = store.get('demo_read', {});
+    read[id] = true;
+    store.set('demo_read', read);
+    showMode();
+    renderList();
+  }
+
+  function renderList() {
+    const sent = store.get('demo_sent', {});
+    const letters = store.get('demo_letters', {});
+    const read = store.get('demo_read', {});
+    const q = document.querySelector('.find-id').value.trim();
+    const ids = [...new Set([...deskTasks().map((t) => t.opens), ...deskTasks().map((t) => t.id), ...Object.keys(sent), ...Object.keys(letters)])]
+      .filter((id) => !q || id.includes(q));
+    document.querySelector('.chat-list').replaceChildren(...ids.map((id) => {
+      const m = byId(id);
+      const h = hash('reply' + id);
+      const first = sent[id]?.first || sent[id]?.at;
+      const replied = first && h % 10 < 4 && Date.now() - first > 4000 + (h % 8000);
+      const item = el('div', { class: `chat-item${current?.id === id ? ' on' : ''}` },
+        el('img', { src: `avatars/${id}.png`, alt: m.name[0] }),
+        el('div', {}, el('div', { class: 'ci-name' }, label(m)), el('div', { class: 'ci-last' }, replied ? REPLIES[h % REPLIES.length].slice(0, 40) : sent[id] ? `You: ${sent[id].text.slice(0, 30)}…` : '—')),
+        replied && !read[id] ? el('span', { class: 'ci-unread' }, 'new') : '');
+      item.addEventListener('click', () => openChat(id));
+      return item;
+    }));
+  }
+
+  function renderTasks() {
+    const t = deskTasks();
+    document.querySelector('.tasks').replaceChildren(...t.map((x) => {
+      const m = byId(x.id);
+      const item = el('div', { class: 'task' },
+        el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
+        el('div', {}, el('div', { class: 't-name' }, label(m)), el('div', { class: 't-text' }, `Please write him ${x.via === 'letter' ? 'letter' : 'message'}`)),
+        el('span', { class: 't-time' }, new Date(x.at).toTimeString().slice(0, 5)));
+      item.addEventListener('click', () => openChat(x.opens)); // the glitch hint opens somebody else
+      return item;
+    }));
+  }
+
+  document.querySelector('.find-id').addEventListener('input', renderList);
+  box.querySelector('.btn-letter').addEventListener('click', () => { box.dataset.mode = 'letter'; showMode(); });
+  box.querySelector('.btn-chat-mode').addEventListener('click', () => { box.dataset.mode = 'chat'; showMode(); });
+  box.querySelector('.btn-like').addEventListener('click', () => {
+    if (!current) return;
+    const l = store.get('demo_likes', {});
+    l[current.id] = (l[current.id] || 0) + 1;
+    store.set('demo_likes', l);
+  });
+  box.querySelector('.btn-translate').addEventListener('click', () => {
+    const src = box.querySelector('.tr-src').value.trim();
+    if (src) box.querySelector('.tr-dst').value = `[EN] ${src}`;
+    box.dataset.translated = '1';
+  });
+  box.querySelector('.btn-send').addEventListener('click', () => {
+    const status = box.querySelector('.status');
+    const text = box.querySelector('.tr-dst').value.trim();
+    const letter = box.dataset.mode === 'letter';
+    if (!current) { status.innerHTML = '<span class="send-error">Open a chat first</span>'; return; }
+    if (!text) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    if ((letter ? left(current.id).letters : left(current.id).msgs) === 0) { status.innerHTML = '<span class="send-error">Nothing left for this man</span>'; return; }
+    const id = current.id;
+    const translated = box.dataset.translated === '1';
+    delete box.dataset.translated;
+    setTimeout(() => {
+      if (letter) recordLetter(id, box.querySelector('.letter-subject').value.trim(), text, [], translated);
+      else recordSent(id, text, [], translated);
+      store.set('demo_tasks', deskTasks().filter((x) => x.id !== id)); // the hint is done
+      box.querySelector('.tr-dst').value = '';
+      box.querySelector('.tr-src').value = '';
+      box.querySelector('.letter-subject').value = '';
+      status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
+      openChat(id);
+      box.querySelector('.status').innerHTML = '<span class="sent-ok">✓ Sent</span>';
+      renderTasks();
+    }, 400);
+  });
+  renderTasks();
+  renderList();
+  showMode();
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   captcha();
+  if (document.querySelector('.desk')) renderDesk();
   if (document.getElementById('profile-chat')) renderProfile();
   if (document.getElementById('results')) { renderSearch(); initModal(); }
   if (document.getElementById('dialogs')) renderInbox();
   const reset = document.getElementById('reset');
-  reset?.addEventListener('click', () => { for (const k of ['demo_sent', 'demo_read', 'demo_likes', 'demo_letters']) localStorage.removeItem(k); location.reload(); });
+  reset?.addEventListener('click', () => { for (const k of ['demo_sent', 'demo_read', 'demo_likes', 'demo_letters', 'demo_tasks']) localStorage.removeItem(k); location.reload(); });
 });

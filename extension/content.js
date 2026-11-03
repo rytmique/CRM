@@ -208,7 +208,8 @@
     await sleep(rand(400, 900));
     if (dry) { flash(card.el, '🧪 тест: цей чоловік'); await sleep(900); }
     if (!site.openChat) return { ok: true };
-    const btn = qs(card.el, site.openChat) || (selfMatch(card.el, site.openChat) ? card.el : null);
+    // "@self": the card itself opens his chat (chat lists of operator desks)
+    const btn = site.openChat === '@self' ? card.el : qs(card.el, site.openChat) || (selfMatch(card.el, site.openChat) ? card.el : null);
     if (!btn) return { ok: false, error: 'кнопку «Написати» не знайдено' };
     const link = btn.closest('a[target]');
     if (link) link.removeAttribute('target'); // keep the bot in the same tab
@@ -345,6 +346,93 @@
     return { ok: true };
   }
 
+  // ---------- operator desks: one page with a chat list, the open chat and the site's "write him" hints ----------
+  const firstName = (s) => norm(String(s || '').split(',')[0]).split(' ')[0];
+  const DIGITS = /\d{5,}/;
+
+  /** Who is in the open chat (its header). */
+  function chatHeader({ site }) {
+    const name = site.chatName ? (qsa(document, site.chatName).find(visible)?.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    const idText = site.chatId ? (qsa(document, site.chatId).find(visible)?.textContent || '') : '';
+    return { name, id: (idText.match(DIGITS) || [''])[0] };
+  }
+
+  /** Safety: is the open chat really his? (by ID when both are known, else by first name) */
+  function chatIs({ site, name, id }) {
+    if (!site.chatName && !site.chatId) return { ok: true, unknown: true };
+    const h = chatHeader({ site });
+    if (id && h.id) return { ok: h.id === String(id), ...h };
+    if (name && h.name) return { ok: norm(h.name).includes(firstName(name)), ...h };
+    return { ok: Boolean(h.name || h.id), ...h };
+  }
+
+  async function waitChat({ site, name, id }, timeout = 8000) {
+    if (!site.chatName && !site.chatId) { await sleep(rand(600, 1200)); return { ok: true, unknown: true }; }
+    const r = await waitFor(() => { const c = chatIs({ site, name, id }); return c.ok && (c.name || c.id) ? c : null; }, timeout, 200);
+    return r || { ok: false, ...chatHeader({ site }) };
+  }
+
+  /** The site's hints "Please write him letter / message". */
+  function tasks({ site }) {
+    return qsa(document, site.taskItem).filter(visible).map((el, index) => {
+      const nameText = extract(el, site.taskName) || '';
+      const text = extract(el, site.taskText) || (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const age = Number.parseInt((nameText.match(/\b(1[89]|[2-9]\d)\b/) || [])[0], 10);
+      return {
+        index, name: nameText.split(',')[0].trim(), age: Number.isFinite(age) ? age : null,
+        id: site.taskId ? normId(extract(el, site.taskId)) : '',
+        via: /letter|лист|письм/i.test(text) ? 'letter' : 'chat', text: text.slice(0, 120),
+      };
+    }).filter((t) => t.name || t.id);
+  }
+
+  /** Opens the hinted man's chat and tells who opened (his ID from the header if the hint had none). */
+  async function openTask({ site, task, dry }) {
+    const el = qsa(document, site.taskItem).filter(visible).find((x, i) => i === task.index && (!task.name || norm(x.textContent).includes(norm(task.name))))
+      || qsa(document, site.taskItem).filter(visible).find((x) => task.name && norm(x.textContent).includes(norm(task.name)));
+    if (!el) return { ok: false, error: 'підказка зникла' };
+    const target = site.taskOpen && site.taskOpen !== '@self' ? qs(el, site.taskOpen) || el : el;
+    if (dry) flash(el, '🧪 підказка сайту');
+    await humanClick(target);
+    const c = await waitChat({ site, name: task.name, id: task.id });
+    if (!c.ok) return { ok: false, wrongChat: true, error: `відкрився чат іншого чоловіка (${c.name || c.id || 'невідомо'}) — не пишу` };
+    return { ok: true, id: task.id || c.id || '', name: task.name || firstName(c.name) };
+  }
+
+  /** No page of his own: type his ID into the site's search and open his chat. */
+  async function findMan({ site, id, name }) {
+    const input = qsa(document, site.findInput).find(visible);
+    if (!input) return { ok: false, error: 'поле пошуку за ID не знайдено' };
+    input.focus();
+    setInputValue(input, '');
+    await sleep(rand(200, 500));
+    setInputValue(input, String(id));
+    pressEnter(input);
+    const pick = site.findResult || site.inboxItem || site.card;
+    const item = await waitFor(() => qsa(document, pick).find(visible), 6000, 200);
+    if (!item) return { ok: false, error: `за ID ${id} нікого не знайдено` };
+    await sleep(rand(400, 900));
+    await humanClick(item);
+    const c = await waitChat({ site, name, id });
+    if (!c.ok) return { ok: false, wrongChat: true, error: `за ID ${id} відкрився чужий чат — не пишу` };
+    return { ok: true };
+  }
+
+  /** Between men: scroll the list a bit and look around, like a person (opens nothing, so unread stays unread). */
+  async function idle({ site, seconds = 8 }) {
+    const list = qsa(document, site.inboxItem || site.card || site.taskItem).filter(visible);
+    const box = list[0]?.parentElement;
+    const end = Date.now() + seconds * 1000;
+    while (Date.now() < end) {
+      if (box && box.scrollHeight > box.clientHeight) box.scrollBy({ top: rand(-200, 260), behavior: 'smooth' });
+      else window.scrollBy({ top: rand(-200, 260), behavior: 'smooth' });
+      const it = list[Math.floor(Math.random() * list.length)];
+      if (it) for (const type of ['pointerover', 'mouseover', 'mousemove']) it.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+      await sleep(rand(900, 2200));
+    }
+    return { ok: true };
+  }
+
   /** The site's own counter ("Залишилося 9 повідомлень"): the number, or null when there is no counter here. */
   function leftCount({ sel }) {
     const el = qsa(document, sel).find(visible);
@@ -408,7 +496,8 @@
     const unread = items.filter((it) => !site.inboxUnread || selfMatch(it, site.inboxUnread) || qs(it, site.inboxUnread));
     return {
       total: items.length,
-      men: unread.map((it) => ({ id: normId(extract(it, site.inboxId)), name: extract(it, site.inboxName), text: site.inboxText ? extract(it, site.inboxText) : '' })).filter((m) => m.id),
+      // No ID in the list (some sites show it only in the open chat): the server matches the dialog by his name.
+      men: unread.map((it) => ({ id: normId(extract(it, site.inboxId)), name: extract(it, site.inboxName), text: site.inboxText ? extract(it, site.inboxText) : '' })).filter((m) => m.id || m.name),
     };
   }
 
@@ -448,6 +537,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

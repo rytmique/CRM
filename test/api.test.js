@@ -723,7 +723,7 @@ test('setup wizard follows a new operator from nothing to a running bot', async 
   assert.deepEqual(await steps(), { site: true, profile: true, extension: false, teach: false, test: false, start: false });
   const setup = (await call('GET', '/api/stats/setup', undefined, 'newop')).data;
   assert.equal(setup.site.searchUrl, 'https://dating.example/search');
-  assert.ok(setup.steps.find((s) => s.key === 'teach').missing.length >= 3);
+  assert.ok(setup.steps.find((s) => s.key === 'teach').missing.length >= 2);
 
   await login('newopbot', 'new@lotus', 'newpass1', 'bot'); // logged in from the extension
   assert.equal((await steps()).extension, true);
@@ -787,4 +787,46 @@ test('letters, the site counters, more pauses and several work windows', async (
   const a1 = await call('POST', `/api/bot/profiles/${p.id}/alert`, { text: 'Сайт показав капчу' }, 'aster');
   assert.equal(a1.status, 200);
   assert.equal(a1.data.sent, false);
+});
+
+test('operator desk: the site hint decides chat or letter; replies matched by name when the list has no IDs', async () => {
+  await login('admin9', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Iris2', ownerName: 'I', ownerEmail: 'owner@iris2', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin9');
+  await login('iris2', 'owner@iris2', 'ownerpass1');
+  const site = (await call('POST', '/api/sites', { name: 'Desk', config: {
+    searchUrl: 'https://desk.example/desk', taskItem: '.task', taskName: '.t-name', taskText: '.t-text', taskOpen: '@self',
+    messageInput: '.tr-dst', chatName: '.ch-name', chatId: '.ch-id', findInput: '.find-id', inboxItem: '.chat-item', inboxName: '.ci-name',
+  } }, 'iris2')).data;
+  const listed = (await call('GET', '/api/sites', undefined, 'iris2')).data.sites.find((s) => s.id === site.id);
+  assert.equal(listed.ready, true, 'hints + a chat box are enough, no cards needed');
+  const p = (await call('POST', '/api/profiles', { name: 'Zoya', site_id: site.id, license_id: 'auto' }, 'iris2')).data;
+  const cfg = (await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'iris2')).data;
+  assert.equal(cfg.site.config.taskOpen, '@self');
+  assert.ok((await call('GET', `/api/profiles/${p.id}`, undefined, 'iris2')).data.letter, 'letter text ready: hints may ask for letters');
+
+  // "Please write him letter" → the first message goes as a letter, with the letter text
+  const f = (await call('POST', `/api/bot/profiles/${p.id}/filter`, { candidates: [
+    { id: '1787395165', name: 'Pablo', age: 58, via: 'letter' },
+    { id: '1901360240', name: 'Bob', age: 65, via: 'chat' },
+  ] }, 'iris2')).data;
+  const [pablo, bob] = f.allowed;
+  assert.equal(pablo.actions[0].via, 'letter');
+  assert.match(pablo.actions[0].text, /^Hello Pablo!/);
+  assert.ok(pablo.actions[0].text.length > 300);
+  assert.equal(bob.actions[0].via, 'chat');
+  assert.doesNotMatch(bob.actions[0].text, /^Hello Bob!\n/);
+
+  // follow-ups need no page of his own: he is found by ID in the chat list
+  await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: pablo, ok: true, text: 'x' }, 'iris2');
+  await call('PUT', `/api/sites/${site.id}/scenario`, { scenario: { steps: [{ actions: [{ do: 'message', text: 'invite' }] }, { wait: 0, actions: [{ do: 'message', text: 'followup' }] }] } }, 'iris2');
+  db.prepare('UPDATE messages SET next_at = 1 WHERE profile_id = ?').run(p.id);
+  const due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'iris2')).data;
+  assert.equal(due.men.length, 1);
+  assert.equal(due.men[0].url, '', 'no URL: the bot will search his ID');
+  assert.equal(due.noManUrl, false);
+
+  // the chat list shows "Pablo, 58" and no ID: the reply is matched by name
+  const r = (await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '', name: 'Pablo, 58', text: 'Hi Zoya!' }] }, 'iris2')).data;
+  assert.equal(r.new, 1);
+  assert.equal(r.men[0].id, '1787395165');
 });

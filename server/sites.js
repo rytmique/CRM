@@ -10,23 +10,30 @@
  */
 export const SITE_FIELDS = [
   { key: 'searchUrl', group: 'Пошук', label: 'URL сторінки пошуку чоловіків', hint: 'Звідси бот починає розсилку' },
-  { key: 'card', group: 'Пошук', label: 'Картка чоловіка', hint: 'CSS-селектор одного чоловіка у видачі', required: true },
-  { key: 'cardId', group: 'Пошук', label: 'ID чоловіка', hint: '@data-id або a@href. Якщо в значенні є число з 5+ цифр — ID буде саме воно', required: true },
+  { key: 'card', group: 'Пошук', label: 'Картка чоловіка', hint: 'Один чоловік у видачі або в списку чатів. Не потрібна, якщо сайт сам дає підказки «напиши йому»' },
+  { key: 'cardId', group: 'Пошук', label: 'ID чоловіка', hint: '@data-id або a@href. Якщо в значенні є число з 5+ цифр — ID буде саме воно. Немає в картці — заповніть «ID у шапці відкритого чату»' },
   { key: 'cardName', group: 'Пошук', label: 'Ім’я', hint: '.name' },
   { key: 'cardAge', group: 'Пошук', label: 'Вік', hint: '.age (з тексту береться перше число)' },
   { key: 'cardCountry', group: 'Пошук', label: 'Країна', hint: '.country' },
   { key: 'nextPage', group: 'Пошук', label: 'Кнопка «Наступна сторінка»', hint: 'Якщо порожньо — бот гортає список вниз (нескінченна стрічка)' },
-  { key: 'openChat', group: 'Відправка', label: 'Кнопка «Написати» в картці', hint: 'Якщо порожньо — поле вводу шукається одразу', required: true },
+  { key: 'openChat', group: 'Відправка', label: 'Кнопка «Написати» в картці', hint: '@self — клік по самій картці. Порожньо — поле вводу шукається одразу' },
   { key: 'messageInput', group: 'Відправка', label: 'Поле вводу повідомлення', hint: 'textarea / input / [contenteditable]', required: true },
   { key: 'sendButton', group: 'Відправка', label: 'Кнопка «Надіслати»', hint: 'Якщо порожньо — натискається Enter', required: false },
   { key: 'attachButton', group: 'Відправка', label: 'Кнопка «Прикріпити файл» (скрепка)', hint: 'Потрібна, якщо в сценарії є файли. Бот не відкриває вікно вибору — підставляє файл сам' },
   { key: 'attachDone', group: 'Відправка', label: 'Ознака, що файл прикріпився', hint: 'Необов’язково: прев’ю фото в чаті. Бот дочекається його перед «Надіслати»' },
   { key: 'fileInput', group: 'Відправка', label: 'Поле файлу (input type=file)', hint: 'Зазвичай знаходиться само. Заповнюйте, лише якщо бот не може прикріпити' },
+  { key: 'chatName', group: 'Відправка', label: 'Ім’я в шапці відкритого чату', hint: 'Запобіжник: бот пише, лише якщо тут ім’я саме цього чоловіка' },
+  { key: 'chatId', group: 'Відправка', label: 'ID у шапці відкритого чату', hint: 'Якщо в картці немає ID — бот візьме його звідси (число з 5+ цифр)' },
   { key: 'translateButton', group: 'Відправка', label: 'Кнопка «Перекласти»', hint: 'Необов’язково: якщо сайт перекладає текст — бот натисне її після тексту й зачекає переклад' },
   { key: 'chatLeft', group: 'Відправка', label: 'Лічильник «Залишилося N повідомлень»', hint: 'Необов’язково: бот читає число в чаті; 0 — цьому чоловіку в чат більше не пише' },
   { key: 'sentConfirm', group: 'Відправка', label: 'Ознака успішної відправки', hint: 'Необов’язково: елемент, що з’являється після відправки' },
   { key: 'sendError', group: 'Відправка', label: 'Ознака помилки відправки', hint: 'Необов’язково: напр. «немає кредитів», «ліміт»' },
   { key: 'closeChat', group: 'Відправка', label: 'Закрити вікно чату', hint: 'Необов’язково' },
+  { key: 'taskItem', group: 'Підказки сайту', label: 'Підказка «напиши йому» (одна)', hint: 'Сайт сам підкидає чоловіків — бот бере їх звідси першими' },
+  { key: 'taskName', group: 'Підказки сайту', label: 'Ім’я в підказці', hint: '.name' },
+  { key: 'taskText', group: 'Підказки сайту', label: 'Текст підказки', hint: 'Є «letter» / «лист» — бот пише листом, інакше в чат' },
+  { key: 'taskId', group: 'Підказки сайту', label: 'ID у підказці', hint: 'Необов’язково: якщо немає — бот візьме ID з шапки чату' },
+  { key: 'taskOpen', group: 'Підказки сайту', label: 'Що клікнути в підказці', hint: 'Порожньо — саму підказку' },
   { key: 'letterOpen', group: 'Листи', label: 'Кнопка «Лист» (конверт)', hint: 'Відкриває лист у його чаті або на його сторінці' },
   { key: 'letterSubject', group: 'Листи', label: 'Поле теми листа', hint: 'Необов’язково, якщо в листа є тема' },
   { key: 'letterInput', group: 'Листи', label: 'Поле тексту листа', hint: 'Порожньо — те саме поле, що й у чаті' },
@@ -34,6 +41,8 @@ export const SITE_FIELDS = [
   { key: 'letterLeft', group: 'Листи', label: 'Лічильник «Залишилося N листів»', hint: 'Необов’язково: 0 — листа цьому чоловіку не пише' },
   { key: 'letterConfirm', group: 'Листи', label: 'Ознака, що лист пішов', hint: 'Необов’язково' },
   { key: 'manUrl', group: 'Профіль чоловіка', label: 'URL профілю чоловіка', hint: 'Шаблон з {id}, напр. https://site.com/profile/{id}. Потрібен для повторних спроб і перегляду профілю' },
+  { key: 'findInput', group: 'Профіль чоловіка', label: 'Пошук чоловіка за ID (поле)', hint: 'Якщо в нього немає своєї сторінки: бот впише ID сюди й відкриє його чат зі списку' },
+  { key: 'findResult', group: 'Профіль чоловіка', label: 'Результат пошуку (що клікнути)', hint: 'Порожньо — перший чат у списку («Діалог у вхідних» або «Картка чоловіка»)' },
   { key: 'pageOpenChat', group: 'Профіль чоловіка', label: 'Кнопка «Написати» на його сторінці', hint: 'Необов’язково. Якщо порожньо — береться «Написати» з картки або поле вводу шукається одразу' },
   { key: 'inboxUrl', group: 'Вхідні', label: 'URL сторінки вхідних', hint: 'Бот періодично перевіряє тут відповіді' },
   { key: 'inboxItem', group: 'Вхідні', label: 'Діалог у вхідних', hint: 'CSS-селектор одного діалогу' },
@@ -71,6 +80,25 @@ export function sanitizeSiteConfig(input = {}) {
   }
   out.actions = sanitizeList(input.actions, true);
   out.marks = sanitizeList(input.marks, false);
+  return out;
+}
+
+/**
+ * Can the bot work on this site? A chat box, and men from somewhere:
+ * cards with an ID (or the ID read from the open chat), or the site's own "write him" hints.
+ */
+export function siteReady(c = {}) {
+  if (!c.messageInput) return false;
+  return Boolean(c.taskItem || (c.card && (c.cardId || c.chatId)));
+}
+
+/** What is still missing, in the words of the teaching panel. */
+export function siteMissing(c = {}) {
+  const label = (k) => SITE_FIELDS.find((f) => f.key === k)?.label || k;
+  const out = [];
+  if (!c.taskItem && !c.card) out.push(`${label('card')} або ${label('taskItem')}`);
+  if (c.card && !c.cardId && !c.chatId && !c.taskItem) out.push(label('cardId'));
+  if (!c.messageInput) out.push(label('messageInput'));
   return out;
 }
 

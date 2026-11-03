@@ -23,7 +23,7 @@ let lastHeartbeat = 0;
 let keepAliveTimer = null;
 let unseenReplies = 0;
 /** The operator's pauses for the current run (seconds, [from, to]) and typing speed. */
-const DEFAULT_PACE = { think: [2, 6], actionGap: [2, 6], pageGap: [3, 8], cpm: 600 };
+const DEFAULT_PACE = { think: [2, 6], actionGap: [2, 6], pageGap: [3, 8], react: [20, 90], idleChance: 30, cpm: 600 };
 let pace = { ...DEFAULT_PACE };
 const between = ([a, b]) => rand(a, b) * 1000;
 
@@ -288,6 +288,11 @@ async function afterMan(ctx, r, messages) {
     await waitUntil(Date.now() + ms, ctx);
     return;
   }
+  // Sometimes a person just scrolls the list and looks around between men.
+  if (!ctx.test && ctx.tabId && Math.random() * 100 < pace.idleChance) {
+    await setState({ message: '👀 Гортаю список, як людина' });
+    await inTab(ctx.tabId, 'idle', { site: ctx.site, seconds: Math.round(rand(5, 15)) }).catch(() => null);
+  }
   // Even pace: what is left of today's limit is spread until the end of the working hours.
   const left = r?.remaining;
   if (ctx.human.spread && !ctx.test && left > 0) {
@@ -505,6 +510,11 @@ const letterSite = (site) => ({
 /** In the open chat: (letter form) → the site's counter → text → files → translate → Send. */
 async function writeHere(tabId, site, m, dry, typing) {
   const letter = m.via === 'letter';
+  // Safety on chat-list sites: the open chat must be his (header name / ID), else nothing is typed.
+  if (site.chatName || site.chatId) {
+    const c = await inTab(tabId, 'waitChat', { site, name: m.name, id: m.id }).catch(() => null);
+    if (!c?.ok) return { ok: false, wrongChat: true, error: `відкритий чат не його (${c?.name || c?.id || 'не видно'}) — не пишу` };
+  }
   if (letter) {
     if (!site.letterOpen && !site.letterInput) return { ok: false, error: 'листи ще не навчені — 🎯 → вкладка «Листи»' };
     if (site.letterOpen) {
@@ -649,7 +659,13 @@ async function processDue(ctx, force = false) {
     await setState({ message: reminder ? `💬 Нагадування: ${man.name || man.id}` : `↻ Спроба ${man.step}/${man.of}: ${man.name || man.id}` });
     let res;
     try {
-      await navigate(ctx.tabId, man.url);
+      if (man.url) {
+        await navigate(ctx.tabId, man.url);
+      } else {
+        // No page of his own (chat-list sites): type his ID into the site's search and open his chat.
+        const fm = await inTab(ctx.tabId, 'findMan', { site: ctx.site, id: man.id, name: man.name });
+        if (!fm?.ok) throw new Error(fm?.error || 'не вдалося знайти його чат');
+      }
       await guard(ctx);
       res = await runActions(ctx.tabId, ctx.site, man, man.actions, { where: 'page', typing: ctx.human.typing });
     } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
@@ -688,6 +704,56 @@ async function advance(tabId, site) {
   if (site.nextPage) return false;
   const m = await inTab(tabId, 'more', { site });
   return Boolean(m?.grew);
+}
+
+/**
+ * The site's own hints ("Please write him message / letter"): the bot takes them first, after a human pause,
+ * opens his chat from the hint, reads his ID from the chat header and writes the way the hint asks.
+ */
+async function processTasks(ctx) {
+  const { tabId, site, profileId } = ctx;
+  if (!site.taskItem || stopRequested) return 0;
+  ctx.triedTasks ||= new Set();
+  let done = 0;
+  for (let round = 0; round < 50 && !stopRequested && !ctx.limitReached; round++) {
+    await waitWorkingHours(ctx);
+    if (stopRequested) break;
+    await guard(ctx);
+    const list = (await inTab(tabId, 'tasks', { site }).catch(() => null)) || [];
+    const task = list.find((t) => !ctx.triedTasks.has(t.id || `${t.name}|${t.age}`));
+    if (!task) break;
+    ctx.triedTasks.add(task.id || `${task.name}|${task.age}`);
+    const kind = task.via === 'letter' ? '✉ лист' : '💬 чат';
+    const wait = between(pace.react);
+    await setState({ message: `💡 Підказка сайту: ${task.name} (${kind}) — відкрию за ${Math.round(wait / 1000)} с` });
+    await waitUntil(Date.now() + wait, ctx);
+    if (stopRequested) break;
+    const o = await inTab(tabId, 'openTask', { site, task }).catch((e) => ({ ok: false, error: e.message }));
+    if (!o?.ok) { await log(`💡 ${task.name}: ${o?.error || 'не відкрилось'}`, 'warn'); continue; }
+    if (!o.id) { await log(`💡 ${task.name}: не бачу його ID — навчіть «ID у шапці відкритого чату»`, 'warn'); continue; }
+    const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: [{ id: o.id, name: o.name, age: task.age, via: task.via }] } });
+    await setState({ remaining: f.remaining });
+    if (f.remaining <= 0) { ctx.limitReached = true; break; }
+    const man = f.allowed[0];
+    if (!man) { await log(`💡 ${o.name}: уже писали або не підходить під фільтр — пропускаю`); continue; }
+    await setState({ message: `💡 Пишу ${man.name || man.id} (${kind})` });
+    let res;
+    try { res = await runActions(tabId, site, man, man.actions || [], { where: 'page', typing: ctx.human.typing }); } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
+    const r = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id, exhausted: res.exhausted } });
+    if (res.ok) {
+      done++;
+      await setState({ sent: state.sent + res.messages, remaining: r.remaining });
+      await log(`💡 ${man.name || man.id}: ${res.letters ? '✉ лист' : '💬 повідомлення'} ✓${res.attached ? ` 📎${res.attached}` : ''}`);
+    } else {
+      await setState({ failed: state.failed + (res.exhausted ? 0 : 1), remaining: r.remaining });
+      await log(`💡 ${man.name || man.id}: ${res.error}`, 'warn');
+    }
+    await heartbeat();
+    if (r.stop) { ctx.limitReached = true; break; }
+    await afterMan(ctx, r, res.messages);
+    if (r.due > 0) await processDue(ctx, true);
+  }
+  return done;
 }
 
 const SCAN_AHEAD_PAGES = 3;
@@ -745,7 +811,8 @@ async function scanAhead(ctx) {
 async function loadRun(profileId, test) {
   const cfg = await api(`/api/bot/profiles/${profileId}/config`);
   const site = cfg.site.config;
-  if (!site.card || !site.cardId || !site.messageInput) throw new Error('Сайт налаштовано не повністю (картка, ID, поле вводу). Натисніть 🎯 «Навчити бота» або заповніть у панелі');
+  const menFrom = site.taskItem || (site.card && (site.cardId || site.chatId));
+  if (!menFrom || !site.messageInput) throw new Error('Сайт налаштовано не повністю: звідки брати чоловіків (картка з ID або підказки сайту) і поле вводу. Натисніть 🎯 «Навчити бота»');
   const human = cfg.scenario?.human || { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, breakMinutes: 10, typing: false };
   const ap = await getAutopilot();
   if (ap?.profileId === profileId) await setAutopilot({ ...ap, human, timezone: cfg.timezone, profileName: cfg.profile.name });
@@ -754,6 +821,8 @@ async function loadRun(profileId, test) {
     think: range(human.thinkFrom, human.thinkTo, DEFAULT_PACE.think),
     actionGap: range(human.actionGapFrom, human.actionGapTo, DEFAULT_PACE.actionGap),
     pageGap: range(human.pageGapFrom, human.pageGapTo, DEFAULT_PACE.pageGap),
+    react: range(human.reactFrom, human.reactTo, DEFAULT_PACE.react),
+    idleChance: Number.isFinite(human.idleChance) ? human.idleChance : DEFAULT_PACE.idleChance,
     cpm: human.typeSpeed || DEFAULT_PACE.cpm,
   };
   return {
@@ -786,16 +855,33 @@ async function run(profileId, tabId) {
     let noGrowth = 0;
     const tried = new Set(); // men already attempted in this run (a failing one is not retried in a loop)
 
+    // Operator desk without a list of new men: the site's hints + follow-ups, waiting for new hints in between.
+    if (!site.card) {
+      while (!stopRequested && !ctx.limitReached) {
+        await waitWorkingHours(ctx);
+        await processDue(ctx);
+        if (ctx.limitReached || stopRequested) break;
+        const did = await processTasks(ctx);
+        if (ctx.limitReached || stopRequested) break;
+        if (!did) {
+          await setState({ message: '💡 Нових підказок сайту немає — чекаю й стежу за відповідями' });
+          await waitUntil(Date.now() + rand(60, 150) * 1000, ctx, 'watching');
+        }
+      }
+    }
+
     // The best men of the first pages first — once the platform knows who answers and his page can be opened.
-    if (cfg.ranking?.ready && cfg.ranking?.manUrl) {
+    if (site.card && cfg.ranking?.ready && cfg.ranking?.manUrl) {
       await waitWorkingHours(ctx);
       ctx.listUrl = (await chrome.tabs.get(tabId)).url;
       await scanAhead(ctx).catch((e) => log(`Розвідка не вдалась: ${e.message}`, 'warn'));
     }
 
-    outer: while (!stopRequested) {
+    outer: while (site.card && !stopRequested) {
       await waitWorkingHours(ctx);
       await processDue(ctx);
+      if (ctx.limitReached || stopRequested) break;
+      await processTasks(ctx); // the site's own hints go before the list
       if (ctx.limitReached || stopRequested) break;
       await waitTabComplete(tabId);
       await guard(ctx);
@@ -921,10 +1007,40 @@ async function runTest(profileId, tabId) {
     throw new Error(problems[0]);
   }
 
-  // 1. Search page
-  const scan = await inTab(tabId, 'scan', { site });
+  // 0. The site's own hints "write him" (operator desks): open one, read his ID, walk the first message without sending
+  if (site.taskItem) {
+    const ts = (await inTab(tabId, 'tasks', { site }).catch(() => null)) || [];
+    if (!ts.length) {
+      await warn('Підказок сайту «напиши йому» зараз немає — нормально, якщо сайт ще не підкинув. Запустіть тест, коли з’являться');
+    } else {
+      await log(`✓ Підказки сайту: ${ts.length}. Напр.: ${ts.slice(0, 3).map((t) => `${t.name}${t.age ? ` ${t.age}` : ''} (${t.via === 'letter' ? 'лист' : 'чат'})`).join('; ')}`);
+      const t = ts[0];
+      const o = await inTab(tabId, 'openTask', { site, task: t, dry: true }).catch((e) => ({ ok: false, error: e.message }));
+      if (!o?.ok) problems.push(`Підказка «${t.name}»: ${o?.error || 'не відкрилась'} — перевірте «Підказка» та «Ім’я в шапці відкритого чату»`);
+      else if (!o.id) problems.push('Чат з підказки відкрився, але бот не бачить ID — навчіть «ID у шапці відкритого чату»');
+      else {
+        await log(`✓ Чат з підказки відкрився: ${o.name} [${o.id}]`);
+        const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: [{ id: o.id, name: o.name, age: t.age, via: t.via }], test: true } });
+        const man = f.allowed[0];
+        if (!man) await warn(`${o.name}: йому вже писали — перевірку відправки пропущено`);
+        else {
+          let res;
+          try { res = await runActions(tabId, site, man, man.actions || [], { where: 'page', dry: true }); } catch (e) { res = { ok: false, error: e.message, warnings: [] }; }
+          if (res.ok) { await setState({ sent: state.sent + 1 }); await log(`✓ ${man.name || man.id}: ${t.via === 'letter' ? 'лист' : 'повідомлення'} пройдено — НІЧОГО не надіслано`); } else problems.push(`${man.name || man.id}: ${res.error}`);
+        }
+        if (site.findInput && !site.manUrl) {
+          const fm = await inTab(tabId, 'findMan', { site, id: o.id, name: o.name }).catch((e) => ({ ok: false, error: e.message }));
+          if (fm?.ok) await log(`✓ Пошук за ID працює — повторні знайдуть його чат`); else problems.push(`Пошук за ID: ${fm?.error} — повторні спроби не спрацюють`);
+        }
+      }
+    }
+  }
+  // 1. Search page (sites with a list of new men)
+  const scan = site.card ? await inTab(tabId, 'scan', { site }) : null;
   const men = scan?.candidates || [];
-  if (!men.length) {
+  if (!site.card) {
+    if (!site.manUrl && !site.findInput && cfg.scenario.followups) problems.push('Для повторних спроб бот має знайти його чат: навчіть «Пошук чоловіка за ID» або «URL профілю чоловіка»');
+  } else if (!men.length) {
     problems.push('На сторінці пошуку не знайдено жодного чоловіка — перевірте «Картка» та «ID»');
   } else {
     const sample = men.slice(0, 3).map((c) => `${c.name || '?'}${c.age ? ` ${c.age}` : ''} [${c.id}]`).join('; ');

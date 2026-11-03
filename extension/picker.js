@@ -7,10 +7,12 @@
   const { qs, qsa, extract, normId, visible } = U;
 
   // ---------- field kinds ----------
-  const CONTAINER = { card: 'list', inboxItem: 'inbox' };
+  const CONTAINER = { card: 'list', inboxItem: 'inbox', taskItem: 'tasks' };
   const IN_CARD = ['cardId', 'cardName', 'cardAge', 'cardCountry', 'openChat'];
   const IN_ITEM = ['inboxUnread', 'inboxId', 'inboxName', 'inboxText'];
-  const ATTR_FIELDS = ['cardId', 'inboxId'];
+  const IN_TASK = ['taskName', 'taskText', 'taskId', 'taskOpen'];
+  const ATTR_FIELDS = ['cardId', 'inboxId', 'taskId'];
+  const SELF_OK = ['openChat', 'taskOpen']; // clicking the card itself = "@self"
   const URL_FIELDS = ['searchUrl', 'inboxUrl', 'manUrl', 'chatUrl'];
   const TABS = [
     ['list', 'Список', 'Пошук'],
@@ -18,6 +20,7 @@
     ['man', 'Його сторінка', 'Профіль чоловіка'],
     ['letter', 'Листи', 'Листи'],
     ['inbox', 'Вхідні', 'Вхідні'],
+    ['tasks', 'Підказки', 'Підказки сайту'],
     ['extra', 'Кнопки й ознаки', null],
   ];
   const TIPS = {
@@ -25,6 +28,7 @@
     send: 'Натисніть на сайті «Написати» як зазвичай (режим вибору вимкнений), щоб відкрилось вікно чату. Потім виберіть поле вводу і кнопку «Надіслати».',
     man: 'Відкрийте сторінку будь-якого чоловіка і натисніть «📍 Ця сторінка». Якщо поле вводу тут інше — виберіть його у вкладці «Відправка» прямо на цій сторінці, бот додасть варіант.',
     inbox: 'Відкрийте вхідні. Почніть з «Діалог у вхідних»: клікніть на порожнє місце в будь-якому діалозі.',
+    tasks: 'Якщо сайт сам підкидає «Please write him message / letter» — виберіть «Підказка»: клікніть на порожнє місце в будь-якій підказці. Ім’я й текст бот знайде сам. ID зазвичай береться з шапки чату (вкладка «Відправка»).',
     letter: 'Відкрийте чат чоловіка і натисніть на сайті конверт «Лист» (режим вибору вимкнений). Потім виберіть кнопку «Лист», поле тексту й «Надіслати». Тему й лічильник «Залишилося N листів» — якщо є.',
     extra: 'Кнопки — що бот може натискати у сценарії (лайк, підморгнути, в обране). Ознаки — що бот бачить у картці (онлайн, преміум, вже писали) для фільтрів.',
   };
@@ -171,7 +175,8 @@
   let tip;
   const last = {}; // key -> element picked last (for "ширше")
 
-  const containersFor = (key) => qsa(document, IN_ITEM.includes(key) || key === 'inboxItem' ? ctx.config.inboxItem : ctx.config.card);
+  const containerKey = (key) => (IN_ITEM.includes(key) || key === 'inboxItem' ? 'inboxItem' : IN_TASK.includes(key) || key === 'taskItem' ? 'taskItem' : 'card');
+  const containersFor = (key) => qsa(document, ctx.config[containerKey(key)]);
   const others = (card) => containersFor('card').filter((c) => c !== card).slice(0, 12);
   const othersOf = (key, box) => containersFor(key).filter((c) => c !== box).slice(0, 12);
 
@@ -184,14 +189,15 @@
     if (!v) return { text: '', ok: false };
     try {
       if (URL_FIELDS.includes(key)) return { text: key === 'manUrl' && !v.includes('{id}') ? 'немає {id} в адресі' : '', ok: true, warn: key === 'manUrl' && !v.includes('{id}') };
-      if (key === 'card' || key === 'inboxItem') {
+      if (key === 'card' || key === 'inboxItem' || key === 'taskItem') {
         const n = qsa(document, v).length;
         return n ? { text: `знайдено ${n} на цій сторінці`, ok: true } : { text: 'на цій сторінці немає', ok: true, warn: true };
       }
-      if (IN_CARD.includes(key) || IN_ITEM.includes(key)) {
+      if (IN_CARD.includes(key) || IN_ITEM.includes(key) || IN_TASK.includes(key)) {
         const boxes = containersFor(key);
         if (!boxes.length) return { text: 'відкрийте сторінку, де є ці картки', ok: true, warn: true };
-        if (key === 'openChat') { const n = boxes.filter((b) => qs(b, v)).length; return { text: `є у ${n} з ${boxes.length}`, ok: true, warn: !n }; }
+        if (v === '@self') return { text: 'клік по самій картці', ok: true };
+        if (key === 'openChat' || key === 'taskOpen') { const n = boxes.filter((b) => qs(b, v)).length; return { text: `є у ${n} з ${boxes.length}`, ok: true, warn: !n }; }
         if (key === 'inboxUnread') { const n = boxes.filter((b) => qs(b, v) || b.matches?.(v)).length; return { text: `непрочитаних ${n} з ${boxes.length}`, ok: true }; }
         const vals = boxes.map((b) => (ATTR_FIELDS.includes(key) ? normId(extract(b, v)) : extract(b, v))).filter(Boolean);
         if (!vals.length) return { text: 'нічого не знайшов', ok: true, warn: true };
@@ -281,14 +287,22 @@
       setTimeout(() => { for (const x of qsa(document, box.sel).slice(0, 30)) x.style.outline = ''; }, 2500);
       if (key === 'card') autoCard(box.el);
       if (key === 'inboxItem') autoInbox(box.el);
+      if (key === 'taskItem') autoTask(box.el);
       status(`✓ Знайдено ${box.count}. Перевірте нижче, що бот сам знайшов ID та ім’я`);
       return;
     }
-    if (IN_CARD.includes(key) || IN_ITEM.includes(key)) {
-      const sel = IN_ITEM.includes(key) ? c.inboxItem : c.card;
-      if (!sel) throw new Error(IN_ITEM.includes(key) ? 'спочатку виберіть «Діалог у вхідних»' : 'спочатку виберіть «Картка чоловіка»');
+    if (IN_CARD.includes(key) || IN_ITEM.includes(key) || IN_TASK.includes(key)) {
+      const ck = containerKey(key);
+      const sel = c[ck];
+      if (!sel) throw new Error({ inboxItem: 'спочатку виберіть «Діалог у вхідних»', taskItem: 'спочатку виберіть «Підказка»' }[ck] || 'спочатку виберіть «Картка чоловіка»');
       const box = qsa(document, sel).find((b) => b.contains(el));
       if (!box) throw new Error('цей елемент не всередині картки');
+      if (SELF_OK.includes(key) && (el === box || !relSelector(box, el, othersOf(key, box)))) {
+        c[key] = '@self'; // the card itself opens his chat
+        U.flash(box, '✓ клік по самій картці');
+        status('✓ Чат відкривається кліком по самій картці');
+        return;
+      }
       if (ATTR_FIELDS.includes(key)) {
         const spec = idSpec(box, el);
         if (!spec) throw new Error('не знайшов тут числа з 5+ цифр. Клікніть на ім’я-посилання чи фото чоловіка');
@@ -331,6 +345,16 @@
     if (!c.inboxId) c.inboxId = idSpec(item) || '';
     const n = [...item.querySelectorAll('*')].find((x) => goodClasses(x).some((k) => /name|nick|title/i.test(k)) && ownText(x));
     if (!c.inboxName && n) c.inboxName = relSelector(item, n, othersOf('inboxItem', item));
+  }
+
+  function autoTask(item) {
+    const c = ctx.config;
+    const oth = othersOf('taskItem', item);
+    if (!c.taskId) c.taskId = idSpec(item) || '';
+    const find = (re) => [...item.querySelectorAll('*')].find((n) => goodClasses(n).some((x) => re.test(x)) && ownText(n));
+    if (!c.taskName) { const n = find(/name|nick|title/i) || [...item.querySelectorAll('*')].find((x) => !x.children.length && /,\s*\d{2}\b/.test(ownText(x))); if (n) c.taskName = relSelector(item, n, oth); }
+    if (!c.taskText) { const n = [...item.querySelectorAll('*')].find((x) => !x.children.length && /write|message|letter|напиш|повідом|лист|письм/i.test(ownText(x))); if (n) c.taskText = relSelector(item, n, oth); }
+    if (!c.taskOpen) c.taskOpen = '@self';
   }
 
   function setUrl(key) {

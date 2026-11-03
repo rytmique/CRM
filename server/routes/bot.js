@@ -8,7 +8,7 @@ import {
 import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter } from '../ai.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
-import { SITE_FIELDS, sanitizeSiteConfig, fillUrl } from '../sites.js';
+import { SITE_FIELDS, sanitizeSiteConfig, fillUrl, siteReady } from '../sites.js';
 import { profileScenario, followupSteps, filterReason, pickVariant, attempts, usesLetters } from '../scenario.js';
 import { filesForStep, mediaFile } from '../media.js';
 import { scoreMen, manFeatures, hostOf, learnSent, learnReply, rankingState } from '../scoring.js';
@@ -41,6 +41,7 @@ export default function botRoutes(db, cfg) {
       marks: Array.isArray(m.marks) ? m.marks.map(String).slice(0, 20) : [],
       text: String(m.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500),
       info: String(m.info ?? '').replace(/\s+/g, ' ').trim().slice(0, 400),
+      via: m.via === 'letter' ? 'letter' : m.via === 'chat' ? 'chat' : '',
     };
   };
   const siteHost = (site, config) => hostOf(config?.searchUrl || site?.base_url || '');
@@ -67,7 +68,9 @@ export default function botRoutes(db, cfg) {
     const step = ctx.scenario.steps[idx];
     const out = [];
     let inviteId = null;
-    for (const a of step?.actions || []) {
+    for (const raw of step?.actions || []) {
+      // The site's own hint says how to write to him ("Please write him letter"): it wins over the scenario.
+      const a = raw.do === 'message' && man.via ? { ...raw, via: man.via, text: man.via === 'letter' ? 'letter' : (raw.text === 'letter' ? 'invite' : raw.text) } : raw;
       if (a.do === 'message') {
         let t = '';
         // One of the live variants: the ones that get more replies are picked more often.
@@ -131,7 +134,7 @@ export default function botRoutes(db, cfg) {
         try { siteCfg = JSON.parse(sc || '{}'); } catch { /* none */ }
         return {
           ...rest,
-          siteReady: Boolean(sc) && SITE_FIELDS.filter((f) => f.required).every((f) => siteCfg[f.key]),
+          siteReady: Boolean(sc) && siteReady(siteCfg),
           searchUrl: siteCfg.searchUrl || '',
           tested: Boolean(tested),
           started: Boolean(db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND status = 'sent' LIMIT 1").get(p.id)),
@@ -168,7 +171,7 @@ export default function botRoutes(db, cfg) {
       }
       previous.push(have.get(step));
     }
-    if (usesLetters(scenario) && !have.has(LETTER_STEP)) {
+    if ((usesLetters(scenario) || JSON.parse(site.config || '{}').taskItem) && !have.has(LETTER_STEP)) {
       let gen;
       try { gen = await generateLetter({ profile: p, settings, memory: memoryLines(db, settings) }); } catch { gen = templateLetter(p); }
       saveFollowup(db, { profileId: p.id, step: LETTER_STEP, text: gen.text, source: gen.source, model: gen.model });
@@ -339,19 +342,19 @@ export default function botRoutes(db, cfg) {
         const url = manUrl(ctx, m.man_id, m.man_url);
         if (m.stage === 'replied') {
           if (!ctx.scenario.afterReply.attempts) { stopReminders.run(m.id); continue; } // switched off in the scenario
-          if (!url) { later.run(t + 6 * HOUR, m.id); continue; }
+          if (!url && !ctx.config.findInput) { later.run(t + 6 * HOUR, m.id); continue; }
           const text = personalize(fillHer(pickVariant(ctx.followups.get(REENGAGE_STEP) || templateReengage().text), p), man);
           out.push({ ...man, url, kind: 'reengage', step: m.step, left: m.bonus_left, actions: [{ do: 'message', text, files: [] }] });
           continue;
         }
         if (m.step >= ctx.scenario.steps.length) { finish.run(m.id); continue; } // the scenario got shorter
-        if (!url) { later.run(t + 6 * HOUR, m.id); continue; } // nowhere to go until "URL профілю чоловіка" is set
+        if (!url && !ctx.config.findInput) { later.run(t + 6 * HOUR, m.id); continue; } // nowhere to go until "URL профілю чоловіка" or "Пошук за ID" is set
         const step = resolveStep(ctx, m.step, man);
         out.push({ ...man, url, kind: 'followup', step: m.step + 1, of: ctx.scenario.steps.length, actions: step.actions });
       }
     }
     const nextAt = db.prepare(`SELECT MIN(next_at) AS t FROM messages WHERE profile_id = ? AND ${WAITING}`).get(p.id).t;
-    res.json({ men: out, remaining, pending: pendingOf(p.id), nextAt, hourLeft: hour.left, hourResetAt: hour.resetAt, noManUrl: !ctx.config.manUrl });
+    res.json({ men: out, remaining, pending: pendingOf(p.id), nextAt, hourLeft: hour.left, hourResetAt: hour.resetAt, noManUrl: !ctx.config.manUrl && !ctx.config.findInput });
   });
 
   /** Result of a follow-up step (2, 3…) for one man. */
@@ -459,10 +462,16 @@ export default function botRoutes(db, cfg) {
     const t = now();
     const day = dayKey(t, settings.timezone);
     const find = db.prepare("SELECT * FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'");
+    // Chat lists without IDs: the dialog is matched by his name ("Gene, 65" → "Gene").
+    const byName = db.prepare("SELECT man_id FROM messages WHERE profile_id = ? AND status = 'sent' AND lower(man_name) = lower(?) ORDER BY COALESCE(last_at, sent_at) DESC LIMIT 1");
     const fresh = [];
     let negative = 0;
     for (const raw of list) {
-      const man = readMan(raw);
+      let man = readMan(raw);
+      if (!man && raw && typeof raw === 'object' && raw.name) {
+        const row = byName.get(p.id, String(raw.name).split(',')[0].trim().slice(0, 80));
+        if (row) man = readMan({ ...raw, id: row.man_id });
+      }
       if (!man) continue;
       const m = find.get(p.id, man.id);
       if (!m) continue;

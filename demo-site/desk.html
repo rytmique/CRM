@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DemoDate — Operator desk</title><link rel="stylesheet" href="demo.css"><script src="demo.js"></script>
+<style>
+  .desk { display: grid; grid-template-columns: 260px 1fr 240px; gap: 12px; height: calc(100vh - 90px); }
+  .desk aside, .desk section { background: #fff; border-radius: 12px; padding: 10px; overflow: auto; }
+  .find-id { width: 100%; padding: 8px 10px; border: 1px solid #e3d5da; border-radius: 8px; font: inherit; margin-bottom: 8px; }
+  .chat-item { display: flex; gap: 8px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid #f0e6ea; margin-bottom: 6px; }
+  .chat-item.on { background: #fdecf2; }
+  .chat-item img { width: 34px; height: 34px; border-radius: 50%; background: #eee; font-size: 10px; overflow: hidden; }
+  .ci-name { font-weight: 600; } .ci-last { color: #8a7a90; font-size: 12px; } .ci-unread { margin-left: auto; background: #c2255c; color: #fff; border-radius: 99px; padding: 0 7px; font-size: 11px; }
+  .chat { display: grid; grid-template-rows: auto 1fr auto; gap: 8px; }
+  .chat-head { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #f0e6ea; padding-bottom: 8px; }
+  .chat-head > div { margin-right: auto; } .ch-id { color: #8a7a90; font-size: 12px; }
+  .msgs { display: grid; gap: 6px; align-content: start; } .msg { background: #f6f0f3; border-radius: 10px; padding: 6px 10px; }
+  .tr { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; } .tr textarea { min-height: 90px; font: inherit; padding: 8px; border: 1px solid #e3d5da; border-radius: 8px; }
+  .letter-subject { width: 100%; font: inherit; padding: 8px; border: 1px solid #e3d5da; border-radius: 8px; margin-bottom: 6px; }
+  .composer .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; } .composer .status { margin-right: auto; }
+  .task { display: flex; gap: 8px; align-items: center; background: #2b2230; color: #fff; border-radius: 10px; padding: 8px; margin-bottom: 8px; cursor: pointer; }
+  .t-name { font-weight: 600; } .t-text { font-size: 12px; opacity: .85; } .t-time { margin-left: auto; font-size: 11px; opacity: .7; }
+</style></head>
+<body>
+<header><span class="logo">♥ DemoDate</span><a href="search.html">Search</a><a href="inbox.html">Inbox</a><b>Desk</b><span>Anna, 32</span></header>
+<main>
+  <div class="banner">Варіант сайту — «робочий стіл оператора»: список чатів, відкритий чат і підказки сайту «напиши йому». ID чоловіка видно лише в шапці чату.</div>
+  <div class="desk">
+    <aside class="chats"><input class="find-id" placeholder="Search by ID"><div class="chat-list"></div></aside>
+    <section class="chat">
+      <div class="chat-head"><div><b class="ch-name">—</b><div class="ch-id"></div></div>
+        <button class="btn-like" type="button" title="Like">♡</button><button class="btn-letter" type="button" title="Letter">✉</button><button class="btn-chat-mode" type="button" title="Chat">💬</button></div>
+      <div class="msgs"></div>
+      <div class="composer">
+        <input class="letter-subject" placeholder="Subject" hidden>
+        <div class="tr"><textarea class="tr-src" placeholder="Українська"></textarea><button class="btn-translate" type="button" title="Translate">→</button><textarea class="tr-dst" placeholder="English"></textarea></div>
+        <div class="row"><span class="left-msgs"></span><span class="left-letters" hidden></span><span class="status"></span><button class="btn-send" type="button">Send</button></div>
+      </div>
+    </section>
+    <aside class="tasks-panel"><div class="tasks"></div></aside>
+  </div>
+</main>
+</body></html>

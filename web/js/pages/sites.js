@@ -41,7 +41,7 @@ export default async function sitesPage(main) {
         ' Відкрийте сайт знайомств, натисніть значок розширення → «🎯 Навчити бота на цьому сайті» і клікайте по картці чоловіка, кнопці «Написати», полю вводу. Ручне налаштування нижче — для тонких правок.'),
       sites.length ? h('div.cards', sites.map((s) => {
         const filled = fields.filter((f) => s.config[f.key]).length;
-        const ready = fields.filter((f) => f.required).every((f) => s.config[f.key]);
+        const { ready } = s;
         return h('article.card.site-card',
           h('div.row-wrap', h('h3', s.name), h('span.muted.small', `${s.profiles} анкет`)),
           h('div.small.muted', s.config.searchUrl || s.base_url || 'URL пошуку не вказано'),

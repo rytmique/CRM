@@ -444,6 +444,52 @@ try {
   await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
   log(`letters ok: 2 letters with a subject, translated; the man with 0 letters left was skipped`);
 
+  // ---------- operator desk: the site's "write him" hints, ID only in the chat header, follow-ups found by ID ----------
+  const deskSite = await api('POST', '/api/sites', { name: 'Демо: робочий стіл', config: {
+    searchUrl: `${BASE}/demo-site/desk.html`,
+    taskItem: '.task', taskName: '.t-name', taskText: '.t-text', taskOpen: '@self',
+    messageInput: '.tr-dst', sendButton: '.btn-send', sentConfirm: '.chat .sent-ok', sendError: '.chat .send-error',
+    chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs',
+    letterOpen: '.btn-letter', letterSubject: '.letter-subject', letterLeft: '.left-letters',
+    findInput: '.find-id', inboxUrl: `${BASE}/demo-site/desk.html`, inboxItem: '.chat-item', inboxUnread: '.ci-unread', inboxName: '.ci-name',
+  } }, owner);
+  await api('PUT', `/api/sites/${deskSite.id}/scenario`, { scenario: {
+    steps: [{ actions: [{ do: 'message', text: 'invite' }] }, { wait: 0, actions: [{ do: 'message', text: 'followup' }] }],
+    human: { ...FAST, reactFrom: 0, reactTo: 1, idleChance: 0 },
+  } }, owner);
+  await api('PATCH', `/api/profiles/${kate.id}`, { site_id: deskSite.id, daily_limit: 8 }, owner); // Kate has 4 today → 4 more
+  await sitePage.goto(`${BASE}/demo-site/desk.html`);
+  const tasks0 = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_tasks') || '[]'));
+  if (tasks0.length !== 5) fail(`desk tasks: ${JSON.stringify(tasks0)}`);
+  const [d1, dGlitch, d3] = tasks0;
+  await popup.bringToFront();
+  await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${kate.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(kate.id));
+  await popup.click('#start');
+  const t6 = Date.now();
+  do { await sleep(1000); st = await readState(); } while (!(st.startedAt >= t6 - 5000 && ['limit', 'error', 'stopped'].includes(st.status)) && Date.now() - t6 < 300000);
+  const deskLog = st.log.map((l) => l.text).join('\n');
+  if (st.status !== 'limit') fail(`desk run: ${st.status} ${st.message}\n${deskLog}`);
+  const dSent = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_sent') || '{}'));
+  const dLetters = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_letters') || '{}'));
+  if (dSent[d1.id]?.count !== 2 || !dSent[d1.id].history[0].includes('Kate')) fail(`hint 1: invite + follow-up expected, got ${JSON.stringify(dSent[d1.id])}\n${deskLog}`);
+  if (dLetters[d3.id]?.count !== 1 || !dLetters[d3.id].history[0].subject) fail(`hint 3 asked for a letter: ${JSON.stringify(dLetters[d3.id])}\n${deskLog}`);
+  if (dSent[d3.id]?.count !== 1) fail(`hint 3 follow-up (found by ID) expected: ${JSON.stringify(dSent[d3.id])}\n${deskLog}`);
+  if (dSent[dGlitch.id] || dSent[dGlitch.opens] || dLetters[dGlitch.opens]) fail(`wrote into a wrong chat: ${JSON.stringify([dSent[dGlitch.id], dSent[dGlitch.opens]])}`);
+  if (!/чат іншого чоловіка/.test(deskLog)) fail(`no wrong-chat safety stop:\n${deskLog}`);
+  const kateDesk = (await api('GET', `/api/stats/messages?profile_id=${kate.id}&limit=50`, null, owner)).messages;
+  if (!kateDesk.some((m) => m.man_id === d1.id && m.step === 2)) fail(`server: hint man ID from the chat header: ${JSON.stringify(kateDesk.map((m) => [m.man_id, m.step]))}`);
+  await popup.screenshot({ path: path.join(OUT, '26-popup-desk.png') });
+  await sitePage.bringToFront();
+  await sitePage.reload();
+  await sleep(500);
+  await sitePage.screenshot({ path: path.join(OUT, '27-desk.png') });
+  await popup.bringToFront();
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  log('operator desk ok: hints → chat / letter as asked, ID from the chat header, wrong chat refused, follow-ups found by ID');
+
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();
   await page.click('a[href="#/dashboard"]');
