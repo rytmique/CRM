@@ -6,10 +6,12 @@
 <main>
   <div class="banner">Варіант сайту, де писати треба зі сторінки профілю чоловіка.</div>
   <div id="profile"></div>
-  <div id="profile-chat" class="man-card" style="display:grid;gap:10px;margin-top:12px">
+  <div id="profile-chat" class="man-card" style="display:grid;gap:10px;margin-top:12px" data-mode="chat">
+    <div style="display:flex;gap:8px;align-items:center"><button class="btn-chat-mode" type="button">💬 Chat</button><button class="btn-letter" type="button">✉ Letter</button><span class="left-msgs" style="margin-left:auto;color:#8a7a90"></span><span class="left-letters" style="margin-left:auto;color:#8a7a90" hidden></span></div>
+    <input class="letter-subject" placeholder="Subject" hidden style="width:100%;font:inherit;padding:8px 10px;border:1px solid #e3d5da;border-radius:8px">
     <textarea placeholder="Write a message…" style="width:100%;min-height:110px;font:inherit;padding:10px;border:1px solid #e3d5da;border-radius:8px"></textarea>
     <div class="atts"></div>
-    <div style="display:flex;gap:8px;align-items:center"><label class="btn-attach" title="Attach a photo">📎<input type="file" accept="image/*,video/*" multiple hidden></label><span class="status" style="margin-right:auto"></span><button class="btn-send" type="button">Send</button></div>
+    <div style="display:flex;gap:8px;align-items:center"><label class="btn-attach" title="Attach a photo">📎<input type="file" accept="image/*,video/*" multiple hidden></label><span class="status" style="margin-right:auto"></span><button class="btn-translate" type="button">Translate</button><button class="btn-send" type="button">Send</button></div>
   </div>
 </main>
 </body></html>

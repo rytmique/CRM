@@ -150,12 +150,13 @@
   const valueOf = (input) => (input.isContentEditable ? input.textContent : input.value) || '';
 
   /** Types the text letter by letter with an uneven rhythm (≈ 20–25 s for a long message). */
-  async function typeText(input, text) {
+  /** cpm: characters per minute the operator set; a long text never takes much more than ~25 s. */
+  async function typeText(input, text, cpm = 600) {
     input.focus();
     if (input.isContentEditable) input.textContent = '';
     else nativeSet(input, '');
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    const base = Math.min(110, 22000 / Math.max(1, text.length));
+    const base = Math.min(60000 / Math.max(60, cpm), 25000 / Math.max(1, text.length));
     for (const ch of text) {
       const key = { key: ch, bubbles: true };
       input.dispatchEvent(new KeyboardEvent('keydown', key));
@@ -229,13 +230,13 @@
     return { ok: true, clicked: true };
   }
 
-  /** Paste/type the text into the message box (no sending yet). */
-  async function fill({ site, man, dry, typing }) {
+  /** Paste/type the text into the message box (no sending yet). think: [from, to] s before typing; cpm: typing speed. */
+  async function fill({ site, man, dry, typing, think = [0.3, 0.8], cpm = 600 }) {
     const input = await waitFor(() => qsa(document, site.messageInput).find(visible));
     if (!input) return { ok: false, error: 'поле вводу не з’явилось' };
-    await sleep(rand(300, 800));
+    await sleep(dry ? rand(300, 800) : rand(think[0], think[1]) * 1000);
     if (!man.text) return { ok: true, empty: true }; // a message with files only
-    if (typing && !dry) await typeText(input, man.text);
+    if (typing && !dry) await typeText(input, man.text, cpm);
     else setInputValue(input, man.text);
     await sleep(rand(300, 900));
     if (!valueOf(input).trim()) return { ok: false, error: 'не вдалося вставити текст' };
@@ -344,6 +345,23 @@
     return { ok: true };
   }
 
+  /** The site's own counter ("Залишилося 9 повідомлень"): the number, or null when there is no counter here. */
+  function leftCount({ sel }) {
+    const el = qsa(document, sel).find(visible);
+    if (!el) return null;
+    const m = (el.textContent || '').match(/\d+/);
+    return m ? Number(m[0]) : null;
+  }
+
+  /** Letter subject (if the form has one). */
+  async function fillSubject({ sel, text, dry }) {
+    const input = await waitFor(() => qsa(document, sel).find(visible), 4000);
+    if (!input) return { ok: false, error: 'поле теми листа не знайдено' };
+    setInputValue(input, text);
+    if (dry) flash(input, '🧪 тема листа');
+    return { ok: true };
+  }
+
   /** Looks through his profile: slow scrolling down and a little back up. */
   async function view({ seconds = 8 }) {
     const end = Date.now() + seconds * 1000;
@@ -429,7 +447,7 @@
   }
 
   window.__agencyBot = {
-    scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked,
+    scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

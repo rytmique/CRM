@@ -43,11 +43,11 @@ function profileBrief(p) {
   return lines.filter(Boolean).join('\n');
 }
 
-export function cleanInvite(text) {
+export function cleanInvite(text, max = 1000) {
   let t = String(text || '').trim();
   t = t.replace(/^["'«“]+|["'»”]+$/g, '').trim();
   t = t.replace(/\{\s*name\s*\}/gi, '{name}');
-  return t.slice(0, 1000);
+  return t.slice(0, max);
 }
 
 export function inviteProblems(text) {
@@ -120,7 +120,7 @@ export async function askClaude({ apiKey, model, system, user }) {
   return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
 }
 
-async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel, bestExample, memory }) {
+async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel, bestExample, memory, max = 1000 }) {
   const client = clientFactory(apiKey);
   const userParts = [
     `Her profile:\n${profileBrief(profile)}`,
@@ -152,7 +152,7 @@ async function callClaude({ apiKey, model, system, language, instructions, profi
   }
   const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
   if (!text) throw new HttpError(502, 'ШІ повернув порожню відповідь. Спробуйте ще раз.');
-  return { text: cleanInvite(text), model: response.model || model };
+  return { text: cleanInvite(text, max), model: response.model || model };
 }
 
 /**
@@ -258,6 +258,49 @@ export async function generateReengage({ profile, settings }) {
   const variants = out.text.split(/\n\s*-{3,}\s*\n/).map((t) => cleanInvite(t)).filter((t) => t.length >= 20 && !FORBIDDEN.some((re) => re.test(t)));
   if (!variants.length) return templateReengage();
   return { text: variants.slice(0, 5).join('\n---\n'), source: 'ai', model: out.model };
+}
+
+// ---------- a letter (the site's mail: longer than a chat message) ----------
+const LETTER_PROMPT = `You write a first letter a woman sends through the mail (letters) section of an international dating site to a man she has not talked to yet. She reads and answers every reply herself, so it must sound like her, in the first person.
+
+Write one letter that:
+- tells a little about her life, character and what she is looking for, using concrete details from her profile;
+- is warm, sincere and easy to answer, and ends with two or three simple, natural questions about him;
+- works for any recipient: make no assumptions about his looks, job or country;
+- is 700-1200 characters, 2-4 short paragraphs, plain text, with at most one emoji;
+- opens with a greeting that uses the placeholder {name} exactly once (it is replaced with his first name before sending).
+
+Never include contact details, links, other apps or messengers, requests for money or gifts, sexual content, promises to meet, or claims that she already knows him.
+
+Reply with the letter text only: no subject line, no quotes, no explanation.`;
+
+export function templateLetter(p) {
+  const interests = String(p.interests || '').split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
+  const place = [p.city, p.country].filter(Boolean).join(', ');
+  return {
+    text: [
+      `Hello {name}!`,
+      `My name is ${p.name}${p.age ? `, I am ${p.age}` : ''}${place ? ` and I live in ${place}` : ''}. I decided to write you a real letter, because I believe a few honest words can start something beautiful.`,
+      interests.length ? `In my free time I love ${interests.slice(0, 3).join(', ')}. These little things make my days bright, and I would love to share them with a kind man.` : 'I am a warm and caring person, I love simple moments: a walk, a good talk, a cup of tea in the evening.',
+      p.looking_for ? `I am looking for ${String(p.looking_for).replace(/\.$/, '')}.` : 'I am looking for a sincere man who knows what he wants.',
+      'Tell me a little about yourself? What does your usual day look like, and what makes you happy?',
+    ].join('\n\n'),
+    source: 'template', model: null,
+  };
+}
+
+/** A first letter for the site's mail section. */
+export async function generateLetter({ profile, settings, memory = [] }) {
+  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const language = profile.language || settings.ai.language || 'English';
+  if (!apiKey) return templateLetter(profile);
+  const model = settings.ai.model || 'claude-opus-5-5';
+  let out = await callClaude({ apiKey, model, system: LETTER_PROMPT, language, profile, instructions: settings.ai.instructions, memory, max: 3000 });
+  if (FORBIDDEN.some((re) => re.test(out.text))) {
+    out = await callClaude({ apiKey, model, system: LETTER_PROMPT, language, profile, memory, max: 3000, instructions: `${settings.ai.instructions || ''}\nThe previous draft contained contact details, links or messenger names. Never include any of them.`.trim() });
+    if (FORBIDDEN.some((re) => re.test(out.text))) throw new HttpError(422, 'ШІ згенерував лист із контактами/посиланнями. Спробуйте ще раз.');
+  }
+  return { text: out.text.slice(0, 3000), source: 'ai', model: out.model };
 }
 
 // ---------- his reply: keep going or leave him alone ----------

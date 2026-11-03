@@ -67,15 +67,26 @@ function card(m) {
       el('button', { class: 'btn-write', type: 'button', onclick: () => openChat(m) }, 'Write')));
 }
 
+const MSGS_PER_MAN = 10;
+const LETTERS_PER_MAN = 3;
+
 /** Keeps every message: the inbox and the tests look at the first time, the count and the attached files. */
-function recordSent(id, text, files = []) {
+function recordSent(id, text, files = [], translated = false) {
   const sent = store.get('demo_sent', {});
   const prev = sent[id];
   sent[id] = {
     text, at: Date.now(), first: prev?.first || prev?.at || Date.now(), count: (prev?.count || 0) + 1,
-    history: [...(prev?.history || []), text], files: [...(prev?.files || []), ...files],
+    history: [...(prev?.history || []), text], files: [...(prev?.files || []), ...files], translated: translated || prev?.translated || false,
   };
   store.set('demo_sent', sent);
+}
+
+/** Letters (the site's mail) are kept apart from chat messages. */
+function recordLetter(id, subject, text, files = [], translated = false) {
+  const all = store.get('demo_letters', {});
+  const prev = all[id];
+  all[id] = { count: (prev?.count || 0) + 1, at: Date.now(), history: [...(prev?.history || []), { subject, text, files, translated }] };
+  store.set('demo_letters', all);
 }
 
 // Attachments: the chat keeps picked files until "Send".
@@ -197,15 +208,40 @@ function renderProfile() {
   // Profile page chat: a <label> with a hidden file input inside (the other common pattern).
   const fileIn = box.querySelector('input[type=file]');
   fileIn.addEventListener('change', () => { showFiles(box, [...fileIn.files]); fileIn.value = ''; });
+  // Like many real sites: a chat and a letter (mail) mode, each with "N left" for this man, and a translate button.
+  const left = () => ({
+    msgs: Math.max(0, MSGS_PER_MAN - (store.get('demo_sent', {})[m.id]?.count || 0)),
+    letters: Math.max(0, LETTERS_PER_MAN - (store.get('demo_letters', {})[m.id]?.count || 0)),
+  });
+  const showMode = () => {
+    const letter = box.dataset.mode === 'letter';
+    const l = left();
+    box.querySelector('.left-msgs').textContent = `Messages left: ${l.msgs}`;
+    box.querySelector('.left-letters').textContent = `Letters left: ${l.letters}`;
+    box.querySelector('.left-msgs').hidden = letter;
+    box.querySelector('.left-letters').hidden = !letter;
+    box.querySelector('.letter-subject').hidden = !letter;
+  };
+  box.querySelector('.btn-letter').addEventListener('click', () => { box.dataset.mode = 'letter'; showMode(); });
+  box.querySelector('.btn-chat-mode').addEventListener('click', () => { box.dataset.mode = 'chat'; showMode(); });
+  box.querySelector('.btn-translate').addEventListener('click', () => { box.dataset.translated = '1'; });
+  showMode();
   box.querySelector('.btn-send').addEventListener('click', () => {
     const text = box.querySelector('textarea').value.trim();
     const status = box.querySelector('.status');
+    const letter = box.dataset.mode === 'letter';
     if (!text && !(attached.get(box) || []).length) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    if ((letter ? left().letters : left().msgs) === 0) { status.innerHTML = `<span class="send-error">No ${letter ? 'letters' : 'messages'} left for this man</span>`; return; }
     const files = takeFiles(box);
+    const translated = box.dataset.translated === '1';
+    delete box.dataset.translated;
     setTimeout(() => {
-      recordSent(m.id, text, files);
+      if (letter) recordLetter(m.id, box.querySelector('.letter-subject').value.trim(), text, files, translated);
+      else recordSent(m.id, text, files, translated);
       box.querySelector('textarea').value = '';
+      box.querySelector('.letter-subject').value = '';
       status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
+      showMode();
       setTimeout(() => { status.innerHTML = ''; }, 2500);
     }, 400);
   });
@@ -227,5 +263,5 @@ window.addEventListener('DOMContentLoaded', () => {
   if (document.getElementById('results')) { renderSearch(); initModal(); }
   if (document.getElementById('dialogs')) renderInbox();
   const reset = document.getElementById('reset');
-  reset?.addEventListener('click', () => { for (const k of ['demo_sent', 'demo_read', 'demo_likes']) localStorage.removeItem(k); location.reload(); });
+  reset?.addEventListener('click', () => { for (const k of ['demo_sent', 'demo_read', 'demo_likes', 'demo_letters']) localStorage.removeItem(k); location.reload(); });
 });

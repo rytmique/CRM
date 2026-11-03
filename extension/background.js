@@ -22,6 +22,10 @@ let stopRequested = false;
 let lastHeartbeat = 0;
 let keepAliveTimer = null;
 let unseenReplies = 0;
+/** The operator's pauses for the current run (seconds, [from, to]) and typing speed. */
+const DEFAULT_PACE = { think: [2, 6], actionGap: [2, 6], pageGap: [3, 8], cpm: 600 };
+let pace = { ...DEFAULT_PACE };
+const between = ([a, b]) => rand(a, b) * 1000;
 
 async function setState(patch) {
   state = { ...state, ...patch };
@@ -200,26 +204,42 @@ function tzNow(tz) {
     return { h: d.getHours(), m: d.getMinutes(), wd: d.getDay() || 7, day: d.toISOString().slice(0, 10) };
   }
 }
+/** Working windows of a day: [[9, 13], [15, 23]] (older scenarios: one window hoursFrom–hoursTo). */
+const windowsOf = (human) => (human.windows?.length ? human.windows : [[human.hoursFrom, human.hoursTo]]);
 /** Working day and working hour right now? */
 function inSchedule(human, tz) {
   const t = tzNow(tz);
   const days = human.days?.length ? human.days : ALL_DAYS;
-  return days.includes(t.wd) && inHours(t.h, human.hoursFrom, human.hoursTo);
+  return days.includes(t.wd) && windowsOf(human).some(([a, b]) => inHours(t.h, a, b));
 }
-/** Milliseconds until today's working hours end (midnight for a 24-hour day). */
+/** Working milliseconds left today: the rest of this window plus the windows still ahead (24-hour day: until midnight). */
 function msToWindowEnd(human, tz) {
   const t = tzNow(tz);
   const nowMin = t.h * 60 + t.m;
-  let end = (human.hoursFrom === human.hoursTo ? 24 : human.hoursTo) * 60;
-  if (end <= nowMin) end += 24 * 60;
-  return (end - nowMin) * 60000;
+  let left = 0;
+  for (const [a, b] of windowsOf(human)) {
+    if (a === b) return (24 * 60 - nowMin) * 60000;
+    const from = a * 60;
+    const to = (b > a ? b : b + 24) * 60;
+    const start = Math.max(from, nowMin);
+    if (to > start) left += to - start;
+  }
+  return Math.max(60000, left * 60000);
 }
 const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+const hh = (x) => `${String(x).padStart(2, '0')}:00`;
 function scheduleText(human) {
   const d = (human.days?.length ? human.days : ALL_DAYS).slice().sort();
   const days = d.length === 7 ? 'щодня' : d.map((x) => DAY_NAMES[x - 1]).join(', ');
-  const hours = human.hoursFrom === human.hoursTo ? 'цілодобово' : `${String(human.hoursFrom).padStart(2, '0')}:00–${String(human.hoursTo).padStart(2, '0')}:00`;
+  const w = windowsOf(human);
+  const hours = w.length === 1 && (w[0][0] === w[0][1] || (w[0][0] === 0 && w[0][1] === 24)) ? 'цілодобово' : w.map(([a, b]) => `${hh(a)}–${hh(b)}`).join(', ');
   return `${days}, ${hours}`;
+}
+/** When the next working window starts (for the "sleeping" message). */
+function nextStartText(human, tz) {
+  const t = tzNow(tz);
+  const starts = windowsOf(human).map(([a]) => a).sort((x, y) => x - y);
+  return hh(starts.find((a) => a > t.h) ?? starts[0]);
 }
 
 /** Waits until `until` (ms), checking the inbox now and then and stopping on request. */
@@ -236,9 +256,8 @@ async function waitUntil(until, ctx, status = 'waiting') {
 
 /** Outside working hours the bot only watches the inbox. */
 async function waitWorkingHours(ctx) {
-  const { hoursFrom } = ctx.human;
   if (inSchedule(ctx.human, ctx.timezone)) return;
-  const msg = `Неробочий час (${scheduleText(ctx.human)}) — продовжу о ${String(hoursFrom).padStart(2, '0')}:00`;
+  const msg = `Неробочий час (${scheduleText(ctx.human)}) — продовжу о ${nextStartText(ctx.human, ctx.timezone)}`;
   await log(`🌙 ${msg}. Поки що лише стежу за відповідями`);
   await setState({ status: 'sleeping', message: msg });
   let lastInbox = Date.now();
@@ -263,7 +282,7 @@ async function afterMan(ctx, r, messages) {
   if (ctx.human.breakEvery && ctx.sinceBreak >= ctx.breakAt) {
     ctx.sinceBreak = 0;
     ctx.breakAt = Math.round(ctx.human.breakEvery * rand(0.7, 1.3));
-    const ms = ctx.human.breakMinutes * rand(0.6, 1.4) * 60000;
+    const ms = (ctx.human.breakMinutesTo ? rand(ctx.human.breakMinutes, Math.max(ctx.human.breakMinutes, ctx.human.breakMinutesTo)) : ctx.human.breakMinutes * rand(0.6, 1.4)) * 60000;
     await setState({ message: `Перерва ${Math.round(ms / 60000)} хв` });
     await log(`☕ Перерва ${Math.round(ms / 60000)} хв, як у живої людини`);
     await waitUntil(Date.now() + ms, ctx);
@@ -298,6 +317,7 @@ async function guard(ctx, tabId = ctx.tabId) {
   });
   await setState({ status: 'blocked', message: `🛑 ${b.text} — потрібна людина` });
   await heartbeat(true, 'error');
+  api(`/api/bot/profiles/${ctx.profileId}/alert`, { method: 'POST', body: { text: b.text } }).catch(() => {}); // Telegram: a person is needed
   const since = Date.now();
   while (!stopRequested) {
     await sleep(5000);
@@ -473,14 +493,48 @@ async function attachFiles(tabId, site, files, dry) {
 }
 
 /** In the open chat: text → files → Send. */
+/** The letter form: its own fields where taught, the chat ones otherwise. */
+const letterSite = (site) => ({
+  ...site,
+  messageInput: site.letterInput || site.messageInput,
+  sendButton: site.letterSend || site.sendButton,
+  sentConfirm: site.letterConfirm || site.sentConfirm,
+  closeChat: '',
+});
+
+/** In the open chat: (letter form) → the site's counter → text → files → translate → Send. */
 async function writeHere(tabId, site, m, dry, typing) {
-  if (!m.files?.length) return inTab(tabId, 'compose', { site, man: m, dry, typing });
-  const f = await inTab(tabId, 'fill', { site, man: m, dry, typing });
+  const letter = m.via === 'letter';
+  if (letter) {
+    if (!site.letterOpen && !site.letterInput) return { ok: false, error: 'листи ще не навчені — 🎯 → вкладка «Листи»' };
+    if (site.letterOpen) {
+      const o = await inTab(tabId, 'clickAction', { site, man: m, sel: site.letterOpen, name: 'Лист', ctx: 'page', dry }).catch((e) => ({ ok: false, error: e.message }));
+      if (!o?.ok) return { ok: false, error: o?.error || 'кнопку «Лист» не знайдено' };
+      await sleep(rand(800, 1600));
+    }
+  }
+  const s = letter ? letterSite(site) : site;
+  // The site counts what is left ("Залишилося 9 повідомлень"): at 0 nothing more may be sent to him.
+  const counter = letter ? site.letterLeft : site.chatLeft;
+  if (counter) {
+    const n = await inTab(tabId, 'leftCount', { sel: counter }).catch(() => null);
+    if (n === 0) return { ok: false, exhausted: true, error: letter ? 'сайт: листів цьому чоловіку не лишилось' : 'сайт: повідомлень цьому чоловіку не лишилось' };
+  }
+  if (letter && site.letterSubject) {
+    const subject = (m.text.split('\n').find((l) => l.trim()) || '').trim().slice(0, 60);
+    const sj = await inTab(tabId, 'fillSubject', { sel: site.letterSubject, text: subject, dry });
+    if (!sj?.ok) return sj || { ok: false, error: 'поле теми листа не знайдено' };
+  }
+  const f = await inTab(tabId, 'fill', { site: s, man: m, dry, typing, think: pace.think, cpm: pace.cpm });
   if (!f?.ok) return f || { ok: false, error: 'немає відповіді від сторінки' };
-  const a = await attachFiles(tabId, site, m.files, dry).catch((e) => ({ ok: false, error: e.message }));
-  const r = await inTab(tabId, 'submit', { site, dry });
+  const a = m.files?.length ? await attachFiles(tabId, s, m.files, dry).catch((e) => ({ ok: false, error: e.message })) : { ok: true };
+  if (site.translateButton) {
+    const tr = await inTab(tabId, 'clickAction', { site, man: m, sel: site.translateButton, name: 'Перекласти', ctx: 'page', dry }).catch(() => null);
+    if (tr?.ok) await sleep(rand(1800, 3200)); // the site translates
+  }
+  const r = await inTab(tabId, 'submit', { site: s, dry });
   if (!r?.ok) return r || { ok: false, error: 'немає відповіді від сторінки' };
-  return { ...r, attached: a.ok ? m.files.length : 0, warning: a.ok ? '' : `файл не прикріплено: ${a.error}` };
+  return { ...r, letter, attached: a.ok ? (m.files?.length || 0) : 0, warning: a.ok ? '' : `файл не прикріплено: ${a.error}` };
 }
 
 /** Writes from the search list. Works whether "Write" opens a box on the list or goes to his profile/chat page. */
@@ -524,6 +578,8 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
   let msgError = '';
   let did = 0;
   let attached = 0;
+  let letters = 0;
+  let exhausted = false; // the site's own counter says nothing more may be sent to him
   const goToHim = async () => {
     if (!man.url) return false;
     await navigate(tabId, man.url);
@@ -531,8 +587,9 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
     left = true;
     return true;
   };
-  for (const a of actions) {
+  for (const [i, a] of actions.entries()) {
     if (stopRequested || msgError) break;
+    if (i > 0 && !dry) await sleep(between(pace.actionGap)); // like → (pause) → message, as a person would
     if (a.do === 'pause') { await sleep(a.seconds * 1000); continue; }
     if (a.do === 'view') {
       if (!dry && Math.random() * 100 >= (a.chance ?? 100)) continue;
@@ -554,16 +611,19 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
       continue;
     }
     if (a.do === 'message') {
-      const m = { ...man, text: a.text, files: a.files || [] };
+      const m = { ...man, text: a.text, files: a.files || [], via: a.via || 'chat' };
       let res;
       try { res = where === 'card' ? await sendOne(tabId, site, m, dry, typing) : await sendOnPage(tabId, site, m, dry, typing); } catch (e) { res = { ok: false, error: e.message }; }
-      if (res?.ok) { messages++; did++; attached += res.attached || 0; if (res.warning) warnings.push(res.warning); } else msgError = res?.error || 'помилка відправки';
+      if (res?.ok) { messages++; did++; attached += res.attached || 0; if (res.letter) letters++; if (res.warning) warnings.push(res.warning); } else {
+        msgError = res?.error || 'помилка відправки';
+        if (res?.exhausted) exhausted = true;
+      }
     }
   }
   if (left && home) await navigate(tabId, home);
   const hasMessage = actions.some((a) => a.do === 'message');
   const ok = hasMessage ? !msgError && messages > 0 : did > 0;
-  return { ok, messages, attached, error: msgError || (!ok ? warnings.join('; ') : ''), warnings };
+  return { ok, messages, attached, letters, exhausted, error: msgError || (!ok ? warnings.join('; ') : ''), warnings };
 }
 
 /** Follow-ups: men who have not replied and whose next step is due. */
@@ -595,10 +655,12 @@ async function processDue(ctx, force = false) {
     } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
     const text = man.actions.find((a) => a.do === 'message')?.text || '';
     const r = await api(`/api/bot/profiles/${ctx.profileId}/step`, {
-      method: 'POST', body: { man: { id: man.id }, step: man.step, kind: man.kind, ok: res.ok, messages: res.messages, text, error: res.error },
+      method: 'POST', body: { man: { id: man.id }, step: man.step, kind: man.kind, ok: res.ok, messages: res.messages, text, error: res.error, exhausted: res.exhausted },
     });
     const who = man.name || man.id;
-    if (res.ok) {
+    if (res.exhausted) {
+      await log(`⛔ ${who}: ${res.error} — більше не пишемо`);
+    } else if (res.ok) {
       await setState({ sent: state.sent + res.messages, followups: (state.followups || 0) + 1, remaining: r.remaining });
       if (reminder) await log(`💬 ${who}: нагадування після відповіді ✓ (лишилось ${r.left ?? '—'})${r.stage === 'done' ? ' — останнє, далі без відповіді він зникне зі списку' : ''}`);
       else await log(`↻ ${who}: спроба ${man.step}/${man.of} ✓${res.attached ? ` 📎${res.attached}` : ''}${r.stage === 'done' ? ' — остання, далі без відповіді він зникне зі списку' : ''}`);
@@ -663,7 +725,7 @@ async function scanAhead(ctx) {
       await guard(ctx);
       res = await runActions(tabId, site, man, man.actions || [{ do: 'message', text: man.text }], { where: 'page', typing: ctx.human.typing });
     } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
-    const r = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id } });
+    const r = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id, exhausted: res.exhausted } });
     if (res.ok) {
       done++;
       await setState({ sent: state.sent + res.messages, remaining: r.remaining });
@@ -687,6 +749,13 @@ async function loadRun(profileId, test) {
   const human = cfg.scenario?.human || { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, breakMinutes: 10, typing: false };
   const ap = await getAutopilot();
   if (ap?.profileId === profileId) await setAutopilot({ ...ap, human, timezone: cfg.timezone, profileName: cfg.profile.name });
+  const range = (a, b, d) => (Number.isFinite(a) && Number.isFinite(b) ? [a, Math.max(a, b)] : d);
+  pace = {
+    think: range(human.thinkFrom, human.thinkTo, DEFAULT_PACE.think),
+    actionGap: range(human.actionGapFrom, human.actionGapTo, DEFAULT_PACE.actionGap),
+    pageGap: range(human.pageGapFrom, human.pageGapTo, DEFAULT_PACE.pageGap),
+    cpm: human.typeSpeed || DEFAULT_PACE.cpm,
+  };
   return {
     cfg, site, human, profileId, test, limits: cfg.limits, timezone: cfg.timezone,
     sinceBreak: 0, breakAt: Math.round((human.breakEvery || 0) * rand(0.7, 1.3)), lastDue: 0, limitReached: false,
@@ -759,12 +828,14 @@ async function run(profileId, tabId) {
         let res;
         try { res = await runActions(tabId, site, man, man.actions || [{ do: 'message', text: man.text }], { where: 'card', typing: ctx.human.typing, home: listUrl }); } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
         const r = await api(`/api/bot/profiles/${profileId}/sent`, {
-          method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id },
+          method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id, exhausted: res.exhausted },
         });
-        if (res.ok) {
+        if (res.exhausted) {
+          await log(`⛔ ${man.name || man.id}: ${res.error} — пропускаю`);
+        } else if (res.ok) {
           failsInRow = 0;
           await setState({ sent: state.sent + res.messages, remaining: r.remaining });
-          await log(`✓ ${man.name || man.id}${res.attached ? ` 📎${res.attached}` : ''}`);
+          await log(`✓ ${man.name || man.id}${res.letters ? ' ✉ лист' : ''}${res.attached ? ` 📎${res.attached}` : ''}`);
           for (const w of res.warnings) await log(`  ⚠ ${w}`, 'warn');
         } else {
           failsInRow++;
@@ -789,6 +860,7 @@ async function run(profileId, tabId) {
       if (await advance(tabId, site)) {
         noGrowth = 0;
         await setState({ page: state.page + 1 });
+        await sleep(between(pace.pageGap));
       } else if (site.nextPage) {
         await log('Сторінки закінчились');
         break;

@@ -58,7 +58,7 @@ try {
   const maria = await api('POST', '/api/profiles', { name: 'Maria', age: 27, interests: 'dancing, books', city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id, license_id: lic[1].id }, owner);
   await api('POST', '/api/profiles', { name: 'Olha', age: 35, city: 'Odesa', country: 'Ukraine', site_id: site.id, status: 'paused' }, owner);
   await api('PUT', '/api/settings', { settings: { inboxCheckEvery: 2 } }, owner);
-  const FAST = { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: false, spread: false };
+  const FAST = { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: false, spread: false, thinkFrom: 0, thinkTo: 1, actionGapFrom: 0, actionGapTo: 1, pageGapFrom: 0, pageGapTo: 1 };
   await api('PUT', `/api/sites/${site.id}/scenario`, { scenario: {
     steps: [{ actions: [{ do: 'click', action: 'like' }, { do: 'message', text: 'invite' }] }, { wait: 24, actions: [{ do: 'message', text: 'followup' }] }],
     human: FAST,
@@ -400,6 +400,49 @@ try {
   await popup.click('#stop');
   await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
   log('captcha ok: the bot paused, waited for a person, then went on slower');
+
+  // ---------- letters: the site's mail form, its "N left" counter, translate ----------
+  const letterSite = await api('POST', '/api/sites', { name: 'Демо: листи', config: {
+    searchUrl: `${BASE}/demo-site/search.html`, card: '.man-card', cardId: 'a.man-name@href', cardName: '.man-name', cardAge: '.man-age', nextPage: 'a.next-page',
+    openChat: 'a.man-name', messageInput: '#profile-chat textarea', sendButton: '#profile-chat .btn-send', sentConfirm: '#profile-chat .sent-ok',
+    sendError: '#profile-chat .send-error', manUrl: `${BASE}/demo-site/profile.html?id={id}`, translateButton: '#profile-chat .btn-translate',
+    chatLeft: '#profile-chat .left-msgs', letterOpen: '#profile-chat .btn-letter', letterSubject: '#profile-chat .letter-subject', letterLeft: '#profile-chat .left-letters',
+  } }, owner);
+  await api('PUT', `/api/sites/${letterSite.id}/scenario`, { scenario: { steps: [{ actions: [{ do: 'message', text: 'letter', via: 'letter' }] }], human: FAST } }, owner);
+  await api('PATCH', `/api/profiles/${maria.id}`, { site_id: letterSite.id, daily_limit: 6 }, owner); // 2 more today
+  const mariaSent = new Set((await api('GET', `/api/stats/messages?profile_id=${maria.id}&limit=100`, null, owner)).messages.filter((m) => m.status === 'sent').map((m) => m.man_id));
+  const full = Array.from({ length: 32 }, (_, i) => String(100000 + i * 37)).find((id) => !mariaSent.has(id));
+  // site order for this run: forget what the platform "learned" above, so no scan-ahead reorders the men
+  const sdb2 = new DatabaseSync(path.join(tmp, 'agency.db'));
+  sdb2.exec("DELETE FROM man_stats");
+  sdb2.close();
+  // the next man in the list already got all his letters: the site's counter shows 0 → the bot must skip him
+  await sitePage.evaluate((id) => { const l = JSON.parse(localStorage.getItem('demo_letters') || '{}'); l[id] = { count: 3, history: [] }; localStorage.setItem('demo_letters', JSON.stringify(l)); }, full);
+  await popup.bringToFront();
+  await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${maria.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(maria.id));
+  await popup.click('#start');
+  const t5 = Date.now();
+  do { await sleep(1000); st = await readState(); } while (!(st.startedAt >= t5 - 5000 && ['limit', 'error', 'stopped', 'watching'].includes(st.status)) && Date.now() - t5 < 240000);
+  const letterLog = st.log.map((l) => l.text).join('\n');
+  if (st.status !== 'limit') fail(`letters run: ${st.status}\n${letterLog}`);
+  const letters = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_letters') || '{}'));
+  if (letters[full].history.length) fail(`wrote a letter to ${full}, who had none left`);
+  const got = Object.entries(letters).filter(([id, l]) => id !== full && l.history.length);
+  if (got.length !== 2) fail(`expected 2 letters, got ${got.length}:\n${letterLog}`);
+  for (const [, l] of got) {
+    const x = l.history.at(-1);
+    if (!x.subject || !x.text.includes('Maria') || x.text.length < 300 || !x.translated) fail(`letter: ${JSON.stringify(x)}`);
+  }
+  if (!/⛔ .*листів/.test(letterLog)) fail(`no skip of the man without letters:\n${letterLog}`);
+  const fullRow = (await api('GET', `/api/stats/messages?profile_id=${maria.id}&limit=100`, null, owner)).messages.find((m) => m.man_id === full);
+  if (fullRow?.status !== 'failed') fail(`the man without letters: ${JSON.stringify(fullRow)}`);
+  const mariaDetail = await api('GET', `/api/profiles/${maria.id}`, null, owner);
+  if (!mariaDetail.usesLetters || !mariaDetail.letter?.text) fail('letter text not shown in the profile');
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  log(`letters ok: 2 letters with a subject, translated; the man with 0 letters left was skipped`);
 
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();

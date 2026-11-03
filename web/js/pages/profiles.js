@@ -134,7 +134,7 @@ export default async function profilesPage(main, { user }) {
 
   // ---------- details + invites ----------
   async function openDetail(id) {
-    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName, reengage, afterReply, bestInvite, variantsWanted = 3 } = await get(`/api/profiles/${id}`);
+    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName, reengage, afterReply, bestInvite, variantsWanted = 3, letter, usesLetters } = await get(`/api/profiles/${id}`);
     const body = h('div.detail');
     const m = modal({ title: `${p.name}${p.age ? `, ${p.age}` : ''}`, body, wide: true });
 
@@ -223,10 +223,11 @@ export default async function profilesPage(main, { user }) {
       h('div.row-wrap', addFiles, picker));
 
     const REENGAGE = 100;
+    const LETTER = 200;
     const followupBox = (step) => {
-      const f = step === REENGAGE ? reengage : followups.find((x) => x.step === step);
-      const ta = textarea(`followup-${step}`, f?.text || '', step === REENGAGE
-        ? { rows: 6, maxlength: 3000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨. Варіанти розділяйте рядком ---' }
+      const f = step === REENGAGE ? reengage : step === LETTER ? letter : followups.find((x) => x.step === step);
+      const ta = textarea(`followup-${step}`, f?.text || '', step >= REENGAGE
+        ? { rows: step === LETTER ? 10 : 6, maxlength: 3000, placeholder: step === LETTER ? 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨' : 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨. Варіанти розділяйте рядком ---' }
         : { rows: 3, maxlength: 1000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨' });
       const gen = h('button.btn.sm', '✨ ШІ');
       gen.addEventListener('click', () => busy(gen, async () => {
@@ -239,7 +240,7 @@ export default async function profilesPage(main, { user }) {
         await put(`/api/profiles/${p.id}/followups/${step}`, { text: ta.value });
         toast('Збережено');
       }).catch(() => {}));
-      return h('div.followup-box', h('b.small', step === REENGAGE ? 'Нагадування (бот бере випадковий варіант)' : `Спроба ${step}`, f ? h('span.muted', ` · ${SOURCE[f.source] || f.source}`) : null), ta, h('div.row-wrap', gen, save));
+      return h('div.followup-box', h('b.small', step === REENGAGE ? 'Нагадування (бот бере випадковий варіант)' : step === LETTER ? 'Лист' : `Спроба ${step}`, f ? h('span.muted', ` · ${SOURCE[f.source] || f.source}`) : null), ta, h('div.row-wrap', gen, save));
     };
     body.append(...[
       h('div.detail-head',
@@ -272,6 +273,10 @@ export default async function profilesPage(main, { user }) {
         h('h3', 'Повторні повідомлення', scenarioName ? badge(`шаблон: ${scenarioName}`, 'accent') : null),
         h('p.small.muted', 'Бот надсилає їх тим, хто не відповів, за сценарієм сайту (Сайти → ⚙ Сценарій). {name} — ім’я чоловіка.'),
         followupSteps.map(followupBox)) : null,
+      usesLetters || letter ? h('section',
+        h('h3', '✉ Лист'),
+        h('p.small.muted', 'Довший лист через пошту сайту — якщо в сценарії є крок «✉ листом». Тема — перший рядок. {name} — ім’я чоловіка.'),
+        followupBox(LETTER)) : null,
       afterReply?.attempts ? h('section',
         h('h3', 'Після відповіді: якщо він замовк'),
         h('p.small.muted', `Через ${afterReply.silenceHours} год тиші бот нагадає про себе, далі кожні ${afterReply.everyHours} год, до ${afterReply.attempts} разів (+${afterReply.attempts} за кожну нову відповідь). {name} — ім’я чоловіка.`),

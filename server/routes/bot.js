@@ -5,11 +5,11 @@ import {
   getSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
-import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply } from '../ai.js';
+import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter } from '../ai.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
 import { SITE_FIELDS, sanitizeSiteConfig, fillUrl } from '../sites.js';
-import { profileScenario, followupSteps, filterReason, pickVariant, attempts } from '../scenario.js';
+import { profileScenario, followupSteps, filterReason, pickVariant, attempts, usesLetters } from '../scenario.js';
 import { filesForStep, mediaFile } from '../media.js';
 import { scoreMen, manFeatures, hostOf, learnSent, learnReply, rankingState } from '../scoring.js';
 import { inviteStats, pickInvite, optimizeProfile, memoryLines } from '../learning.js';
@@ -18,6 +18,8 @@ const HOUR = 3600000;
 const MAX_STEP_FAILS = 3;
 /** followups.step that holds the "---"-separated reminders for men who replied and went quiet. */
 export const REENGAGE_STEP = 100;
+/** followups.step that holds the AI letter (the site's mail section). */
+export const LETTER_STEP = 200;
 const MAX_BONUS = 100;
 
 /** API used by the browser extension (the bot). */
@@ -71,10 +73,11 @@ export default function botRoutes(db, cfg) {
         // One of the live variants: the ones that get more replies are picked more often.
         if (a.text === 'invite') { const v = pickInvite(ctx.variants) || ctx.invite; t = v?.text || ''; inviteId = v?.id ?? null; }
         else if (a.text === 'followup') t = ctx.followups.get(idx + 1) || ctx.invite?.text || '';
+        else if (a.text === 'letter') t = ctx.followups.get(LETTER_STEP) || templateLetter(ctx.p).text;
         else t = pickVariant(a.custom);
         t = personalize(fillHer(t, ctx.p), man);
         const files = filesForStep(db, ctx.p.id, idx + 1, a.files);
-        if (t || files.length) out.push({ do: 'message', text: t, files });
+        if (t || files.length) out.push({ do: 'message', text: t, files, via: a.via || 'chat' });
       } else if (a.do === 'click') {
         const def = (ctx.config.actions || []).find((x) => x.key === a.action);
         if (def) out.push({ do: 'click', key: def.key, name: def.name, sel: def.sel, where: def.where, chance: a.chance ?? 100 });
@@ -165,6 +168,11 @@ export default function botRoutes(db, cfg) {
       }
       previous.push(have.get(step));
     }
+    if (usesLetters(scenario) && !have.has(LETTER_STEP)) {
+      let gen;
+      try { gen = await generateLetter({ profile: p, settings, memory: memoryLines(db, settings) }); } catch { gen = templateLetter(p); }
+      saveFollowup(db, { profileId: p.id, step: LETTER_STEP, text: gen.text, source: gen.source, model: gen.model });
+    }
     if (scenario.afterReply.attempts > 0 && !have.has(REENGAGE_STEP)) {
       let gen;
       try { gen = await generateReengage({ profile: p, settings }); } catch { gen = templateReengage(); }
@@ -176,7 +184,12 @@ export default function botRoutes(db, cfg) {
       site: { id: site.id, name: site.name, base_url: site.base_url, config: JSON.parse(site.config || '{}') },
       invite: { id: invite.id, text: invite.text },
       variants: variants.length,
-      limits: { ...limits, remaining },
+      // Pause between men: the profile's own > the scenario's > the agency default.
+      limits: {
+        ...limits, remaining,
+        minDelay: p.min_delay ?? scenario.human.gapFrom ?? limits.minDelay,
+        maxDelay: Math.max(p.min_delay ?? scenario.human.gapFrom ?? limits.minDelay, p.max_delay ?? scenario.human.gapTo ?? limits.maxDelay),
+      },
       license: lic,
       inboxCheckEvery: settings.inboxCheckEvery,
       timezone: settings.timezone,
@@ -377,7 +390,10 @@ export default function botRoutes(db, cfg) {
     } else if (!reminder && m.step === stepNo - 1 && m.stage === 'active') {
       tx(db, () => {
         touch();
-        if (ok) {
+        if (!ok && req.body?.exhausted) {
+          state = { stage: 'done', next_at: null }; // the site itself allows no more messages to him
+          db.prepare('UPDATE messages SET stage = ?, next_at = NULL, error = ? WHERE id = ?').run('done', str(req.body?.error, { max: 300 }) || 'повідомлень не лишилось', m.id);
+        } else if (ok) {
           state = after(ctx.scenario, stepNo - 1, t);
           db.prepare('UPDATE messages SET step = ?, stage = ?, next_at = ?, last_at = ?, fails = 0 WHERE id = ?').run(stepNo, state.stage, state.next_at, t, m.id);
         } else {
@@ -478,6 +494,25 @@ export default function botRoutes(db, cfg) {
     const ok = Boolean(req.body?.ok) && !problems.length;
     db.prepare('UPDATE profiles SET test_at = ?, test_ok = ?, test_info = ? WHERE id = ?').run(now(), ok ? 1 : 0, problems.join('\n'), p.id);
     res.json({ ok: true });
+  });
+
+  /** Captcha / block: a person is needed now — Telegram to the operator, the woman and the agency (once per 10 min). */
+  const lastAlert = new Map();
+  r.post('/profiles/:id/alert', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = getSettings(db, req.user.agencyId);
+    const t = now();
+    if (t - (lastAlert.get(p.id) || 0) < 10 * 60000) return res.json({ ok: true, sent: false });
+    lastAlert.set(p.id, t);
+    const text = str(req.body?.text, { max: 200 }) || 'Сайт показав капчу';
+    const token = settings.telegram.botToken;
+    if (token) {
+      const operator = p.operator_id ? db.prepare('SELECT tg_chat_id FROM users WHERE id = ?').get(p.operator_id) : null;
+      const targets = new Set([operator?.tg_chat_id, settings.telegram.chatId, req.user.tgChatId].filter(Boolean));
+      const msg = `🛑 Анкета <b>${escapeHtml(p.name)}</b>: ${escapeHtml(text)}.\nБот на паузі — відкрийте вкладку сайту й розв’яжіть, далі він продовжить сам.`;
+      for (const chatId of targets) sendTelegram(token, chatId, msg).catch(() => {});
+    }
+    res.json({ ok: true, sent: Boolean(token) });
   });
 
   r.post('/profiles/:id/heartbeat', (req, res) => {

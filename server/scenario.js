@@ -8,7 +8,8 @@
  *                          a short reminder every `everyHours`, up to `afterReply.attempts` (+N per positive reply).
  *
  * A step is a list of actions:
- *   { do: 'message', text: 'invite' | 'followup' | 'custom', custom?: 'variant 1\n---\nvariant 2',
+ *   { do: 'message', text: 'invite' | 'followup' | 'letter' | 'custom', custom?: 'variant 1\n---\nvariant 2',
+ *     via: 'chat' | 'letter',                              chat message or the site's letter (mail) form
  *     files: 'all' | 'one' | 'none' }                     the profile's files marked for this step (all / one random)
  *   { do: 'click', action: '<key of a taught button>', chance }   e.g. like, wink, add to favourites
  *   { do: 'view', chance: 0..100, seconds }               open his profile and look through it like a person would
@@ -22,7 +23,15 @@ export const DEFAULT_SCENARIO = Object.freeze({
     { wait: 48, actions: [{ do: 'message', text: 'followup' }] },
   ],
   filters: { countries: '', excludeCountries: '', needMarks: [], skipMarks: [] },
-  human: { hoursFrom: 9, hoursTo: 23, days: [1, 2, 3, 4, 5, 6, 7], perHour: 40, breakEvery: 20, breakMinutes: 10, typing: true, spread: true },
+  human: {
+    hoursFrom: 9, hoursTo: 23, windows: [[9, 23]], days: [1, 2, 3, 4, 5, 6, 7], perHour: 40, breakEvery: 20, breakMinutes: 10, breakMinutesTo: 20,
+    typing: true, typeSpeed: 600, spread: true,
+    // pauses in seconds, each a random value between "from" and "to"
+    gapFrom: null, gapTo: null, // between men (empty = from the profile / agency settings)
+    thinkFrom: 2, thinkTo: 6, // after his chat opened, before typing
+    actionGapFrom: 2, actionGapTo: 6, // between actions of a step (like → message)
+    pageGapFrom: 3, pageGapTo: 8, // before the next page of the list
+  },
   afterReply: { attempts: 10, silenceHours: 48, everyHours: 48 },
 });
 
@@ -38,12 +47,35 @@ const num = (v, min, max, def) => {
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 const keys = (v) => (Array.isArray(v) ? [...new Set(v.map(String).filter((k) => KEY_RE.test(k)))].slice(0, 20) : []);
 
+/** A "from–to" pause: both numbers, to ≥ from. `def` null = may stay empty. */
+function pair(src, name, min, max, def) {
+  const f = `${name}From`;
+  const t = `${name}To`;
+  const empty = (v) => v === null || v === undefined || v === '';
+  if (def === null && empty(src[f]) && empty(src[t])) return { [f]: null, [t]: null };
+  const a = Math.round(num(src[f], min, max, def ? def[f] : min));
+  const b = Math.round(num(src[t], min, max, def ? def[t] : a));
+  return { [f]: Math.min(a, b), [t]: Math.max(a, b) };
+}
+
+/** "9-13, 15-23" or [[9,13],[15,23]] → [[9,13],[15,23]]; nothing valid → one window from–to. */
+export function readWindows(v, from, to) {
+  const list = (Array.isArray(v) ? v : String(v ?? '').split(/[,;]+/).map((x) => x.split(/[-–—]/)))
+    .map((w) => (Array.isArray(w) ? w.map((x) => Number(String(x).trim().replace(/:00$/, ''))) : []))
+    .filter((w) => w.length === 2 && w.every((x) => Number.isInteger(x) && x >= 0 && x <= 24) && w[0] !== w[1])
+    .slice(0, 6);
+  if (list.length) return list.sort((a, b) => a[0] - b[0]);
+  const f = Math.round(num(from, 0, 24, 9));
+  const t = Math.round(num(to, 0, 24, 23));
+  return [[f, t]];
+}
+
 function sanitizeAction(a) {
   if (!a || typeof a !== 'object') return null;
   switch (a.do) {
     case 'message': {
-      const src = ['invite', 'followup', 'custom'].includes(a.text) ? a.text : 'invite';
-      const out = { do: 'message', text: src, files: ['all', 'one', 'none'].includes(a.files) ? a.files : 'all' };
+      const src = ['invite', 'followup', 'letter', 'custom'].includes(a.text) ? a.text : 'invite';
+      const out = { do: 'message', text: src, via: a.via === 'letter' ? 'letter' : 'chat', files: ['all', 'one', 'none'].includes(a.files) ? a.files : 'all' };
       if (src === 'custom') {
         out.custom = text(a.custom, 6000);
         if (!out.custom) return null;
@@ -72,7 +104,7 @@ export function sanitizeScenario(input) {
   const ar = src.afterReply || {};
   const d = DEFAULT_SCENARIO.human;
   const da = DEFAULT_SCENARIO.afterReply;
-  return {
+  const out = {
     steps: steps.length ? steps : structuredClone(DEFAULT_SCENARIO.steps),
     filters: {
       countries: text(f.countries, 500),
@@ -83,9 +115,17 @@ export function sanitizeScenario(input) {
     human: {
       hoursFrom: Math.round(num(hm.hoursFrom, 0, 24, d.hoursFrom)),
       hoursTo: Math.round(num(hm.hoursTo, 0, 24, d.hoursTo)),
+      // several working windows a day ("9-13, 15-23"); hoursFrom/hoursTo stay as the first start / last end
+      windows: readWindows(hm.windows, hm.hoursFrom ?? d.hoursFrom, hm.hoursTo ?? d.hoursTo),
       perHour: Math.round(num(hm.perHour, 0, 500, d.perHour)),
       breakEvery: Math.round(num(hm.breakEvery, 0, 500, d.breakEvery)),
       breakMinutes: Math.round(num(hm.breakMinutes, 1, 180, d.breakMinutes)),
+      breakMinutesTo: Math.round(num(hm.breakMinutesTo ?? hm.breakMinutes ?? d.breakMinutesTo, 1, 240, d.breakMinutesTo)),
+      typeSpeed: Math.round(num(hm.typeSpeed, 60, 1500, d.typeSpeed)),
+      ...pair(hm, 'gap', 5, 7200, null),
+      ...pair(hm, 'think', 0, 120, d),
+      ...pair(hm, 'actionGap', 0, 300, d),
+      ...pair(hm, 'pageGap', 0, 600, d),
       typing: hm.typing === undefined ? d.typing : Boolean(hm.typing),
       // working days, 1 = Monday … 7 = Sunday (agency time zone); none picked = every day
       days: (() => {
@@ -101,6 +141,14 @@ export function sanitizeScenario(input) {
       everyHours: Math.round(num(ar.everyHours, 1, 720, da.everyHours)),
     },
   };
+  const w = out.human.windows;
+  if (w.length > 1 || (Array.isArray(hm.windows) || typeof hm.windows === 'string')) {
+    out.human.hoursFrom = w[0][0];
+    out.human.hoursTo = w.at(-1)[1];
+  }
+  // "Round the clock" (from = to) stays one window
+  if (hm.windows === undefined && out.human.hoursFrom === out.human.hoursTo) out.human.windows = [[out.human.hoursFrom, out.human.hoursTo]];
+  return out;
 }
 
 /** Ready-made templates everyone has; agencies save their own on top. */
@@ -143,6 +191,9 @@ export function profileScenario(db, profile, site) {
 
 /** How many of the steps send a message ("спроби"). */
 export const attempts = (scenario) => scenario.steps.filter((s) => s.actions.some((a) => a.do === 'message')).length;
+
+/** Does any step send the AI letter? */
+export const usesLetters = (scenario) => scenario.steps.some((s) => s.actions.some((a) => a.do === 'message' && a.text === 'letter'));
 
 /** Step numbers (1-based) whose messages are AI follow-ups. */
 export const followupSteps = (scenario) => scenario.steps

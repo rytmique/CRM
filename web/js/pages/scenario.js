@@ -15,12 +15,23 @@ const FILES = [
 const TEXTS = [
   ['invite', 'Інвайт анкети'],
   ['followup', 'Повторне повідомлення (пише ШІ)'],
+  ['letter', 'Лист (пише ШІ, довший)'],
   ['custom', 'Свій текст'],
+];
+const VIA = [
+  ['chat', '💬 у чат'],
+  ['letter', '✉ листом'],
 ];
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 
 const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+/** "9:00–13:00, 15:00–23:00" or "цілодобово". */
+function windowsSummary(hm) {
+  const w = hm.windows?.length ? hm.windows : [[hm.hoursFrom, hm.hoursTo]];
+  if (w.length === 1 && (w[0][0] === w[0][1] || (w[0][0] === 0 && w[0][1] === 24))) return 'цілодобово';
+  return w.map(([a, b]) => `${a}:00–${b}:00`).join(', ');
+}
 /** "Пн–Пт", "щодня", "Пн, Ср, Пт". */
 export function daysText(days) {
   const d = (days?.length ? days : [1, 2, 3, 4, 5, 6, 7]).slice().sort();
@@ -36,7 +47,7 @@ export function scenarioSummary(sc) {
   return [
     `${tries} ${tries === 1 ? 'спроба' : tries < 5 ? 'спроби' : 'спроб'}`,
     hm.days && hm.days.length < 7 ? daysText(hm.days) : null,
-    hm.hoursFrom !== hm.hoursTo ? `${hm.hoursFrom}:00–${hm.hoursTo}:00` : 'цілодобово',
+    windowsSummary(hm),
     hm.spread ? 'рівномірно на день' : null,
     hm.perHour ? `до ${hm.perHour}/год` : null,
     hm.typing ? 'друкує як людина' : null,
@@ -89,7 +100,8 @@ export async function openScenarioEditor(opts) {
   function actionRow(step, a, i) {
     const parts = [selectEl(a.do, ACTIONS, (v) => { step.actions[i] = defaultAction(v); if (v === 'message' && step === sc.steps[0]) step.actions[i].text = 'invite'; renderSteps(); })];
     if (a.do === 'message') {
-      parts.push(selectEl(a.text, TEXTS, (v) => { a.text = v; if (v === 'custom' && !a.custom) a.custom = ''; renderSteps(); }));
+      parts.push(selectEl(a.text, TEXTS, (v) => { a.text = v; if (v === 'custom' && !a.custom) a.custom = ''; if (v === 'letter') a.via = 'letter'; renderSteps(); }));
+      parts.push(selectEl(a.via || 'chat', VIA, (v) => { a.via = v; renderSteps(); }));
       parts.push(selectEl(a.files || 'all', FILES, (v) => { a.files = v; }));
     } else if (a.do === 'click') {
       const known = taught.some((t) => t.key === a.action);
@@ -113,6 +125,7 @@ export async function openScenarioEditor(opts) {
       return h('div', row, ta, h('small.hint', '{name} — його ім’я, {her_name} — її ім’я. Кілька варіантів розділяйте рядком ---'));
     }
     if (a.do === 'message' && a.text === 'followup') return h('div', row, h('small.hint', 'ШІ один раз пише текст для кожної анкети. Побачити й змінити — в анкеті, розділ «Повторні повідомлення». Файли вибираються в анкеті → «Файли».'));
+    if (a.do === 'message' && a.via === 'letter') return h('div', row, h('small.hint', '✉ Лист іде через пошту сайту. Навчіть бота: 🎯 → вкладка «Листи» (кнопка-конверт, поле, «Надіслати»). Текст листа ШІ пише один раз — в анкеті, розділ «Лист».'));
     return row;
   }
 
@@ -175,6 +188,12 @@ export async function openScenarioEditor(opts) {
   let body = buildBody();
   function buildBody() {
   const hm = sc.human;
+  /** "from – to" seconds pair of hm.<name>From / hm.<name>To. */
+  const range = (label, name, { min, max, empty }, hint) => field(label, h('div.pair',
+    num(hm[`${name}From`], { min, max, placeholder: empty || 'від' }, (v) => { hm[`${name}From`] = v; }),
+    num(hm[`${name}To`], { min, max, placeholder: empty || 'до' }, (v) => { hm[`${name}To`] = v; })), hint);
+  const windowsText = (hm.windows?.length ? hm.windows : [[hm.hoursFrom, hm.hoursTo]])
+    .map(([a, b]) => (a === b ? '0-24' : `${a}-${b}`)).join(', ');
   sc.afterReply ||= { attempts: 10, silenceHours: 48, everyHours: 48 };
   const ar = sc.afterReply;
   return h('div.scenario',
@@ -198,7 +217,8 @@ export async function openScenarioEditor(opts) {
       field('Далі кожні, год', num(ar.everyHours, { min: 1, max: 720 }, (v) => { ar.everyHours = v ?? 48; }))),
     h('h3', 'Розклад і темп — щоб не палити анкету'),
     h('div.form-grid',
-      h('div.pair', field('Працювати з, год', num(hm.hoursFrom, { min: 0, max: 24 }, (v) => { hm.hoursFrom = v ?? 0; })), field('до, год', num(hm.hoursTo, { min: 0, max: 24 }, (v) => { hm.hoursTo = v ?? 0; }))),
+      field('Робочі години', input('windows', windowsText, { placeholder: '9-13, 15-23', oninput: (e) => { hm.windows = e.target.value; } }),
+        'Кілька вікон через кому, напр. 9-13, 15-23. Цілодобово: 0-24'),
       h('div.field', h('label', 'Робочі дні'), h('div.row-wrap', DAY_NAMES.map((name, i) => {
         hm.days ||= [1, 2, 3, 4, 5, 6, 7];
         return h('label.check', h('input', { type: 'checkbox', checked: hm.days.includes(i + 1), onchange: (e) => {
@@ -209,9 +229,16 @@ export async function openScenarioEditor(opts) {
         'Рівномірно на весь робочий день — денний ліміт розтягується до кінця робочого часу, а не витрачається за пів години'),
       h('small.hint.span-2', '⏰ Автопілот у розширенні сам вмикає бота в робочий час і вимикає після. Галочка «Автопілот» — у вікні розширення.'),
       field('Не більше повідомлень на годину', num(hm.perHour, { min: 0, max: 500 }, (v) => { hm.perHour = v ?? 0; }), '0 — без обмеження'),
-      h('div.pair', field('Перерва кожні, повідомл.', num(hm.breakEvery, { min: 0, max: 500 }, (v) => { hm.breakEvery = v ?? 0; })), field('на, хв', num(hm.breakMinutes, { min: 1, max: 180 }, (v) => { hm.breakMinutes = v ?? 10; }))),
+      h('div.pair', field('Перерва кожні, повідомл.', num(hm.breakEvery, { min: 0, max: 500 }, (v) => { hm.breakEvery = v ?? 0; }), '0 — без перерв'),
+        field('на, хв (від–до)', h('div.pair', num(hm.breakMinutes, { min: 1, max: 180 }, (v) => { hm.breakMinutes = v ?? 10; }), num(hm.breakMinutesTo ?? hm.breakMinutes, { min: 1, max: 240 }, (v) => { hm.breakMinutesTo = v ?? hm.breakMinutes; })))),
       h('label.check', h('input', { type: 'checkbox', checked: hm.typing, onchange: (e) => { hm.typing = e.target.checked; } }), 'Друкувати текст по літері, як людина'),
-      h('small.hint.span-2', 'Час — за часовим поясом агенції. Звичайні паузи між повідомленнями задаються в анкеті або в Налаштуваннях. Числа трохи «гуляють» випадково, щоб не було рівного ритму.')));
+      field('Швидкість друку, знаків за хвилину', num(hm.typeSpeed ?? 600, { min: 60, max: 1500, step: 10 }, (v) => { hm.typeSpeed = v ?? 600; }), 'Довгий текст однаково друкується не довше ~25 с'),
+      h('h4.span-2', '⏱ Паузи (секунди, кожен раз випадково між «від» і «до»)'),
+      range('Між чоловіками', 'gap', { min: 5, max: 7200, empty: 'з анкети' }, 'Порожньо — як в анкеті (Розсилка → Пауза) або в Налаштуваннях'),
+      range('Подумати перед текстом', 'think', { min: 0, max: 120 }, 'Після того, як відкрився його чат'),
+      range('Між діями кроку', 'actionGap', { min: 0, max: 300 }, 'Напр. між лайком і повідомленням'),
+      range('Перед наступною сторінкою', 'pageGap', { min: 0, max: 600 }),
+      h('small.hint.span-2', 'Час — за часовим поясом агенції. Пауза між чоловіками: якщо задана в анкеті — береться з анкети, інакше звідси, інакше з Налаштувань. Усі числа «гуляють» випадково, щоб не було рівного ритму.')));
   }
 
   function check() {

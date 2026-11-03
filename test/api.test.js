@@ -738,3 +738,53 @@ test('setup wizard follows a new operator from nothing to a running bot', async 
   const last = (await call('GET', '/api/stats/setup', undefined, 'newop')).data;
   assert.equal(last.done, true);
 });
+
+test('letters, the site counters, more pauses and several work windows', async () => {
+  await login('admin8', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Aster', ownerName: 'A', ownerEmail: 'owner@aster', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin8');
+  await login('aster', 'owner@aster', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'aster')).data.sites[0];
+  assert.ok(site.config.letterOpen && site.config.letterLeft && site.config.chatLeft, 'demo site knows its letter form and counters');
+
+  // step 1: an invite in the chat; step 2: a letter. Pauses and two work windows.
+  const sc = await call('PUT', `/api/sites/${site.id}/scenario`, { scenario: {
+    steps: [
+      { actions: [{ do: 'message', text: 'invite' }] },
+      { wait: 24, actions: [{ do: 'message', text: 'letter', via: 'letter' }] },
+    ],
+    human: { windows: '9-13, 15-23', gapFrom: 90, gapTo: 30, thinkFrom: 3, thinkTo: 7, actionGapFrom: 1, actionGapTo: 2, pageGapFrom: 5, pageGapTo: 9, breakMinutes: 5, breakMinutesTo: 15, typeSpeed: 400 },
+  } }, 'aster');
+  assert.equal(sc.status, 200, JSON.stringify(sc.data));
+  const hm = sc.data.scenario.human;
+  assert.deepEqual(hm.windows, [[9, 13], [15, 23]]);
+  assert.equal(hm.hoursFrom, 9);
+  assert.equal(hm.hoursTo, 23);
+  assert.deepEqual([hm.gapFrom, hm.gapTo], [30, 90], 'from/to swapped into order');
+  assert.deepEqual([hm.thinkFrom, hm.thinkTo, hm.breakMinutes, hm.breakMinutesTo, hm.typeSpeed], [3, 7, 5, 15, 400]);
+  assert.equal(sc.data.scenario.steps[1].actions[0].via, 'letter');
+
+  const p = (await call('POST', '/api/profiles', { name: 'Iryna', interests: 'books, sea', site_id: site.id, license_id: 'auto' }, 'aster')).data;
+  const cfg = (await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'aster')).data;
+  assert.deepEqual([cfg.limits.minDelay, cfg.limits.maxDelay], [30, 90], 'scenario pause between men when the profile has none');
+  assert.deepEqual(cfg.scenario.human.windows, [[9, 13], [15, 23]]);
+  const detail = (await call('GET', `/api/profiles/${p.id}`, undefined, 'aster')).data;
+  assert.equal(detail.usesLetters, true);
+  assert.ok(detail.letter.text.length > 300 && detail.letter.text.includes('{name}'), 'the letter is written once, at start');
+
+  // step 2 resolves to the letter, sent via the letter form
+  await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: { id: '930001', name: 'Mark' }, ok: true, text: 'hi' }, 'aster');
+  await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: { id: '930002', name: 'Paul' }, ok: true, text: 'hi' }, 'aster');
+  db.prepare('UPDATE messages SET next_at = 1 WHERE profile_id = ?').run(p.id);
+  const due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'aster')).data;
+  const letterAction = due.men[0].actions[0];
+  assert.equal(letterAction.via, 'letter');
+  assert.match(letterAction.text, /^Hello (Mark|Paul)!/);
+  // the site says no letters are left for Paul → he is done, no more attempts
+  const st = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '930002' }, step: 2, ok: false, exhausted: true, error: 'сайт: листів цьому чоловіку не лишилось' }, 'aster');
+  assert.equal(st.data.stage, 'done');
+
+  // a captcha: Telegram alert (no token here → not sent), at most once per 10 minutes
+  const a1 = await call('POST', `/api/bot/profiles/${p.id}/alert`, { text: 'Сайт показав капчу' }, 'aster');
+  assert.equal(a1.status, 200);
+  assert.equal(a1.data.sent, false);
+});
