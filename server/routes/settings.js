@@ -4,6 +4,7 @@ import { bad, mask, mergeSettings, ah, int, str } from '../util.js';
 import { getSettings } from '../services.js';
 import { DEFAULT_PROMPT, PROMPT_VARS } from '../ai.js';
 import { sendTelegram } from '../telegram.js';
+import { memoryLines } from '../learning.js';
 
 const isMasked = (v) => typeof v === 'string' && v.includes('••••');
 
@@ -26,7 +27,10 @@ export default function settingsRoutes(db) {
 
   r.get('/', (req, res) => {
     const agency = db.prepare('SELECT name FROM agencies WHERE id = ?').get(req.user.agencyId);
-    res.json({ settings: view(getSettings(db, req.user.agencyId)), agencyName: agency?.name || '', defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS });
+    res.json({
+      settings: view(getSettings(db, req.user.agencyId)), agencyName: agency?.name || '', defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS,
+      memory: memoryLines(db, { ai: { sharedMemory: true } }),
+    });
   });
 
   r.put('/', (req, res) => {
@@ -51,6 +55,8 @@ export default function settingsRoutes(db) {
         if (patch.ai[k] !== undefined) patch.ai[k] = str(patch.ai[k], { max: k === 'instructions' ? 2000 : 80 }) || '';
       }
       if (patch.ai.model === '') patch.ai.model = 'claude-opus-5-5';
+      if (patch.ai.variants !== undefined) patch.ai.variants = int(patch.ai.variants, { min: 1, max: 5, field: 'варіантів інвайту' }) ?? 3;
+      for (const k of ['autoOptimize', 'sharedMemory']) if (patch.ai[k] !== undefined) patch.ai[k] = Boolean(patch.ai[k]);
       if (patch.ai.masterPrompt !== undefined) {
         const mp = String(patch.ai.masterPrompt ?? '').replace(/\r\n/g, '\n').trim();
         if (mp.length > 8000) throw bad('Майстер-промт задовгий (макс. 8000 символів)');

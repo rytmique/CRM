@@ -134,34 +134,56 @@ export default async function profilesPage(main, { user }) {
 
   // ---------- details + invites ----------
   async function openDetail(id) {
-    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName, reengage, afterReply } = await get(`/api/profiles/${id}`);
+    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName, reengage, afterReply, bestInvite, variantsWanted = 3 } = await get(`/api/profiles/${id}`);
     const body = h('div.detail');
     const m = modal({ title: `${p.name}${p.age ? `, ${p.age}` : ''}`, body, wide: true });
 
-    const active = invites.find((i) => i.active);
-    const inviteText = textarea('text', active?.text || '', { rows: 5, maxlength: 1000 });
-    const counter = h('small.hint');
-    const updCounter = () => { counter.textContent = `${inviteText.value.length} символів · {name} підставляється ім’ям чоловіка`; };
-    inviteText.addEventListener('input', updCounter);
-    updCounter();
-
-    const genBtn = h('button.btn.primary', '✨ Згенерувати ШІ');
+    // ---------- invite variants (A/B test): the bot sends the ones that get more replies more often ----------
+    const live = invites.filter((i) => i.active);
+    const pct = (i) => (i.sent ? `${Math.round((i.replies / i.sent) * 1000) / 10}%` : '—');
+    const variantCard = (i) => {
+      const ta = textarea(`inv-${i.id}`, i.text, { rows: 4, maxlength: 1000 });
+      const counter = h('small.hint');
+      const upd = () => { counter.textContent = `${ta.value.length} символів · {name} підставляється ім’ям чоловіка`; };
+      ta.addEventListener('input', upd);
+      upd();
+      const save = h('button.btn.sm', 'Зберегти правки');
+      save.addEventListener('click', () => busy(save, async () => {
+        await patch(`/api/profiles/${p.id}/invites/${i.id}`, { text: ta.value });
+        toast('Збережено');
+      }).catch(() => {}));
+      const off = h('button.btn.sm.ghost', { disabled: live.length <= 1, title: live.length <= 1 ? 'Останній варіант не вимикається' : '' }, '⏸ Вимкнути');
+      off.addEventListener('click', () => busy(off, async () => {
+        await post(`/api/profiles/${p.id}/invites/${i.id}/retire`);
+        toast('Варіант вимкнено');
+        reopen();
+      }).catch(() => {}));
+      return h(`div.variant${i.id === bestInvite ? '.best' : ''}`,
+        h('div.row-wrap.small',
+          i.id === bestInvite ? badge('🏆 найкращий', 'ok') : null,
+          badge(SOURCE[i.source] || i.source, 'muted'),
+          h('span', `надіслано ${fmtInt(i.sent)} · відповіли ${fmtInt(i.replies)} · `, h('b', pct(i)))),
+        ta, counter, h('div.row-wrap', save, off));
+    };
+    const genBtn = h('button.btn.primary', { disabled: live.length >= 5 }, '✨ Ще варіант (ШІ)');
     genBtn.addEventListener('click', () => busy(genBtn, async () => {
-      const r = await post(`/api/profiles/${p.id}/invites/generate`);
-      toast(r.invite.source === 'template' ? 'Згенеровано шаблоном (ключ Claude не налаштовано)' : 'Новий інвайт згенеровано', r.invite.source === 'template' ? 'warn' : 'ok');
-      m.close();
-      load();
-      openDetail(p.id);
-    }).catch(() => {}));
-    const saveBtn = h('button.btn', active ? 'Зберегти правки' : 'Зберегти як інвайт');
-    saveBtn.addEventListener('click', () => busy(saveBtn, async () => {
-      if (active) await patch(`/api/profiles/${p.id}/invites/${active.id}`, { text: inviteText.value });
-      else await post(`/api/profiles/${p.id}/invites`, { text: inviteText.value });
-      toast('Інвайт збережено');
-      m.close();
-      openDetail(p.id);
+      const r = await post(`/api/profiles/${p.id}/invites/generate`, { variant: true });
+      toast(r.invite.source === 'template' ? 'Згенеровано шаблоном (ключ Claude не налаштовано)' : 'Новий варіант додано', r.invite.source === 'template' ? 'warn' : 'ok');
+      reopen();
       load();
     }).catch(() => {}));
+    const ownBtn = h('button.btn', { disabled: live.length >= 5 }, '+ Свій варіант');
+    ownBtn.addEventListener('click', () => {
+      const ta = textarea('own', '', { rows: 5, maxlength: 1000, placeholder: 'Hi {name}! …' });
+      const ok = h('button.btn.primary', 'Додати');
+      const mm = modal({ title: 'Свій варіант інвайту', body: h('div', ta, h('p.small.muted', '{name} — ім’я чоловіка. Варіант одразу піде в ротацію.')), actions: [h('button.btn', { onclick: () => mm.close() }, 'Скасувати'), ok] });
+      ok.addEventListener('click', () => busy(ok, async () => {
+        await post(`/api/profiles/${p.id}/invites`, { text: ta.value, variant: true });
+        toast('Варіант додано');
+        mm.close();
+        reopen();
+      }).catch(() => {}));
+    });
 
     const history = invites.filter((i) => !i.active);
     const reopen = () => { m.close(); openDetail(p.id); };
@@ -241,10 +263,10 @@ export default async function profilesPage(main, { user }) {
         funnel.talking ? h('span', `💬 у розмові (бот нагадає, якщо замовкне): ${fmtInt(funnel.talking)}`) : null,
         funnel.negative ? h('span', `🙅 «не цікаво»: ${fmtInt(funnel.negative)}`) : null) : null,
       h('section',
-        h('h3', 'Інвайт-повідомлення', active ? badge(SOURCE[active.source] || active.source, 'muted') : null),
-        h('p.small.muted', 'Бот надсилає цей текст усім новим чоловікам. Відповіді веде жінка сама.'),
-        inviteText, counter,
-        h('div.row-wrap', genBtn, saveBtn)),
+        h('h3', 'Інвайти', badge(`у ротації: ${live.length}`, 'accent')),
+        h('p.small.muted', `Бот пише новим чоловікам одним із варіантів і частіше бере той, на який більше відповідають. Слабкі варіанти він сам вимикає й пише нові, щоб у ротації було ${variantsWanted} (Налаштування → ШІ). Відповіді веде жінка сама.`),
+        live.length ? h('div.variants', live.map(variantCard)) : h('p.muted', 'Ще немає — з’явиться при першому запуску бота або натисніть ✨'),
+        h('div.row-wrap', genBtn, ownBtn)),
       filesSection,
       followupSteps.length ? h('section',
         h('h3', 'Повторні повідомлення', scenarioName ? badge(`шаблон: ${scenarioName}`, 'accent') : null),
@@ -255,11 +277,11 @@ export default async function profilesPage(main, { user }) {
         h('p.small.muted', `Через ${afterReply.silenceHours} год тиші бот нагадає про себе, далі кожні ${afterReply.everyHours} год, до ${afterReply.attempts} разів (+${afterReply.attempts} за кожну нову відповідь). {name} — ім’я чоловіка.`),
         followupBox(REENGAGE)) : null,
       history.length ? h('section',
-        h('h3', 'Попередні варіанти'),
+        h('h3', 'Вимкнені варіанти'),
         h('ul.invite-history', history.map((i) => h('li',
           h('p', i.text),
-          h('div.row-wrap', h('small.muted', `${SOURCE[i.source] || i.source} · ${fmtDate(i.created_at)}`),
-            h('button.btn.sm', { onclick: safe(async () => { await post(`/api/profiles/${p.id}/invites/${i.id}/activate`); toast('Інвайт активовано'); m.close(); openDetail(p.id); load(); }) }, 'Зробити активним'),
+          h('div.row-wrap', h('small.muted', `${SOURCE[i.source] || i.source} · ${fmtDate(i.created_at)} · надіслано ${fmtInt(i.sent || 0)}, відповіли ${pct(i)}${i.retired_at ? ' · вимкнув бот або ви' : ''}`),
+            h('button.btn.sm', { disabled: live.length >= 5, onclick: safe(async () => { await post(`/api/profiles/${p.id}/invites/${i.id}/activate`, { add: true }); toast('Повернуто в ротацію'); reopen(); load(); }) }, '↺ Повернути в ротацію'),
             h('button.btn.sm.ghost', { onclick: safe(async () => { await del(`/api/profiles/${p.id}/invites/${i.id}`); m.close(); openDetail(p.id); }) }, 'Видалити')))))) : null,
       owner ? h('div.danger-zone', h('button.btn.danger.ghost', { onclick: safe(async () => {
         if (!(await confirmDialog(`Видалити анкету «${p.name}» разом зі статистикою? Ліцензія звільниться.`, { ok: 'Видалити', danger: true }))) return;

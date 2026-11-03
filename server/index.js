@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { openDb } from './db.js';
+import { runLearning } from './learning.js';
 import { createApp, ensureAdmin } from './app.js';
 import { seedTestData } from './seed.js';
 import { hashPassword } from './auth.js';
@@ -76,6 +77,11 @@ const server = app.listen(PORT, HOST, () => {
   console.log('  Зупинити: закрийте це вікно або натисніть Ctrl+C.\n');
   if (process.env.OPEN_BROWSER === '1') openBrowser(PUBLIC_URL);
 });
+
+// Learning: every 30 min the invites are compared, weak variants replaced, platform lessons refreshed.
+const learn = () => runLearning(db, console).catch((e) => console.error('learning:', e.message));
+setTimeout(learn, 60000).unref();
+setInterval(learn, 30 * 60000).unref();
 
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {

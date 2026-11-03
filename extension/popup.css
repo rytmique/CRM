@@ -2,6 +2,10 @@
 @media (prefers-color-scheme: dark) { :root { --ink:#f1edf3; --muted:#a59bab; --line:#3a3340; --bg:#1d1a21; --soft:#26222b; } }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+.guide { border: 1px dashed var(--accent); background: var(--soft); color: var(--ink); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; line-height: 1.45; margin: 6px 0; }
+.guide b { color: var(--accent); }
+.pulse { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(194, 37, 92, .25); } }
 body { width: 360px; margin: 0; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
 header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
 header .muted { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }

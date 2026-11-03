@@ -12,6 +12,7 @@ import { SITE_FIELDS, sanitizeSiteConfig, fillUrl } from '../sites.js';
 import { profileScenario, followupSteps, filterReason, pickVariant, attempts } from '../scenario.js';
 import { filesForStep, mediaFile } from '../media.js';
 import { scoreMen, manFeatures, hostOf, learnSent, learnReply, rankingState } from '../scoring.js';
+import { inviteStats, pickInvite, optimizeProfile, memoryLines } from '../learning.js';
 
 const HOUR = 3600000;
 const MAX_STEP_FAILS = 3;
@@ -53,7 +54,7 @@ export default function botRoutes(db, cfg) {
     const config = configOf(site);
     return {
       p, site, config, scenario: profileScenario(db, p, site),
-      invite: activeInvite(db, p.id), followups: followupTexts(db, p.id),
+      invite: activeInvite(db, p.id), variants: inviteStats(db, p.id), followups: followupTexts(db, p.id),
     };
   };
 
@@ -67,7 +68,8 @@ export default function botRoutes(db, cfg) {
     for (const a of step?.actions || []) {
       if (a.do === 'message') {
         let t = '';
-        if (a.text === 'invite') { t = ctx.invite?.text || ''; inviteId = ctx.invite?.id ?? null; }
+        // One of the live variants: the ones that get more replies are picked more often.
+        if (a.text === 'invite') { const v = pickInvite(ctx.variants) || ctx.invite; t = v?.text || ''; inviteId = v?.id ?? null; }
         else if (a.text === 'followup') t = ctx.followups.get(idx + 1) || ctx.invite?.text || '';
         else t = pickVariant(a.custom);
         t = personalize(fillHer(t, ctx.p), man);
@@ -113,7 +115,7 @@ export default function botRoutes(db, cfg) {
 
   r.get('/profiles', (req, res) => {
     const scope = profileScope(req.user);
-    const rows = db.prepare(`SELECT p.id, p.name, p.age, p.photo_url, p.status, p.site_profile_id, s.name AS site_name, s.base_url
+    const rows = db.prepare(`SELECT p.id, p.name, p.age, p.photo_url, p.status, p.site_profile_id, p.test_ok, s.name AS site_name, s.base_url, s.config AS site_config
       FROM profiles p LEFT JOIN sites s ON s.id = p.site_id WHERE ${scope.where} ORDER BY p.name COLLATE NOCASE`).all(...scope.params);
     const settings = getSettings(db, req.user.agencyId);
     const day = dayKey(now(), settings.timezone);
@@ -121,8 +123,15 @@ export default function botRoutes(db, cfg) {
       profiles: rows.map((p) => {
         const full = db.prepare('SELECT * FROM profiles WHERE id = ?').get(p.id);
         const limits = limitsFor(full, settings);
+        const { site_config: sc, test_ok: tested, ...rest } = p;
+        let siteCfg = {};
+        try { siteCfg = JSON.parse(sc || '{}'); } catch { /* none */ }
         return {
-          ...p,
+          ...rest,
+          siteReady: Boolean(sc) && SITE_FIELDS.filter((f) => f.required).every((f) => siteCfg[f.key]),
+          searchUrl: siteCfg.searchUrl || '',
+          tested: Boolean(tested),
+          started: Boolean(db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND status = 'sent' LIMIT 1").get(p.id)),
           license: licenseState(profileLicense(db, p.id)),
           sentToday: sentToday(db, p.id, day),
           dailyLimit: limits.dailyLimit,
@@ -137,9 +146,12 @@ export default function botRoutes(db, cfg) {
     const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(p.site_id);
     let invite = activeInvite(db, p.id);
     if (!invite) {
-      const gen = await generateInvite({ profile: p, settings });
+      const gen = await generateInvite({ profile: p, settings, memory: memoryLines(db, settings) });
       invite = insertInvite(db, { profileId: p.id, text: gen.text, source: gen.source, model: gen.model, userId: req.user.id });
     }
+    // A few variants live at once; weak ones are replaced by new ones (AI down must not stop the bot).
+    await optimizeProfile(db, p, settings).catch(() => {});
+    const variants = inviteStats(db, p.id);
     const scenario = profileScenario(db, p, site);
     // Follow-up texts are written once per profile and step, like the invite.
     const have = followupTexts(db, p.id);
@@ -163,6 +175,7 @@ export default function botRoutes(db, cfg) {
       profile: { id: p.id, name: p.name, age: p.age, site_profile_id: p.site_profile_id },
       site: { id: site.id, name: site.name, base_url: site.base_url, config: JSON.parse(site.config || '{}') },
       invite: { id: invite.id, text: invite.text },
+      variants: variants.length,
       limits: { ...limits, remaining },
       license: lic,
       inboxCheckEvery: settings.inboxCheckEvery,
@@ -222,9 +235,11 @@ export default function botRoutes(db, cfg) {
       if (filterReason(m, ctx.scenario.filters)) { skipped.filter++; continue; }
       ok.push(m);
     }
-    // Stable sort: equal scores (no data yet) keep the site's own order.
-    const ranked = scoreMen(db, ok, siteHost(ctx.site, ctx.config)).map((m, i) => ({ m, i }))
-      .sort((a, b) => b.m.score - a.m.score || a.i - b.i).map(({ m }) => ({ ...m, why: markNames(ctx.config, m.why) }));
+    // Best first once the platform has enough data; until then the site's own order (scores would be noise).
+    const scored = scoreMen(db, ok, siteHost(ctx.site, ctx.config)).map((m) => ({ ...m, why: markNames(ctx.config, m.why) }));
+    const ranked = rankingState(db).ready
+      ? scored.map((m, i) => ({ m, i })).sort((a, b) => b.m.score - a.m.score || a.i - b.i).map(({ m }) => m)
+      : scored;
     return { ranked, skipped };
   };
 
@@ -454,6 +469,15 @@ export default function botRoutes(db, cfg) {
     }
     if (fresh.length) notifyReplies(db, p, settings, fresh, req.user);
     res.json({ ok: true, new: fresh.length, negative, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name, mood: m.reply_mood })) });
+  });
+
+  /** Result of a 🧪 test run (nothing else of the test is stored). */
+  r.post('/profiles/:id/test', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const problems = Array.isArray(req.body?.problems) ? req.body.problems.map((x) => String(x).slice(0, 200)).slice(0, 10) : [];
+    const ok = Boolean(req.body?.ok) && !problems.length;
+    db.prepare('UPDATE profiles SET test_at = ?, test_ok = ?, test_info = ? WHERE id = ?').run(now(), ok ? 1 : 0, problems.join('\n'), p.id);
+    res.json({ ok: true });
   });
 
   r.post('/profiles/:id/heartbeat', (req, res) => {

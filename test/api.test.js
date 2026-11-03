@@ -5,6 +5,8 @@ import { createApp, ensureAdmin } from '../server/app.js';
 import { setAiClientFactory } from '../server/ai.js';
 import { personalize } from '../server/personalize.js';
 import { buildZip } from '../server/zip.js';
+import { optimizeProfile, pickInvite, inviteStats, refreshMemory, memoryLines } from '../server/learning.js';
+import { getSettings } from '../server/services.js';
 
 let server, base, db;
 const tokens = {};
@@ -638,4 +640,101 @@ test('men are ranked by what their profile shows: platform-wide reply stats', as
   assert.equal(next.men[0].step, 1);
   const again = (await call('GET', `/api/bot/profiles/${p.id}/pool/next?limit=10`, undefined, 'peony')).data;
   assert.equal(again.men.length, 0, 'handed out once');
+});
+
+test('invites learn: variants by reply rate, weak ones replaced, shared lessons in the prompt', async () => {
+  setAiClientFactory(null);
+  await login('admin6', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Daisy', ownerName: 'D', ownerEmail: 'owner@daisy', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin6');
+  await login('daisy', 'owner@daisy', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'daisy')).data.sites[0];
+  const p = (await call('POST', '/api/profiles', { name: 'Vika', interests: 'art, dogs', site_id: site.id, license_id: 'auto' }, 'daisy')).data;
+
+  // the bot start fills the rotation up to 3 variants (templates without a key)
+  const cfg = (await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'daisy')).data;
+  assert.equal(cfg.variants, 3);
+  const live = inviteStats(db, p.id);
+  assert.equal(live.length, 3);
+  const [a, b, c] = live;
+
+  // A: 15 of 60 answered, B: 1 of 60, C: new
+  const agency = db.prepare('SELECT agency_id FROM profiles WHERE id = ?').get(p.id).agency_id;
+  const ins = db.prepare("INSERT INTO messages (agency_id, profile_id, man_id, invite_id, status, day, sent_at, replied_at, reply_mood) VALUES (?,?,?,?, 'sent', '2026-11-01', 1, ?, ?)");
+  for (let i = 0; i < 60; i++) ins.run(agency, p.id, `a${i}`, a.id, i < 15 ? 2 : null, i < 15 ? 'positive' : '');
+  for (let i = 0; i < 60; i++) ins.run(agency, p.id, `b${i}`, b.id, i < 1 ? 2 : null, i < 1 ? 'positive' : '');
+  const stats = inviteStats(db, p.id);
+  assert.equal(stats.find((v) => v.id === a.id).replies, 15);
+
+  // Thompson sampling: the strong one is picked most of the time, the new one still gets a chance
+  const picks = { a: 0, b: 0, c: 0 };
+  for (let i = 0; i < 2000; i++) { const v = pickInvite(stats); picks[v.id === a.id ? 'a' : v.id === b.id ? 'b' : 'c']++; }
+  assert.ok(picks.a > picks.b * 10, JSON.stringify(picks));
+  assert.ok(picks.c > 20, `new variant explored: ${JSON.stringify(picks)}`);
+
+  // the optimizer retires B (clearly worse) and writes a new one
+  const out = await optimizeProfile(db, db.prepare('SELECT * FROM profiles WHERE id = ?').get(p.id), getSettings(db, agency));
+  assert.deepEqual(out.retired, [b.id]);
+  assert.equal(out.added.length, 1);
+  assert.equal(inviteStats(db, p.id).length, 3);
+  assert.ok(db.prepare('SELECT retired_at FROM invites WHERE id = ?').get(b.id).retired_at);
+
+  // panel: variants with numbers, the best marked; retire / add by hand
+  const detail = (await call('GET', `/api/profiles/${p.id}`, undefined, 'daisy')).data;
+  assert.equal(detail.bestInvite, a.id);
+  assert.equal(detail.invites.find((i) => i.id === a.id).sent, 60);
+  const manual = await call('POST', `/api/profiles/${p.id}/invites`, { text: 'Hi {name}! A variant I wrote myself :)', variant: true }, 'daisy');
+  assert.equal(manual.status, 201);
+  assert.equal(inviteStats(db, p.id).length, 4, 'added to the rotation');
+  assert.equal((await call('POST', `/api/profiles/${p.id}/invites/${manual.data.invite.id}/retire`, {}, 'daisy')).status, 200);
+  assert.equal(inviteStats(db, p.id).length, 3);
+
+  // shared memory: admin lessons + numbers-based ones go into the prompt
+  const mem = await call('POST', '/api/admin/memory', { text: 'Mention one concrete hobby and ask about his weekend.' }, 'admin6');
+  assert.equal(mem.status, 201);
+  assert.equal((await call('GET', '/api/admin/memory', undefined, 'daisy')).status, 403);
+  await refreshMemory(db, { force: true });
+  assert.ok(memoryLines(db, getSettings(db, agency)).includes('Mention one concrete hobby and ask about his weekend.'));
+  let seen = null;
+  setAiClientFactory(() => ({ beta: { messages: { create: async (req) => { seen = req; return { stop_reason: 'end_turn', model: req.model, content: [{ type: 'text', text: 'Hello {name}! I paint and walk my dog every morning. What do you love doing on a weekend?' }] }; } } } }));
+  await call('PUT', '/api/settings', { settings: { ai: { apiKey: 'sk-test-123456' } } }, 'daisy');
+  const gen = await call('POST', `/api/profiles/${p.id}/invites/generate`, { variant: true }, 'daisy');
+  assert.equal(gen.status, 201, JSON.stringify(gen.data));
+  assert.match(seen.messages[0].content, /What works on this platform[\s\S]*concrete hobby/);
+  assert.match(seen.messages[0].content, /gets the most replies so far/, 'the best variant is the model for new ones');
+  assert.equal(inviteStats(db, p.id).length, 4);
+  // an agency may switch the shared memory off
+  await call('PUT', '/api/settings', { settings: { ai: { sharedMemory: false } } }, 'daisy');
+  await call('POST', `/api/profiles/${p.id}/invites/generate`, { variant: true }, 'daisy');
+  assert.doesNotMatch(seen.messages[0].content, /What works on this platform/);
+  setAiClientFactory(null);
+});
+
+test('setup wizard follows a new operator from nothing to a running bot', async () => {
+  await login('admin7', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Lotus', ownerName: 'L', ownerEmail: 'owner@lotus', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin7');
+  await login('lotus', 'owner@lotus', 'ownerpass1');
+  await call('POST', '/api/operators', { name: 'New', email: 'new@lotus', password: 'newpass1' }, 'lotus');
+  await login('newop', 'new@lotus', 'newpass1');
+  const steps = async () => Object.fromEntries((await call('GET', '/api/stats/setup', undefined, 'newop')).data.steps.map((s) => [s.key, s.done]));
+  assert.deepEqual(await steps(), { site: false, profile: false, extension: false, teach: false, test: false, start: false });
+
+  const site = (await call('POST', '/api/sites', { name: 'Real site', base_url: 'https://dating.example/', config: { searchUrl: 'https://dating.example/search' } }, 'newop')).data;
+  const p = (await call('POST', '/api/profiles', { name: 'Ola', site_id: site.id }, 'newop')).data;
+  assert.deepEqual(await steps(), { site: true, profile: true, extension: false, teach: false, test: false, start: false });
+  const setup = (await call('GET', '/api/stats/setup', undefined, 'newop')).data;
+  assert.equal(setup.site.searchUrl, 'https://dating.example/search');
+  assert.ok(setup.steps.find((s) => s.key === 'teach').missing.length >= 3);
+
+  await login('newopbot', 'new@lotus', 'newpass1', 'bot'); // logged in from the extension
+  assert.equal((await steps()).extension, true);
+  await call('PUT', `/api/bot/sites/${site.id}`, { config: { searchUrl: 'https://dating.example/search', card: '.c', cardId: '@data-id', openChat: '.w', messageInput: 'textarea' } }, 'newopbot');
+  assert.equal((await steps()).teach, true);
+  await call('POST', `/api/bot/profiles/${p.id}/test`, { ok: false, problems: ['no cards'] }, 'newopbot');
+  assert.equal((await call('GET', '/api/stats/setup', undefined, 'newop')).data.steps.find((s) => s.key === 'test').failed, 'no cards');
+  await call('POST', `/api/bot/profiles/${p.id}/test`, { ok: true }, 'newopbot');
+  assert.equal((await steps()).test, true);
+  await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'newopbot');
+  await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: { id: '900001', name: 'Tom' }, ok: true, text: 'hi' }, 'newopbot');
+  const last = (await call('GET', '/api/stats/setup', undefined, 'newop')).data;
+  assert.equal(last.done, true);
 });

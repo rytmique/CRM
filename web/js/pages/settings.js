@@ -11,7 +11,7 @@ const MODELS = [
 export default async function settingsPage(main) {
   const page = h('div.page');
   main.replaceChildren(page);
-  const [{ settings: s, agencyName, defaultPrompt, promptVars }, { profiles }] = await Promise.all([get('/api/settings'), get('/api/profiles')]);
+  const [{ settings: s, agencyName, defaultPrompt, promptVars, memory = [] }, { profiles }] = await Promise.all([get('/api/settings'), get('/api/profiles')]);
   const master = promptEditor({ value: s.ai.masterPrompt || defaultPrompt, defaultPrompt, promptVars, profiles, rows: 18 });
 
   const els = {
@@ -29,6 +29,9 @@ export default async function settingsPage(main) {
     maxDelay: input('maxDelay', s.defaults.maxDelay, { type: 'number', min: 5, max: 3600 }),
     inboxCheckEvery: input('inboxCheckEvery', s.inboxCheckEvery, { type: 'number', min: 0, max: 500 }),
     dedupe: h('input', { type: 'checkbox', checked: s.dedupeAcrossAgency }),
+    variants: input('variants', s.ai.variants ?? 3, { type: 'number', min: 1, max: 5 }),
+    autoOptimize: h('input', { type: 'checkbox', checked: s.ai.autoOptimize !== false }),
+    sharedMemory: h('input', { type: 'checkbox', checked: s.ai.sharedMemory !== false }),
   };
 
   const save = h('button.btn.primary', 'Зберегти налаштування');
@@ -37,7 +40,10 @@ export default async function settingsPage(main) {
       agencyName: els.agencyName.value,
       settings: {
         timezone: els.timezone.value || 'Europe/Kyiv',
-        ai: { model: els.model.value, apiKey: els.apiKey.value, language: els.language.value, instructions: els.instructions.value, masterPrompt: master.value() },
+        ai: {
+          model: els.model.value, apiKey: els.apiKey.value, language: els.language.value, instructions: els.instructions.value, masterPrompt: master.value(),
+          variants: Math.min(5, Math.max(1, Number(els.variants.value) || 3)), autoOptimize: els.autoOptimize.checked, sharedMemory: els.sharedMemory.checked,
+        },
         telegram: { botToken: els.botToken.value, chatId: els.chatId.value },
         defaults: { dailyLimit: Number(els.dailyLimit.value), minDelay: Number(els.minDelay.value), maxDelay: Number(els.maxDelay.value) },
         inboxCheckEvery: Number(els.inboxCheckEvery.value),
@@ -74,6 +80,14 @@ export default async function settingsPage(main) {
         field('Ключ Anthropic API', els.apiKey, s.ai.envKey && !s.ai.hasKey ? 'Ключ задано на сервері (ANTHROPIC_API_KEY). Можна вказати окремий для агенції.' : 'Без ключа інвайти генеруються простим шаблоном'),
         field('Мова інвайтів за замовчуванням', els.language),
         field('Додаткові інструкції для ШІ', els.instructions)),
+      h('section.card', h('h3', 'Навчання інвайтів'),
+        h('p.small.muted', 'Бот сам порівнює варіанти інвайтів за відповідями: частіше шле кращий, слабкі вимикає й пише нові.'),
+        field('Варіантів інвайту в ротації на анкету', els.variants, '1 — без порівняння; 3 — оптимально'),
+        h('label.check', els.autoOptimize, 'Самі вимикати слабкі варіанти й писати нові'),
+        h('label.check', els.sharedMemory, 'Використовувати спільну пам’ять платформи (уроки з відповідей усіх агенцій, анонімно)'),
+        memory.length
+          ? h('details', h('summary.small', `Що вже знає пам’ять (${memory.length})`), h('ul.tips.small', memory.map((l) => h('li', l))))
+          : h('p.small.muted', 'Пам’ять ще порожня — уроки з’являться, коли набереться статистика відповідей.')),
       h('section.card.span-all', h('h3', 'Майстер-промт для інвайтів', master.badge),
         h('p.small.muted', 'Головна інструкція для ШІ: як саме писати інвайт. Діє на всі анкети агенції, крім тих, де задано свій промт. Дані анкети ШІ отримує автоматично; змінні — щоб вставити їх у конкретне місце промту. Зміни діють після «Зберегти налаштування».'),
         master.el),

@@ -19,19 +19,18 @@ function tile(label, value, sub, kind = '') {
 const HIDE_KEY = 'agc_onboarding_hidden';
 const hidden = () => { try { return localStorage.getItem(HIDE_KEY) === '1'; } catch { return false; } };
 
-/** "First steps": only the next thing to do is highlighted. */
-function onboardingCard(steps, navigate, onHide) {
-  const required = steps.filter((s) => !s.optional);
-  if (!steps.length || (required.every((s) => s.done) && steps.every((s) => s.done || s.optional))) return null;
-  const doneCount = steps.filter((s) => s.done).length;
-  const next = steps.find((s) => !s.done && !s.optional) || steps.find((s) => !s.done);
+const SETUP_TITLES = { site: 'додати сайт', profile: 'створити анкету', extension: 'встановити розширення', teach: 'навчити бота сайту', test: 'запустити 🧪 тест', start: 'натиснути ▶ Старт' };
+
+/** Until the bot has sent its first invite: one banner that leads to the setup wizard. */
+function setupBanner(s, navigate, onHide) {
+  if (!s?.steps || s.done) return null;
+  const doneCount = s.steps.filter((x) => x.done).length;
+  const next = s.steps.find((x) => !x.done);
   return h('section.card.onboarding',
-    h('div.onb-head', h('h3', 'Перші кроки', h('span.count', `${doneCount} з ${steps.length}`)),
+    h('div.onb-head', h('h3', '🚀 Підключення', h('span.count', `${doneCount} з ${s.steps.length}`)),
       h('button.btn.sm.ghost', { onclick: onHide }, 'Сховати')),
-    h('ol.onb-list', steps.map((s) => h(`li${s === next ? '.next' : ''}${s.done ? '.done' : ''}`,
-      h('span.onb-mark', { 'aria-hidden': 'true' }, s.done ? '✓' : s === next ? '→' : ''),
-      h('div.onb-text', h('b', s.title, s.optional ? h('span.muted', ' · необов’язково') : ''), s === next || !s.done ? h('div.small.muted', s.hint) : null),
-      s.done ? null : h(`button.btn.sm${s === next ? '.primary' : ''}`, { onclick: () => navigate(s.page) }, s === next ? 'Зробити →' : 'Відкрити')))));
+    h('p', 'Наступний крок: ', h('b', SETUP_TITLES[next.key] || next.key), '. Майстер покаже, що натиснути, і сам поставить ✓.'),
+    h('button.btn.primary', { onclick: () => navigate('setup') }, 'Продовжити →'));
 }
 
 export default async function dashboard(main, { user, navigate }) {
@@ -45,9 +44,9 @@ export default async function dashboard(main, { user, navigate }) {
   async function load() {
     const [st, onb] = await Promise.all([
       get(`/api/stats/overview?days=${days}`),
-      user.role === 'owner' && !hidden() ? get('/api/stats/onboarding') : Promise.resolve({ steps: [] }),
+      !hidden() ? get('/api/stats/setup').catch(() => null) : Promise.resolve(null),
     ]);
-    const onboarding = onboardingCard(onb.steps, navigate, () => { try { localStorage.setItem(HIDE_KEY, '1'); } catch { /* ignore */ } load(); });
+    const onboarding = setupBanner(onb, navigate, () => { try { localStorage.setItem(HIDE_KEY, '1'); } catch { /* ignore */ } load(); });
     periodBtns.forEach((b, i) => b.classList.toggle('on', [7, 14, 30][i] === days));
     const op = user.role === 'operator';
 
@@ -86,7 +85,7 @@ export default async function dashboard(main, { user, navigate }) {
         h('tbody', st.operators.map((o) => h('tr', h('td', o.name), h('td.num', fmtInt(o.sent_today)), h('td.num', fmtInt(o.sent_period)), h('td.num', fmtInt(o.replied_period)),
           h('td.num', o.sent_period ? fmtPct(o.replied_period / o.sent_period) : '—'))))))) : null;
 
-    page.replaceChildren(
+    page.replaceChildren(...[
       h('div.page-head', h('h1', 'Дашборд'), h('div.seg-group', { role: 'group', 'aria-label': 'Період' }, periodBtns)),
       onboarding,
       tiles,
@@ -94,7 +93,8 @@ export default async function dashboard(main, { user, navigate }) {
       h('div.grid-main',
         h('section.card', h('h3', 'Анкети'), h('div.table-wrap', profTable)),
         h('section.card', h('h3', 'Останні відповіді'), replies)),
-      operators);
+      operators,
+    ].filter(Boolean)); // DOM replaceChildren would print "null"
   }
 
   await load();

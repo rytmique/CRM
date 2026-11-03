@@ -8,6 +8,8 @@ import { tx, now } from '../db.js';
 import { bad, notFound, str, int, licenseKey, updateSql } from '../util.js';
 import { licenseState } from '../services.js';
 import { demoSiteConfig } from '../sites.js';
+import { refreshMemory } from '../learning.js';
+import { rankingState } from '../scoring.js';
 
 const DAY = 86400000;
 
@@ -150,6 +152,46 @@ export default function adminRoutes(db, cfg) {
     const out = db.prepare("UPDATE licenses SET status = 'active' WHERE id = ?").run(Number(req.params.id));
     if (!out.changes) throw notFound('Ліцензію не знайдено');
     res.json({ ok: true });
+  });
+
+  // ---------- shared memory of the platform (lessons for invites) ----------
+  const memoryView = () => {
+    const lessons = db.prepare("SELECT * FROM ai_memory WHERE text != '' ORDER BY source = 'admin' DESC, id").all();
+    const invites = db.prepare("SELECT COUNT(*) AS n FROM invites WHERE active = 1").get().n;
+    const sent = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE status = 'sent'").get().n;
+    const replied = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE replied_at IS NOT NULL AND reply_mood != 'negative'").get().n;
+    const updated = db.prepare("SELECT MAX(created_at) AS t FROM ai_memory WHERE source != 'admin'").get().t;
+    return { lessons, stats: { invites, sent, replied, updated, ranking: rankingState(db), aiKey: Boolean(process.env.ANTHROPIC_API_KEY) } };
+  };
+
+  r.get('/memory', (_req, res) => res.json(memoryView()));
+
+  r.post('/memory', (req, res) => {
+    const text = str(req.body?.text, { required: true, field: 'урок', max: 300 });
+    if (text.length < 10) throw bad('Занадто коротко');
+    db.prepare("INSERT INTO ai_memory (text, source, active, created_at) VALUES (?, 'admin', 1, ?)").run(text, now());
+    res.status(201).json(memoryView());
+  });
+
+  r.patch('/memory/:id', (req, res) => {
+    const m = db.prepare('SELECT * FROM ai_memory WHERE id = ?').get(Number(req.params.id));
+    if (!m) throw notFound('Урок не знайдено');
+    const text = req.body?.text === undefined ? m.text : str(req.body.text, { max: 300 });
+    const active = req.body?.active === undefined ? m.active : (req.body.active ? 1 : 0);
+    db.prepare('UPDATE ai_memory SET text = ?, active = ? WHERE id = ?').run(text, active, m.id);
+    res.json(memoryView());
+  });
+
+  r.delete('/memory/:id', (req, res) => {
+    db.prepare('DELETE FROM ai_memory WHERE id = ?').run(Number(req.params.id));
+    res.json(memoryView());
+  });
+
+  r.post('/memory/refresh', async (_req, res, next) => {
+    try {
+      const out = await refreshMemory(db, { force: true });
+      res.json({ ...memoryView(), refreshed: out });
+    } catch (e) { next(e); }
   });
 
   return r;

@@ -102,6 +102,7 @@
         country: extract(card, site.cardCountry),
         url: cardLink(card, id),
         marks: marks.filter((mk) => qs(card, mk.sel) || selfMatch(card, mk.sel)).map((mk) => mk.key),
+        info: (card.innerText || card.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300), // what his card says: for ranking
       };
     }).filter((c) => c.id);
   }
@@ -393,6 +394,27 @@
     };
   }
 
+  /**
+   * Captcha, "too many requests" or a login form instead of the site: the bot must stop and call a person.
+   * Only looks — never touches the captcha.
+   */
+  const CAPTCHA_FRAME = /recaptcha|hcaptcha|captcha|challenges\.cloudflare\.com|turnstile|arkoselabs|funcaptcha/i;
+  const HUMAN_CHECK = /verify (that )?you are (a )?human|i'?m not a robot|are you a robot|підтвердіть,? що ви не робот|подтвердите,? что вы не робот|unusual (traffic|activity)|подозрительн\S* активност/i;
+  const RATE = /too many requests|rate limit(ed)?\b|занадто багато запитів|слишком много запросов/i;
+  function blocked({ site } = {}) {
+    if ([...document.querySelectorAll('iframe')].some((f) => CAPTCHA_FRAME.test(f.src || '') && visible(f))) return { kind: 'captcha', text: 'Сайт показав капчу' };
+    const box = [...document.querySelectorAll('.g-recaptcha, .h-captcha, .cf-turnstile, [class*="captcha" i], [id*="captcha" i]')].find(visible);
+    if (box) return { kind: 'captcha', text: 'Сайт показав капчу' };
+    const text = (document.body?.innerText || '').slice(0, 4000);
+    if (HUMAN_CHECK.test(text)) return { kind: 'captcha', text: 'Сайт просить підтвердити, що ви людина' };
+    if (RATE.test(text)) return { kind: 'rate', text: 'Сайт каже «забагато запитів»' };
+    const pass = [...document.querySelectorAll('input[type=password]')].find(visible);
+    if (pass && site?.card && !qsa(document, site.card).length && !qsa(document, site.messageInput).find(visible)) {
+      return { kind: 'login', text: 'Схоже, сайт розлогінив анкету' };
+    }
+    return null;
+  }
+
   /** Quick check of the adapter on the current page (used by the popup "Перевірити сторінку"). */
   function probe({ site }) {
     const cards = cardsOf(site);
@@ -407,7 +429,7 @@
   }
 
   window.__agencyBot = {
-    scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe,
+    scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

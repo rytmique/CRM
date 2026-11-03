@@ -175,6 +175,15 @@ CREATE TABLE IF NOT EXISTS man_stats (
   updated_at INTEGER NOT NULL
 );
 
+-- shared memory of the platform: short lessons for writing invites, learned from real replies
+CREATE TABLE IF NOT EXISTS ai_memory (
+  id INTEGER PRIMARY KEY,
+  text TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'stats',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
+);
+
 -- men the bot saw while scanning ahead, best first
 CREATE TABLE IF NOT EXISTS pool (
   profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
@@ -221,6 +230,12 @@ const MIGRATIONS = [
   // what his card showed: for learning who answers
   ['messages', 'man_info', "TEXT NOT NULL DEFAULT ''"],
   ['messages', 'features', "TEXT NOT NULL DEFAULT '[]'"],
+  // invite variants: retired by the optimizer
+  ['invites', 'retired_at', 'INTEGER'],
+  // last 🧪 test of the bot on the site (for the setup wizard)
+  ['profiles', 'test_at', 'INTEGER'],
+  ['profiles', 'test_ok', 'INTEGER'],
+  ['profiles', 'test_info', "TEXT NOT NULL DEFAULT ''"],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

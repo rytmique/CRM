@@ -58,7 +58,7 @@ try {
   const maria = await api('POST', '/api/profiles', { name: 'Maria', age: 27, interests: 'dancing, books', city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id, license_id: lic[1].id }, owner);
   await api('POST', '/api/profiles', { name: 'Olha', age: 35, city: 'Odesa', country: 'Ukraine', site_id: site.id, status: 'paused' }, owner);
   await api('PUT', '/api/settings', { settings: { inboxCheckEvery: 2 } }, owner);
-  const FAST = { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: false };
+  const FAST = { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: false, spread: false };
   await api('PUT', `/api/sites/${site.id}/scenario`, { scenario: {
     steps: [{ actions: [{ do: 'click', action: 'like' }, { do: 'message', text: 'invite' }] }, { wait: 24, actions: [{ do: 'message', text: 'followup' }] }],
     human: FAST,
@@ -91,8 +91,8 @@ try {
   await page.waitForSelector('table.table.hover');
   await page.click('text=Anna');
   await page.waitForSelector('.modal .detail');
-  await page.click('text=✨ Згенерувати ШІ');
-  await page.waitForFunction(() => document.querySelectorAll('.overlay').length === 1 && document.querySelector('.modal textarea[name=text]')?.value.length > 30);
+  await page.click('text=✨ Ще варіант (ШІ)');
+  await page.waitForFunction(() => document.querySelectorAll('.overlay').length === 1 && document.querySelector('.modal .variant textarea')?.value.length > 30);
   await sleep(500);
   await page.screenshot({ path: path.join(OUT, '03-profile-detail.png') });
   await page.keyboard.press('Escape');
@@ -343,6 +343,64 @@ try {
   await feed.close();
   log('infinite feed + link IDs ok');
 
+  // ---------- autopilot + scanning ahead: the most promising men first ----------
+  // The platform "learned" that men from the USA answer more (seeded straight into the shared stats table).
+  const { DatabaseSync } = await import('node:sqlite');
+  const sdb = new DatabaseSync(path.join(tmp, 'agency.db'));
+  const seed = sdb.prepare('INSERT INTO man_stats (feature, sent, replied, updated_at) VALUES (?,?,?,0) ON CONFLICT(feature) DO UPDATE SET sent = excluded.sent, replied = excluded.replied');
+  seed.run('*', 1000, 100);
+  seed.run('c:usa', 400, 120);
+  sdb.close();
+  await api('PATCH', `/api/profiles/${anna.id}`, { daily_limit: 8 }, owner); // 4 more today
+  const t3 = Date.now();
+  const apRes = await popup.evaluate((pid) => new Promise((r) => chrome.runtime.sendMessage({ type: 'autopilot', on: true, profileId: pid }, r)), anna.id);
+  if (!apRes?.ok) fail(`autopilot failed: ${apRes?.error}`);
+  const annaDone = () => st?.profileId === anna.id && st.startedAt >= t3 - 5000 && ['limit', 'watching', 'error', 'stopped'].includes(st.status);
+  do { await sleep(1000); st = await readState(); } while (!annaDone() && Date.now() - t3 < 240000);
+  const apLog = st.log.map((l) => l.text).join('\n');
+  if (st.status !== 'limit') fail(`autopilot run: ${st.status} ${st.message}\n${apLog}`);
+  if (!/⏰ Автопілот: робочий час/.test(apLog)) fail(`autopilot did not start the bot itself:\n${apLog}`);
+  if (!/🔭 Розвідка/.test(apLog) || !/⭐ /.test(apLog)) fail(`no scan-ahead:\n${apLog}`);
+  const annaRows = (await api('GET', `/api/stats/messages?profile_id=${anna.id}&limit=50`, null, owner)).messages.filter((m) => m.sent_at >= t3).sort((a, b) => a.sent_at - b.sent_at);
+  if (annaRows.length !== 4) fail(`autopilot run wrote ${annaRows.length} men`);
+  if (annaRows[0].man_country !== 'USA') fail(`the first man was not the most promising: ${annaRows.map((m) => m.man_country)}`);
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  const ap = await popup.evaluate(async () => (await chrome.storage.local.get('autopilot')).autopilot);
+  if (!ap.on || !ap.heldDay) fail(`manual stop should hold the autopilot until tomorrow: ${JSON.stringify(ap)}`);
+  await popup.reload();
+  await popup.waitForSelector('#autopilot');
+  if (!(await popup.isChecked('#autopilot'))) fail('autopilot checkbox not shown as on');
+  await popup.screenshot({ path: path.join(OUT, '22-popup-autopilot.png') });
+  await popup.click('#autopilot'); // off
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('autopilot')).autopilot.on === false, null, { timeout: 10000 });
+  log(`autopilot + scan-ahead ok: started by itself, best first (${annaRows.map((m) => m.man_country).join(', ')}), manual stop holds it`);
+
+  // ---------- captcha: the bot stops, calls a person, waits, then goes on ----------
+  await api('PATCH', `/api/profiles/${maria.id}`, { daily_limit: 4 }, owner); // 2 more today
+  await sitePage.evaluate(() => localStorage.setItem('demo_captcha', 'true'));
+  await popup.bringToFront();
+  await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${maria.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(maria.id));
+  if (await popup.isChecked('#test-mode')) await popup.click('#test-mode');
+  await popup.click('#start');
+  const t4 = Date.now();
+  do { await sleep(1000); st = await readState(); } while (st.status !== 'blocked' && Date.now() - t4 < 60000);
+  if (st.status !== 'blocked') fail(`captcha not noticed: ${st.status}\n${st.log.map((l) => l.text).join('\n')}`);
+  const sentBlocked = st.sent;
+  await sleep(6000);
+  if ((await readState()).sent !== sentBlocked) fail('the bot kept writing while the captcha was up');
+  await popup.screenshot({ path: path.join(OUT, '24-popup-captcha.png') });
+  for (const pg of context.pages()) if (await pg.$('.btn-not-robot')) await pg.click('.btn-not-robot'); // a person solves it
+  do { await sleep(1000); st = await readState(); } while (!['limit', 'error', 'stopped'].includes(st.status) && Date.now() - t4 < 180000);
+  const capLog = st.log.map((l) => l.text).join('\n');
+  if (st.status !== 'limit') fail(`after the captcha: ${st.status}\n${capLog}`);
+  if (!/🛑 /.test(capLog) || !/повільніше/.test(capLog)) fail(`captcha log:\n${capLog}`);
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  log('captcha ok: the bot paused, waited for a person, then went on slower');
+
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();
   await page.click('a[href="#/dashboard"]');
@@ -366,6 +424,16 @@ try {
   if (overflow) fail('horizontal scroll on mobile dashboard');
 
   await page.setViewportSize({ width: 1360, height: 900 });
+  await page.click('a[href="#/setup"]');
+  await page.waitForSelector('.setup-steps > li');
+  await page.selectOption('.setup select', String(anna.id)); // Anna went through the whole way (Kate never ran a test)
+  await page.waitForFunction(() => document.querySelectorAll('.setup-steps > li.done').length === 6, null, { timeout: 10000 }).catch(() => {});
+  const setupSteps = await page.$$eval('.setup-steps > li', (els) => els.map((e) => e.classList.contains('done')));
+  if (setupSteps.length !== 6 || !setupSteps.every(Boolean)) fail(`setup wizard after a full run: ${JSON.stringify(setupSteps)}`);
+  await page.click('.setup-steps > li:nth-child(4) .setup-head');
+  await sleep(300);
+  await page.screenshot({ path: path.join(OUT, '25-setup.png'), fullPage: true });
+  log('setup wizard ok: all 6 steps ticked by themselves');
   await page.click('a[href="#/sites"]');
   await page.waitForSelector('.site-card');
   await page.screenshot({ path: path.join(OUT, '19-sites.png'), fullPage: true });
@@ -390,6 +458,14 @@ try {
   await page.waitForSelector('.page-head h1');
   await sleep(300);
   await page.screenshot({ path: path.join(OUT, '15-admin-agencies.png') });
+  await page.click('a[href="#/memory"]');
+  await page.waitForSelector('.memory-list, .page-head h1:has-text("Пам’ять ШІ")');
+  await page.fill('input[name=lesson]', 'Mention one concrete hobby and ask about his weekend.');
+  await page.click('text=Додати урок');
+  await page.waitForSelector('.memory-list li');
+  await sleep(300);
+  await page.screenshot({ path: path.join(OUT, '23-admin-memory.png'), fullPage: true });
+  log('admin memory page ok');
 
   if (consoleErrors.length) fail(`browser errors:\n${consoleErrors.join('\n')}`);
   console.log(`\nE2E OK — screenshots in ${OUT}`);

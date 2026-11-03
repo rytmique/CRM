@@ -41,7 +41,7 @@ function updateBadge() {
   } else if (['running', 'waiting', 'watching', 'sleeping'].includes(state.status)) {
     chrome.action.setBadgeBackgroundColor({ color: '#2f9e44' });
     chrome.action.setBadgeText({ text: 'ON' });
-  } else if (state.status === 'error') {
+  } else if (state.status === 'error' || state.status === 'blocked') {
     chrome.action.setBadgeBackgroundColor({ color: '#e03131' });
     chrome.action.setBadgeText({ text: '!' });
   } else {
@@ -98,7 +98,7 @@ async function heartbeat(force = false, botState) {
   } catch { /* heartbeat is best-effort */ }
 }
 
-const mapBotState = () => ({ running: 'running', waiting: 'running', sleeping: 'running', watching: 'done', limit: 'limit', error: 'error', stopped: 'idle', idle: 'idle' }[state.status] || 'running');
+const mapBotState = () => ({ running: 'running', waiting: 'running', sleeping: 'running', watching: 'done', limit: 'limit', error: 'error', blocked: 'error', stopped: 'idle', idle: 'idle' }[state.status] || 'running');
 
 // ---------------- tab helpers ----------------
 async function waitTabComplete(tabId, timeout = 30000) {
@@ -146,14 +146,24 @@ async function inTab(tabId, cmd, payload) {
 }
 
 const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
+const sameSection = (url, searchUrl) => {
+  try {
+    const u = new URL(url);
+    const s = new URL(searchUrl);
+    return u.origin === s.origin && u.pathname.startsWith(s.pathname.replace(/[^/]*$/, ''));
+  } catch { return false; }
+};
 
 async function prepareTab(tabId, site) {
-  const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+  let tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
+  // No tab given (autopilot): an open tab of this site — same origin and the same part of it as the search page
+  // (the demo site lives next to the panel, the panel tab must not be taken).
+  if (!tab && site.searchUrl) [tab] = (await chrome.tabs.query({})).filter((t) => t.url && sameSection(t.url, site.searchUrl));
   if (!site.searchUrl) {
     if (!tab) throw new Error('Відкрийте сторінку пошуку на сайті та натисніть Старт');
     return tab.id;
   }
-  if (tab && tab.url && sameOrigin(tab.url, site.searchUrl)) {
+  if (tab && tab.url && sameSection(tab.url, site.searchUrl)) {
     await waitTabComplete(tab.id);
     const probe = await inTab(tab.id, 'probe', { site }).catch(() => null);
     if (probe && probe.cards > 0) return tab.id;
@@ -176,6 +186,42 @@ function localHour(tz) {
 }
 const inHours = (h, from, to) => (from === to ? true : from < to ? h >= from && h < to : h >= from || h < to);
 
+// ---------------- schedule (agency time zone) ----------------
+const WEEKDAY = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+const ALL_DAYS = [1, 2, 3, 4, 5, 6, 7];
+/** Hour, minute, weekday (1 = Mon) and date there. */
+function tzNow(tz) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hourCycle: 'h23', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date());
+    const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+    return { h: Number(p.hour), m: Number(p.minute), wd: WEEKDAY[p.weekday] || 1, day: `${p.year}-${p.month}-${p.day}` };
+  } catch {
+    const d = new Date();
+    return { h: d.getHours(), m: d.getMinutes(), wd: d.getDay() || 7, day: d.toISOString().slice(0, 10) };
+  }
+}
+/** Working day and working hour right now? */
+function inSchedule(human, tz) {
+  const t = tzNow(tz);
+  const days = human.days?.length ? human.days : ALL_DAYS;
+  return days.includes(t.wd) && inHours(t.h, human.hoursFrom, human.hoursTo);
+}
+/** Milliseconds until today's working hours end (midnight for a 24-hour day). */
+function msToWindowEnd(human, tz) {
+  const t = tzNow(tz);
+  const nowMin = t.h * 60 + t.m;
+  let end = (human.hoursFrom === human.hoursTo ? 24 : human.hoursTo) * 60;
+  if (end <= nowMin) end += 24 * 60;
+  return (end - nowMin) * 60000;
+}
+const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+function scheduleText(human) {
+  const d = (human.days?.length ? human.days : ALL_DAYS).slice().sort();
+  const days = d.length === 7 ? 'щодня' : d.map((x) => DAY_NAMES[x - 1]).join(', ');
+  const hours = human.hoursFrom === human.hoursTo ? 'цілодобово' : `${String(human.hoursFrom).padStart(2, '0')}:00–${String(human.hoursTo).padStart(2, '0')}:00`;
+  return `${days}, ${hours}`;
+}
+
 /** Waits until `until` (ms), checking the inbox now and then and stopping on request. */
 async function waitUntil(until, ctx, status = 'waiting') {
   await setState({ status });
@@ -190,13 +236,13 @@ async function waitUntil(until, ctx, status = 'waiting') {
 
 /** Outside working hours the bot only watches the inbox. */
 async function waitWorkingHours(ctx) {
-  const { hoursFrom, hoursTo } = ctx.human;
-  if (inHours(localHour(ctx.timezone), hoursFrom, hoursTo)) return;
-  const msg = `Неробочий час — продовжу о ${String(hoursFrom).padStart(2, '0')}:00`;
+  const { hoursFrom } = ctx.human;
+  if (inSchedule(ctx.human, ctx.timezone)) return;
+  const msg = `Неробочий час (${scheduleText(ctx.human)}) — продовжу о ${String(hoursFrom).padStart(2, '0')}:00`;
   await log(`🌙 ${msg}. Поки що лише стежу за відповідями`);
   await setState({ status: 'sleeping', message: msg });
   let lastInbox = Date.now();
-  while (!stopRequested && !inHours(localHour(ctx.timezone), hoursFrom, hoursTo)) {
+  while (!stopRequested && !inSchedule(ctx.human, ctx.timezone)) {
     await sleep(1000);
     await heartbeat();
     if (Date.now() - lastInbox > WATCH_EVERY_MS) { lastInbox = Date.now(); await checkInbox(ctx.site, ctx.profileId); }
@@ -223,11 +269,51 @@ async function afterMan(ctx, r, messages) {
     await waitUntil(Date.now() + ms, ctx);
     return;
   }
-  await pause(ctx.limits);
+  // Even pace: what is left of today's limit is spread until the end of the working hours.
+  const left = r?.remaining;
+  if (ctx.human.spread && !ctx.test && left > 0) {
+    const gap = msToWindowEnd(ctx.human, ctx.timezone) / left;
+    const usual = ((ctx.limits.minDelay + ctx.limits.maxDelay) / 2) * 1000;
+    if (gap > usual * 1.3) {
+      const until = Date.now() + gap * rand(0.7, 1.2);
+      await setState({ message: `Рівномірний темп: наступне ≈ о ${hhmm(until)} (на сьогодні лишилось ${left})` });
+      await waitUntil(until, ctx);
+      return;
+    }
+  }
+  await pause(ctx.limits, ctx.slow || 1);
 }
 
-async function pause(limits) {
-  const total = rand(limits.minDelay, limits.maxDelay) * 1000;
+/**
+ * Captcha / "too many requests" / logged out: the bot stops touching the site, calls a person and waits.
+ * When the page is fine again it goes on — slower, so the site does not get suspicious again.
+ */
+async function guard(ctx, tabId = ctx.tabId) {
+  const b = await inTab(tabId, 'blocked', { site: ctx.site }).catch(() => null);
+  if (!b) return false;
+  await log(`🛑 ${b.text}. Бот на паузі — розв’яжіть це вручну у вкладці сайту, далі бот продовжить сам`, 'error');
+  chrome.notifications.create(`blocked-${Date.now()}`, {
+    type: 'basic', iconUrl: 'icon128.png', priority: 2, requireInteraction: true,
+    title: '🛑 Потрібна людина', message: `${b.text}. Відкрийте вкладку сайту й розв’яжіть — бот чекає.`,
+  });
+  await setState({ status: 'blocked', message: `🛑 ${b.text} — потрібна людина` });
+  await heartbeat(true, 'error');
+  const since = Date.now();
+  while (!stopRequested) {
+    await sleep(5000);
+    await heartbeat();
+    if (!(await inTab(tabId, 'blocked', { site: ctx.site }).catch(() => b))) break;
+    if (Date.now() - since > 60 * 60000) throw new Error(`${b.text} — за годину ніхто не розв’язав. Зупиняюсь`);
+  }
+  if (stopRequested) return true;
+  ctx.slow = Math.min(3, (ctx.slow || 1) * 1.5);
+  await log(`✓ Сторінка знову доступна — продовжую повільніше (паузи ×${ctx.slow.toFixed(1)})`);
+  await setState({ status: 'running', message: 'Продовжую' });
+  return true;
+}
+
+async function pause(limits, slow = 1) {
+  const total = rand(limits.minDelay, limits.maxDelay) * 1000 * slow;
   const end = Date.now() + total;
   await setState({ status: 'waiting' });
   while (Date.now() < end && !stopRequested) {
@@ -504,6 +590,7 @@ async function processDue(ctx, force = false) {
     let res;
     try {
       await navigate(ctx.tabId, man.url);
+      await guard(ctx);
       res = await runActions(ctx.tabId, ctx.site, man, man.actions, { where: 'page', typing: ctx.human.typing });
     } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
     const text = man.actions.find((a) => a.do === 'message')?.text || '';
@@ -528,11 +615,78 @@ async function processDue(ctx, force = false) {
   return due.men.length;
 }
 
+/** Next page or more of the infinite feed. Returns false when the list has ended. */
+async function advance(tabId, site) {
+  const fresh = await inTab(tabId, 'scan', { site });
+  if (fresh?.hasNext) {
+    await inTab(tabId, 'next', { site }).catch(() => null);
+    await waitForNavigation(tabId);
+    return true;
+  }
+  if (site.nextPage) return false;
+  const m = await inTab(tabId, 'more', { site });
+  return Boolean(m?.grew);
+}
+
+const SCAN_AHEAD_PAGES = 3;
+
+/**
+ * "Розвідка": reads the first pages without writing, so the server can rank everyone seen,
+ * then the best of them get their invite first — on their own pages. The usual page walk covers the rest.
+ */
+async function scanAhead(ctx) {
+  const { tabId, site, profileId } = ctx;
+  const seen = [];
+  for (let i = 0; i < SCAN_AHEAD_PAGES && !stopRequested; i++) {
+    await waitTabComplete(tabId);
+    await guard(ctx);
+    const scan = await inTab(tabId, 'scan', { site });
+    seen.push(...(scan?.candidates || []));
+    if (i < SCAN_AHEAD_PAGES - 1 && !(await advance(tabId, site))) break;
+    await sleep(rand(1500, 3500));
+  }
+  if (stopRequested || !seen.length) return 0;
+  const pool = await api(`/api/bot/profiles/${profileId}/pool`, { method: 'POST', body: { candidates: seen } });
+  await navigate(tabId, site.searchUrl || ctx.listUrl);
+  const next = await api(`/api/bot/profiles/${profileId}/pool/next?limit=50`);
+  await log(`🔭 Розвідка: переглянув чоловіків ${seen.length}, нових ${pool.added}. Найперспективніших: ${next.men.length} — пишу їм першими`);
+  let done = 0;
+  for (const man of next.men) {
+    if (stopRequested || ctx.limitReached) break;
+    await waitWorkingHours(ctx);
+    if (stopRequested) break;
+    const why = man.why?.length ? ` (${man.why.join(', ')})` : '';
+    await setState({ message: `⭐ Пишу: ${man.name || man.id}${why}` });
+    let res;
+    try {
+      await navigate(tabId, man.url);
+      await guard(ctx);
+      res = await runActions(tabId, site, man, man.actions || [{ do: 'message', text: man.text }], { where: 'page', typing: ctx.human.typing });
+    } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
+    const r = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: res.ok, error: res.error, text: man.text, invite_id: man.invite_id } });
+    if (res.ok) {
+      done++;
+      await setState({ sent: state.sent + res.messages, remaining: r.remaining });
+      await log(`⭐ ${man.name || man.id}${why} ✓${res.attached ? ` 📎${res.attached}` : ''}`);
+    } else {
+      await setState({ failed: state.failed + 1, remaining: r.remaining });
+      await log(`✗ ${man.name || man.id}: ${res.error}`, 'warn');
+    }
+    await heartbeat();
+    if (r.stop) { ctx.limitReached = true; break; }
+    await afterMan(ctx, r, res.messages);
+  }
+  if (!stopRequested) await navigate(tabId, site.searchUrl || ctx.listUrl);
+  return done;
+}
+
 async function loadRun(profileId, test) {
   const cfg = await api(`/api/bot/profiles/${profileId}/config`);
   const site = cfg.site.config;
   if (!site.card || !site.cardId || !site.messageInput) throw new Error('Сайт налаштовано не повністю (картка, ID, поле вводу). Натисніть 🎯 «Навчити бота» або заповніть у панелі');
   const human = cfg.scenario?.human || { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, breakMinutes: 10, typing: false };
+  const ap = await getAutopilot();
+  if (ap?.profileId === profileId) await setAutopilot({ ...ap, human, timezone: cfg.timezone, profileName: cfg.profile.name });
   return {
     cfg, site, human, profileId, test, limits: cfg.limits, timezone: cfg.timezone,
     sinceBreak: 0, breakAt: Math.round((human.breakEvery || 0) * rand(0.7, 1.3)), lastDue: 0, limitReached: false,
@@ -563,11 +717,20 @@ async function run(profileId, tabId) {
     let noGrowth = 0;
     const tried = new Set(); // men already attempted in this run (a failing one is not retried in a loop)
 
+    // The best men of the first pages first — once the platform knows who answers and his page can be opened.
+    if (cfg.ranking?.ready && cfg.ranking?.manUrl) {
+      await waitWorkingHours(ctx);
+      ctx.listUrl = (await chrome.tabs.get(tabId)).url;
+      await scanAhead(ctx).catch((e) => log(`Розвідка не вдалась: ${e.message}`, 'warn'));
+    }
+
     outer: while (!stopRequested) {
       await waitWorkingHours(ctx);
       await processDue(ctx);
       if (ctx.limitReached || stopRequested) break;
       await waitTabComplete(tabId);
+      await guard(ctx);
+      if (stopRequested) break;
       const scan = await inTab(tabId, 'scan', { site });
       if (!scan) throw new Error('Не вдалося прочитати сторінку сайту');
       const listUrl = scan.url;
@@ -591,6 +754,7 @@ async function run(profileId, tabId) {
         await waitWorkingHours(ctx);
         if (stopRequested) break outer;
         await setState({ message: `Пишу: ${man.name || man.id}${man.age ? `, ${man.age}` : ''}` });
+        if (await guard(ctx)) { if (stopRequested) break outer; continue outer; } // the list may have changed meanwhile
         tried.add(man.id);
         let res;
         try { res = await runActions(tabId, site, man, man.actions || [{ do: 'message', text: man.text }], { where: 'card', typing: ctx.human.typing, home: listUrl }); } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
@@ -606,6 +770,7 @@ async function run(profileId, tabId) {
           failsInRow++;
           await setState({ failed: state.failed + 1, remaining: r.remaining });
           await log(`✗ ${man.name || man.id}: ${res.error}`, 'warn');
+          if (await guard(ctx)) failsInRow = 0; // it was the site blocking, not the settings
           if (failsInRow >= MAX_FAILS_IN_ROW) throw new Error(`${MAX_FAILS_IN_ROW} помилок поспіль — перевірте сторінку сайту або натисніть 🎯 «Навчити бота»`);
         }
         await heartbeat();
@@ -620,24 +785,16 @@ async function run(profileId, tabId) {
         }
       }
       if (stopRequested) break;
-      const fresh = await inTab(tabId, 'scan', { site });
-      if (fresh?.hasNext) {
-        await inTab(tabId, 'next', { site }).catch(() => null);
-        await waitForNavigation(tabId);
+      // Next page, or (no pagination button) more of the infinite feed.
+      if (await advance(tabId, site)) {
+        noGrowth = 0;
         await setState({ page: state.page + 1 });
       } else if (site.nextPage) {
         await log('Сторінки закінчились');
         break;
-      } else {
-        // No pagination button configured → the site is an infinite feed: scroll for more men.
-        const m = await inTab(tabId, 'more', { site });
-        if (m?.grew) {
-          noGrowth = 0;
-          await setState({ page: state.page + 1 });
-        } else if (++noGrowth >= 2) {
-          await log('Список чоловіків закінчився');
-          break;
-        }
+      } else if (++noGrowth >= 2) {
+        await log('Список чоловіків закінчився');
+        break;
       }
     }
   }
@@ -654,7 +811,7 @@ async function run(profileId, tabId) {
     while (Date.now() < end && !stopRequested) { await sleep(1000); await heartbeat(); }
     if (stopRequested) break;
     await checkInbox(site, profileId);
-    if (!ctx.limitReached && ctx.tabId && inHours(localHour(ctx.timezone), ctx.human.hoursFrom, ctx.human.hoursTo)) {
+    if (!ctx.limitReached && ctx.tabId && inSchedule(ctx.human, ctx.timezone)) {
       const prev = state.status;
       await processDue(ctx).catch((e) => log(`Повторні спроби: ${e.message}`, 'warn'));
       if (!stopRequested) await setState({ status: ctx.limitReached ? 'limit' : prev });
@@ -668,6 +825,9 @@ const TEST_MEN = 3;
  * Test mode: walks the whole flow on the real site but never presses "Send" or any taught button.
  * Nothing is recorded on the server and the daily limit is untouched.
  */
+/** Only the outcome of a test goes to the panel (for the setup wizard) — nothing about men or messages. */
+const reportTest = (profileId, problems) => api(`/api/bot/profiles/${profileId}/test`, { method: 'POST', body: { ok: !problems.length, problems } }).catch(() => {});
+
 async function runTest(profileId, tabId) {
   const ctx = await loadRun(profileId, true);
   const { cfg, site } = ctx;
@@ -681,6 +841,13 @@ async function runTest(profileId, tabId) {
 
   tabId = await prepareTab(tabId, site);
   await setState({ tabId });
+
+  const blockedNow = await inTab(tabId, 'blocked', { site }).catch(() => null);
+  if (blockedNow) {
+    problems.push(`${blockedNow.text} — розв’яжіть вручну у вкладці й запустіть тест ще раз`);
+    await reportTest(profileId, problems);
+    throw new Error(problems[0]);
+  }
 
   // 1. Search page
   const scan = await inTab(tabId, 'scan', { site });
@@ -779,6 +946,7 @@ async function runTest(profileId, tabId) {
   }
 
   if (stopRequested) { await log('🧪 Тест перервано'); return; }
+  await reportTest(profileId, problems);
   if (problems.length) {
     for (const p of problems) await log(`✗ ${p}`, 'error');
     throw new Error(`тест знайшов проблем: ${problems.length}. Виправте (🎯 Навчити бота або панель) й запустіть тест ще раз`);
@@ -787,7 +955,43 @@ async function runTest(profileId, tabId) {
   await log('🧪 Тест пройдено ✓ Можна запускати справжню розсилку', 'reply');
 }
 
-async function start(profileId, tabId, test = false) {
+// ---------------- autopilot: the bot turns itself on and off by the schedule ----------------
+async function getAutopilot() {
+  const { autopilot } = await chrome.storage.local.get('autopilot');
+  return autopilot || null;
+}
+async function setAutopilot(v) {
+  await chrome.storage.local.set({ autopilot: v });
+}
+
+/** Every minute (chrome.alarms): start in working hours, stop after them, restart on a new day for a fresh limit. */
+async function autopilotTick() {
+  const ap = await getAutopilot();
+  if (!ap?.on || !ap.profileId || !ap.human || !(await getAuth())) return;
+  const t = tzNow(ap.timezone);
+  const inside = inSchedule(ap.human, ap.timezone);
+  if (running) {
+    if (state.test || state.profileId !== ap.profileId || stopRequested) return;
+    if (!inside) {
+      stopRequested = true;
+      await log(`⏰ Автопілот: робочий час скінчився — вимикаюсь. Розклад: ${scheduleText(ap.human)}`);
+    } else if (ap.runDay && ap.runDay !== t.day && ['limit', 'watching'].includes(state.status)) {
+      stopRequested = true;
+      await log('⏰ Автопілот: новий день — перезапускаюсь з новим лімітом');
+    }
+    return;
+  }
+  if (!inside || ap.heldDay === t.day) return; // stopped by hand today: back tomorrow
+  if (ap.errorAt && Date.now() - ap.errorAt < 15 * 60000) return; // don't hammer a broken site
+  await setAutopilot({ ...ap, runDay: t.day, errorAt: null });
+  await log(`⏰ Автопілот: робочий час (${scheduleText(ap.human)}) — вмикаюсь сам`);
+  start(ap.profileId, null, false, { auto: true });
+}
+
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'autopilot') autopilotTick().catch(() => {}); });
+chrome.alarms.get('autopilot').then((a) => { if (!a) chrome.alarms.create('autopilot', { periodInMinutes: 1 }); });
+
+async function start(profileId, tabId, test = false, { auto = false } = {}) {
   if (running) return;
   running = true;
   stopRequested = false;
@@ -805,6 +1009,11 @@ async function start(profileId, tabId, test = false) {
     await setState({ status: 'error' });
     await log(`${test ? '🧪 ' : ''}Помилка: ${e.message}`, 'error');
     if (!test) await heartbeat(true, 'error');
+    if (auto) {
+      const ap = await getAutopilot();
+      if (ap) await setAutopilot({ ...ap, errorAt: Date.now() });
+      await log('⏰ Автопілот спробує ще раз через 15 хв', 'warn');
+    }
   } finally {
     running = false;
     keepAlive(false);
@@ -816,7 +1025,27 @@ async function start(profileId, tabId, test = false) {
 const handlers = {
   async state() {
     const { auth } = await chrome.storage.local.get('auth');
-    return { state, running, auth: auth ? { server: auth.server, user: auth.user } : null, defaultServer: DEFAULT_SERVER };
+    const ap = await getAutopilot();
+    return {
+      state, running, auth: auth ? { server: auth.server, user: auth.user } : null, defaultServer: DEFAULT_SERVER,
+      autopilot: ap ? { on: Boolean(ap.on), profileId: ap.profileId, profileName: ap.profileName, schedule: ap.human ? scheduleText(ap.human) : '' } : null,
+    };
+  },
+  /** Turns the schedule on for a profile (its scenario's days and hours) or off. */
+  async autopilot({ on, profileId }) {
+    if (!on) {
+      const ap = await getAutopilot();
+      await setAutopilot({ ...(ap || {}), on: false });
+      await log('⏰ Автопілот вимкнено');
+      return { on: false };
+    }
+    const cfg = await api(`/api/bot/profiles/${Number(profileId)}/config`);
+    const human = cfg.scenario?.human;
+    if (!human) throw new Error('Не вдалося прочитати розклад анкети');
+    await setAutopilot({ on: true, profileId: Number(profileId), profileName: cfg.profile.name, human, timezone: cfg.timezone, heldDay: null, runDay: null, errorAt: null });
+    await log(`⏰ Автопілот увімкнено: ${cfg.profile.name}, ${scheduleText(human)}. Браузер має бути відкритий, а ви — залогінені на сайті`);
+    autopilotTick().catch(() => {});
+    return { on: true, schedule: scheduleText(human) };
   },
   async login({ server, email, password }) {
     const base = String(server || DEFAULT_SERVER).trim().replace(/\/+$/, '');
@@ -846,12 +1075,20 @@ const handlers = {
   async start({ profileId, tabId, test }) {
     if (running) throw new Error('Бот уже працює');
     unseenReplies = 0;
+    const ap = await getAutopilot();
+    if (ap?.heldDay) await setAutopilot({ ...ap, heldDay: null });
     start(Number(profileId), tabId, Boolean(test));
     return {};
   },
   async stop() {
     stopRequested = true;
     await log('Зупиняю…');
+    // Stopped by hand during working hours: the autopilot leaves it off until the next working day.
+    const ap = await getAutopilot();
+    if (ap?.on && ap.human && inSchedule(ap.human, ap.timezone)) {
+      await setAutopilot({ ...ap, heldDay: tzNow(ap.timezone).day });
+      await log('⏰ Автопілот: сьогодні більше не вмикаюсь сам (до наступного робочого дня)');
+    }
     return {};
   },
   async seen() {

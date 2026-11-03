@@ -22,11 +22,12 @@ const FORBIDDEN = [
   /\b(whats\s?app|telegram|viber|instagram|snapchat|skype|wechat|signal)\b/i,
 ];
 
-let clientFactory = (apiKey) => new Anthropic({ apiKey, maxRetries: 2, timeout: 60_000 });
+const defaultFactory = (apiKey) => new Anthropic({ apiKey, maxRetries: 2, timeout: 60_000 });
+let clientFactory = defaultFactory;
 
-/** Test hook: replace the Anthropic client factory. */
+/** Test hook: replace the Anthropic client factory (null = the real one). */
 export function setAiClientFactory(fn) {
-  clientFactory = fn;
+  clientFactory = fn || defaultFactory;
 }
 
 function profileBrief(p) {
@@ -103,14 +104,32 @@ export function resolvePrompt({ profile, settings, override }) {
   return { text: DEFAULT_PROMPT, source: 'default' };
 }
 
-async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel }) {
+/** A plain request: system + one user message → text. Used for the platform lessons. */
+export async function askClaude({ apiKey, model, system, user }) {
+  const client = clientFactory(apiKey);
+  let response;
+  try {
+    response = await client.beta.messages.create({
+      model, max_tokens: 4000, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default', output_config: { effort: 'low' },
+      system, messages: [{ role: 'user', content: user }],
+    });
+  } catch (e) {
+    throw mapError(e);
+  }
+  if (response.stop_reason === 'refusal') throw new HttpError(422, 'ШІ відмовився');
+  return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+}
+
+async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel, bestExample, memory }) {
   const client = clientFactory(apiKey);
   const userParts = [
     `Her profile:\n${profileBrief(profile)}`,
     `Write the message in ${language}.`,
     instructions ? `Extra guidance from the agency: ${instructions}` : '',
     profile.notes ? `Notes about her: ${profile.notes}` : '',
-    previous ? (previousLabel ? `${previousLabel}\n${previous}` : `Her current message is below. Write a fresh one with a different opening and a different question:\n${previous}`) : '',
+    memory?.length ? `What works on this platform, learned from real replies (follow it unless the profile says otherwise):\n${memory.map((l) => `- ${l}`).join('\n')}` : '',
+    bestExample ? `This message of hers gets the most replies so far. Keep what makes it work, but write a new one with a different opening and a different question:\n${bestExample}` : '',
+    previous ? (previousLabel ? `${previousLabel}\n${previous}` : `Her current messages are below (separated by ---). Write a fresh one with a different opening and a different question:\n${previous}`) : '',
   ].filter(Boolean);
 
   let response;
@@ -140,7 +159,7 @@ async function callClaude({ apiKey, model, system, language, instructions, profi
  * Generates one invite for a profile.
  * Uses Claude when an API key is configured, otherwise a local template (so the system works out of the box).
  */
-export async function generateInvite({ profile, settings, previous = '', promptOverride = '' }) {
+export async function generateInvite({ profile, settings, previous = '', promptOverride = '', bestExample = '', memory = [] }) {
   const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
   const language = profile.language || settings.ai.language || 'English';
   const prompt = resolvePrompt({ profile, settings, override: promptOverride });
@@ -149,12 +168,12 @@ export async function generateInvite({ profile, settings, previous = '', promptO
   }
   const model = settings.ai.model || 'claude-opus-5-5';
   const system = fillPromptVars(prompt.text, profile, language);
-  let out = await callClaude({ apiKey, model, system, language, instructions: settings.ai.instructions, profile, previous });
+  let out = await callClaude({ apiKey, model, system, language, instructions: settings.ai.instructions, profile, previous, bestExample, memory });
   if (inviteProblems(out.text).length) {
     // One retry, telling the model what went wrong. Contacts/links are never allowed, whatever the prompt says:
     // dating sites ban profiles for them.
     out = await callClaude({
-      apiKey, model, system, language, profile, previous,
+      apiKey, model, system, language, profile, previous, bestExample, memory,
       instructions: `${settings.ai.instructions || ''}\nThe previous draft was rejected: it contained contact details, links or messenger names, or was too short. Never include any of them.`.trim(),
     });
     if (inviteProblems(out.text).length) throw new HttpError(422, 'ШІ двічі згенерував текст із контактами/посиланнями або занадто короткий. Спробуйте ще раз або змініть промт.');

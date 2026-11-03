@@ -22,6 +22,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     language: 'English',
     instructions: '',
     masterPrompt: '',
+    variants: 3, // invite variants live at once per profile (A/B/C test)
+    autoOptimize: true, // retire weak variants, write new ones
+    sharedMemory: true, // use the platform lessons in prompts
   },
   telegram: { botToken: '', chatId: '' },
   defaults: { dailyLimit: 150, minDelay: 40, maxDelay: 90 },

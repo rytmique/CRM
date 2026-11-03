@@ -12,6 +12,7 @@ import { profileScenario, followupSteps } from '../scenario.js';
 import { listMedia, saveMedia, removeMedia, mediaFile, readSteps } from '../media.js';
 import { personalize } from '../personalize.js';
 import { REENGAGE_STEP } from './bot.js';
+import { inviteStats, bestOf, memoryLines } from '../learning.js';
 
 const DAY = 86400000;
 
@@ -120,7 +121,8 @@ export default function profileRoutes(db, cfg) {
     const rows = listQuery(req.user, 'AND p.id = ?', [Number(req.params.id)]);
     if (!rows.length) throw notFound('Анкету не знайдено');
     const p = rows[0];
-    const invites = db.prepare('SELECT * FROM invites WHERE profile_id = ? ORDER BY id DESC LIMIT 50').all(p.id);
+    const invites = inviteStats(db, p.id, { all: true }).reverse().slice(0, 50);
+    const best = bestOf(invites.filter((i) => i.active));
     const site = p.site_id ? db.prepare('SELECT * FROM sites WHERE id = ?').get(p.site_id) : null;
     const scenario = profileScenario(db, p, site);
     const allFollowups = db.prepare('SELECT * FROM followups WHERE profile_id = ? ORDER BY step').all(p.id);
@@ -136,7 +138,8 @@ export default function profileRoutes(db, cfg) {
     const scenarioName = p.scenario_id ? db.prepare('SELECT name FROM scenario_templates WHERE id = ?').get(p.scenario_id)?.name : null;
     res.json({
       profile: decorate(db, req.user, p), invites, followups, followupSteps: followupSteps(scenario), steps: scenario.steps.length, funnel,
-      reengage, afterReply: scenario.afterReply,
+      reengage, afterReply: scenario.afterReply, bestInvite: best?.id ?? null,
+      variantsWanted: getSettings(db, req.user.agencyId).ai.variants,
       media: listMedia(db, p.id), scenarioName,
     });
   });
@@ -204,9 +207,15 @@ export default function profileRoutes(db, cfg) {
   r.post('/:id/invites/generate', ah(async (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const settings = getSettings(db, req.user.agencyId);
-    const previous = activeInvite(db, p.id)?.text || '';
-    const gen = await generateInvite({ profile: p, settings, previous });
-    const invite = insertInvite(db, { profileId: p.id, text: gen.text, source: gen.source, model: gen.model, userId: req.user.id });
+    const live = inviteStats(db, p.id);
+    const variant = Boolean(req.body?.variant);
+    const best = bestOf(live);
+    const gen = await generateInvite({
+      profile: p, settings, previous: variant ? live.map((v) => v.text).join('\n---\n') : (activeInvite(db, p.id)?.text || ''),
+      bestExample: variant && best?.replies ? best.text : '', memory: memoryLines(db, settings),
+    });
+    if (variant && live.length >= 5) throw bad('Уже 5 варіантів у ротації — вимкніть слабший');
+    const invite = insertInvite(db, { profileId: p.id, text: gen.text, source: gen.source, model: gen.model, userId: req.user.id, keepOthers: variant });
     res.status(201).json({ invite, preview: personalize(invite.text, { name: 'Michael', age: 45, country: 'USA' }) });
   }));
 
@@ -230,7 +239,9 @@ export default function profileRoutes(db, cfg) {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const text = str(req.body?.text, { required: true, field: 'текст', max: 1000 });
     if (text.length < 10) throw bad('Текст занадто короткий');
-    res.status(201).json({ invite: insertInvite(db, { profileId: p.id, text, source: 'manual', userId: req.user.id }) });
+    const variant = Boolean(req.body?.variant);
+    if (variant && inviteStats(db, p.id).length >= 5) throw bad('Уже 5 варіантів у ротації — вимкніть слабший');
+    res.status(201).json({ invite: insertInvite(db, { profileId: p.id, text, source: 'manual', userId: req.user.id, keepOthers: variant }) });
   });
 
   // ---------- files attached to messages ----------
@@ -316,12 +327,22 @@ export default function profileRoutes(db, cfg) {
     res.json({ invite: db.prepare('SELECT * FROM invites WHERE id = ?').get(inv.id) });
   });
 
+  /** Make it the only live invite, or (body.add) one more live variant. */
   r.post('/:id/invites/:inviteId/activate', (req, res) => {
     const inv = getInvite(req);
     tx(db, () => {
-      db.prepare('UPDATE invites SET active = 0 WHERE profile_id = ?').run(inv.profile_id);
-      db.prepare('UPDATE invites SET active = 1 WHERE id = ?').run(inv.id);
+      if (!req.body?.add) db.prepare('UPDATE invites SET active = 0 WHERE profile_id = ?').run(inv.profile_id);
+      else if (inviteStats(db, inv.profile_id).length >= 5) throw bad('Уже 5 варіантів у ротації — вимкніть слабший');
+      db.prepare('UPDATE invites SET active = 1, retired_at = NULL WHERE id = ?').run(inv.id);
     });
+    res.json({ ok: true });
+  });
+
+  /** Take a variant out of rotation (the last live one stays). */
+  r.post('/:id/invites/:inviteId/retire', (req, res) => {
+    const inv = getInvite(req);
+    if (inv.active && inviteStats(db, inv.profile_id).length <= 1) throw bad('Це останній інвайт у ротації — спершу додайте інший');
+    db.prepare('UPDATE invites SET active = 0, retired_at = ? WHERE id = ?').run(now(), inv.id);
     res.json({ ok: true });
   });
 

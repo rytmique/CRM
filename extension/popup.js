@@ -15,8 +15,9 @@ const STATUS = {
   limit: ['Ліміт вичерпано · стежить за відповідями', 'warn'],
   stopped: ['Зупинено', ''],
   error: ['Помилка', 'err'],
+  blocked: ['🛑 Капча / блок — потрібна людина', 'err'],
 };
-const ACTIVE = ['running', 'waiting', 'sleeping', 'watching', 'limit'];
+const ACTIVE = ['running', 'waiting', 'sleeping', 'watching', 'limit', 'blocked'];
 let profiles = [];
 let current = null;
 
@@ -82,8 +83,34 @@ function renderProfiles() {
   updateNote();
 }
 
+/** "За руку": the one next thing to do, and the button to press glows. */
+function updateGuide(p) {
+  const g = $('guide');
+  for (const id of ['teach', 'start', 'test-mode']) $(id).classList.remove('pulse');
+  let html = '';
+  let glow = null;
+  if (!profiles.length) {
+    html = '<b>Крок 1.</b> Створіть анкету в панелі: розділ <b>🚀 Підключення</b> покаже, що робити.';
+  } else if (p && p.license.valid && p.status === 'active' && !ACTIVE.includes(current?.status)) {
+    if (!p.siteReady) {
+      html = '<b>Навчіть бота сайту:</b> відкрийте на сайті сторінку пошуку чоловіків і натисніть <b>🎯 Навчити бота</b> нижче. Далі — підказки на сторінці.';
+      glow = 'teach';
+    } else if (!p.tested) {
+      html = '<b>Перевірте без відправки:</b> поставте галочку <b>🧪 Тест-режим</b> і натисніть <b>🧪 Тест</b>.';
+      glow = $('test-mode').checked ? 'start' : 'test-mode';
+    } else if (!p.started) {
+      html = '<b>Усе готово!</b> Зніміть галочку тесту й натисніть <b>▶ Старт</b>. Щоб бот вмикався сам щодня — <b>⏰ Автопілот</b>.';
+      glow = $('test-mode').checked ? 'test-mode' : 'start';
+    }
+  }
+  g.innerHTML = html;
+  g.hidden = !html;
+  if (glow) $(glow).classList.add('pulse');
+}
+
 function updateNote() {
   const p = profiles.find((x) => String(x.id) === $('profile').value);
+  updateGuide(p);
   let note = '';
   if (p) {
     if (!p.license.valid) note = 'Анкета без дійсної ліцензії — бот не запуститься.';
@@ -99,7 +126,16 @@ async function activeTabId() {
   return tab?.id ?? null;
 }
 
+function renderAutopilot(ap) {
+  const on = Boolean(ap?.on);
+  $('autopilot').checked = on;
+  $('autopilot-text').textContent = on
+    ? `— ${ap.profileName ? `${ap.profileName}, ` : ''}${ap.schedule || 'за розкладом'}`
+    : '— сам вмикається й вимикається за розкладом';
+}
+
 async function showMain(info) {
+  renderAutopilot(info.autopilot);
   $('login-view').hidden = true;
   $('main-view').hidden = false;
   $('logout').hidden = false;
@@ -149,6 +185,7 @@ $('logout').addEventListener('click', async () => { await send('logout'); init()
 $('profile').addEventListener('change', updateNote);
 $('test-mode').addEventListener('change', () => {
   $('start').textContent = $('test-mode').checked ? '🧪 Тест' : '▶ Старт';
+  updateNote();
   chrome.storage.local.set({ testMode: $('test-mode').checked });
 });
 chrome.storage.local.get('testMode').then(({ testMode }) => {
@@ -163,6 +200,19 @@ $('start').addEventListener('click', async () => {
   } catch (e) { $('main-error').textContent = e.message; }
 });
 $('stop').addEventListener('click', () => send('stop').catch((e) => { $('main-error').textContent = e.message; }));
+$('autopilot').addEventListener('change', async () => {
+  $('main-error').textContent = '';
+  const on = $('autopilot').checked;
+  try {
+    const r = await send('autopilot', { on, profileId: Number($('profile').value) });
+    const info = await send('state');
+    renderAutopilot(info.autopilot);
+    $('main-info').textContent = r.on ? `⏰ Автопілот: ${r.schedule}. Змінити дні й години — у панелі: Сайти → ⚙ Сценарій.` : 'Автопілот вимкнено';
+  } catch (e) {
+    $('autopilot').checked = !on;
+    $('main-error').textContent = e.message;
+  }
+});
 $('inbox').addEventListener('click', async () => {
   $('main-error').textContent = '';
   $('main-info').textContent = 'Перевіряю вхідні…';

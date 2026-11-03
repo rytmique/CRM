@@ -103,8 +103,9 @@ export function saveFollowup(db, { profileId, step, text, source, model }) {
   return db.prepare('SELECT * FROM followups WHERE profile_id = ? AND step = ?').get(profileId, step);
 }
 
-export function insertInvite(db, { profileId, text, source, model, userId }) {
-  db.prepare('UPDATE invites SET active = 0 WHERE profile_id = ?').run(profileId);
+/** New invite. `keepOthers`: added as one more live variant (A/B test) instead of replacing them. */
+export function insertInvite(db, { profileId, text, source, model, userId, keepOthers = false }) {
+  if (!keepOthers) db.prepare('UPDATE invites SET active = 0 WHERE profile_id = ?').run(profileId);
   const r = db.prepare('INSERT INTO invites (profile_id, text, source, model, active, created_by, created_at) VALUES (?,?,?,?,1,?,?)')
     .run(profileId, text, source, model ?? null, userId ?? null, now());
   return db.prepare('SELECT * FROM invites WHERE id = ?').get(r.lastInsertRowid);

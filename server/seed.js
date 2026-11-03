@@ -78,7 +78,7 @@ export function seedTestData(db, cfg, { password = 'test12345' } = {}) {
         { wait: 0.05, actions: [{ do: 'message', text: 'followup' }] },
         { wait: 0.1, actions: [{ do: 'view', chance: 100, seconds: 6 }, { do: 'message', text: 'followup' }] },
       ],
-      human: { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: true },
+      human: { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: true, spread: false },
     })), site.id);
   }
   return { owner: 'owner@test', operator: 'operator@test', password };

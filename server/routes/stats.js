@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { now } from '../db.js';
 import { int, lastDays } from '../util.js';
-import { getSettings, BOT_ONLINE_MS, licenseState } from '../services.js';
+import { getSettings, BOT_ONLINE_MS, licenseState, profileScope, profileLicense } from '../services.js';
+import { SITE_FIELDS } from '../sites.js';
 
 export default function statsRoutes(db) {
   const r = Router();
@@ -117,6 +118,46 @@ export default function statsRoutes(db) {
       { key: 'operator', title: 'Додай операторів', hint: 'Якщо бота запускатиме хтось інший. Можна й самому.', page: 'operators', done: operators > 0, optional: true },
     ];
     res.json({ steps });
+  });
+
+  /**
+   * The setup wizard ("за руку"): where this user is on the way from nothing to a running bot.
+   * Works for one profile: the one asked for, else the newest profile of the user.
+   */
+  r.get('/setup', (req, res) => {
+    const u = req.user;
+    const scope = profileScope(u);
+    const profiles = db.prepare(`SELECT p.id, p.name, p.site_id, p.test_at, p.test_ok, p.test_info, p.bot_last_seen, p.status
+      FROM profiles p WHERE ${scope.where} ORDER BY p.id DESC`).all(...scope.params);
+    const wanted = Number(req.query.profile_id) || 0;
+    const p = profiles.find((x) => x.id === wanted) || profiles[0] || null;
+    const sites = db.prepare('SELECT id, name, base_url, config FROM sites WHERE agency_id = ? ORDER BY id').all(u.agencyId).map((s) => {
+      const c = JSON.parse(s.config || '{}');
+      return { id: s.id, name: s.name, demo: String(s.base_url).includes('/demo-site/'), searchUrl: c.searchUrl || '', ready: SITE_FIELDS.filter((f) => f.required).every((f) => c[f.key]), config: c };
+    });
+    const site = p?.site_id ? sites.find((s) => s.id === p.site_id) : null;
+    const t = now();
+    const extension = Boolean(db.prepare(`SELECT 1 FROM sessions s JOIN users x ON x.id = s.user_id
+      WHERE s.kind = 'bot' AND s.expires_at > ? AND ${u.role === 'operator' ? 'x.id = ?' : 'x.agency_id = ?'} LIMIT 1`).get(t, u.role === 'operator' ? u.id : u.agencyId));
+    const license = p ? licenseState(profileLicense(db, p.id)) : null;
+    const sent = p ? db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent'").get(p.id).n : 0;
+    const missing = site ? SITE_FIELDS.filter((f) => f.required && !site.config[f.key]).map((f) => f.label) : [];
+    const steps = [
+      { key: 'site', done: sites.some((s) => !s.demo) || Boolean(site) },
+      { key: 'profile', done: Boolean(p && site && license?.valid), license: license?.state || 'none' },
+      { key: 'extension', done: extension },
+      { key: 'teach', done: Boolean(site?.ready), missing },
+      { key: 'test', done: Boolean(p?.test_ok), failed: p && p.test_at && !p.test_ok ? p.test_info : '' },
+      { key: 'start', done: sent > 0, sent },
+    ];
+    res.json({
+      steps, done: steps.every((x) => x.done),
+      profile: p ? { id: p.id, name: p.name, site_id: p.site_id } : null,
+      profiles: profiles.map((x) => ({ id: x.id, name: x.name })),
+      site: site ? { id: site.id, name: site.name, searchUrl: site.searchUrl, demo: site.demo } : null,
+      sites: sites.map(({ config, ...x }) => x),
+      role: u.role,
+    });
   });
 
   /** Outreach log with filters + pagination. */

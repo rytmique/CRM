@@ -10,6 +10,9 @@ import settings from './pages/settings.js';
 import extension from './pages/extension.js';
 import adminAgencies from './pages/admin-agencies.js';
 import adminLicenses from './pages/admin-licenses.js';
+import adminMemory from './pages/admin-memory.js';
+import setup from './pages/setup.js';
+import { get } from './api.js';
 
 const ICONS = {
   dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
@@ -36,6 +39,7 @@ function icon(name) {
 const NAV = {
   owner: [
     ['dashboard', 'Дашборд', 'dashboard', dashboard],
+    ['setup', 'Підключення', 'extension', setup],
     ['profiles', 'Анкети', 'profiles', profiles],
     ['operators', 'Оператори', 'operators', operators],
     ['licenses', 'Ліцензії', 'licenses', licenses],
@@ -46,6 +50,7 @@ const NAV = {
   ],
   operator: [
     ['dashboard', 'Дашборд', 'dashboard', dashboard],
+    ['setup', 'Підключення', 'extension', setup],
     ['profiles', 'Мої анкети', 'profiles', profiles],
     ['journal', 'Журнал', 'journal', journal],
     ['sites', 'Сайти', 'sites', sites],
@@ -54,6 +59,7 @@ const NAV = {
   admin: [
     ['agencies', 'Агенції', 'agencies', adminAgencies],
     ['admin-licenses', 'Ліцензії', 'licenses', adminLicenses],
+    ['memory', 'Пам’ять ШІ', 'settings', adminMemory],
   ],
 };
 
@@ -143,7 +149,14 @@ async function route() {
     try { session.user = (await api('/api/auth/me')).user; } catch { return renderLogin(); }
   }
   const items = NAV[session.user.role] || [];
-  const key = (location.hash.replace(/^#\/?/, '').split('?')[0]) || items[0][0];
+  let key = (location.hash.replace(/^#\/?/, '').split('?')[0]) || items[0][0];
+  // A brand-new user lands in the setup wizard ("за руку") instead of an empty dashboard.
+  if (!location.hash && session.user.role !== 'admin') {
+    try {
+      const s = await get('/api/stats/setup');
+      if (s.steps.filter((x) => x.done).length <= 1) key = 'setup';
+    } catch { /* the dashboard then */ }
+  }
   const item = items.find((i) => i[0] === key) || items[0];
   cleanup?.();
   cleanup = null;

@@ -211,7 +211,18 @@ function renderProfile() {
   });
 }
 
+/** Demo "captcha": shown while localStorage.demo_captcha is set; the button plays the person who solves it. */
+function captcha() {
+  if (!store.get('demo_captcha', false)) return;
+  const box = el('div', { class: 'captcha-box', id: 'captcha' },
+    el('p', 'Please verify you are human'),
+    el('button', { class: 'btn-not-robot', onclick: () => { localStorage.removeItem('demo_captcha'); box.remove(); } }, "I'm not a robot"));
+  box.style.cssText = 'position:fixed;inset:30% 30% auto;padding:24px;background:#fff;border:2px solid #c2255c;border-radius:12px;z-index:99;text-align:center';
+  document.body.append(box);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  captcha();
   if (document.getElementById('profile-chat')) renderProfile();
   if (document.getElementById('results')) { renderSearch(); initModal(); }
   if (document.getElementById('dialogs')) renderInbox();
