@@ -12,6 +12,8 @@ import adminAgencies from './pages/admin-agencies.js';
 import adminLicenses from './pages/admin-licenses.js';
 import adminMemory from './pages/admin-memory.js';
 import setup from './pages/setup.js';
+import billing from './pages/billing.js';
+import adminBilling from './pages/admin-billing.js';
 import { get } from './api.js';
 
 const ICONS = {
@@ -44,6 +46,7 @@ const NAV = {
     ['operators', 'Оператори', 'operators', operators],
     ['licenses', 'Ліцензії', 'licenses', licenses],
     ['journal', 'Журнал', 'journal', journal],
+    ['billing', 'Оплата за бота', 'licenses', billing],
     ['sites', 'Сайти', 'sites', sites],
     ['extension', 'Розширення', 'extension', extension],
     ['settings', 'Налаштування', 'settings', settings],
@@ -53,6 +56,7 @@ const NAV = {
     ['setup', 'Підключення', 'extension', setup],
     ['profiles', 'Мої анкети', 'profiles', profiles],
     ['journal', 'Журнал', 'journal', journal],
+    ['billing', 'Мій заробіток', 'licenses', billing],
     ['sites', 'Сайти', 'sites', sites],
     ['extension', 'Розширення', 'extension', extension],
   ],
@@ -60,6 +64,7 @@ const NAV = {
     ['agencies', 'Агенції', 'agencies', adminAgencies],
     ['admin-licenses', 'Ліцензії', 'licenses', adminLicenses],
     ['memory', 'Пам’ять ШІ', 'settings', adminMemory],
+    ['admin-billing', 'Оплата за бота', 'licenses', adminBilling],
   ],
 };
 

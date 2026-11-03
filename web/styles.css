@@ -332,3 +332,7 @@ pre.keys { background: var(--surface-2); border: 1px solid var(--line); border-r
 @keyframes pulse { 50% { opacity: .45; } }
 .setup-done { border-color: var(--ok); margin-bottom: 12px; }
 @media (max-width: 640px) { .setup-body { padding-left: 16px; } }
+
+.tier-list { display: grid; gap: 8px; margin: 8px 0; }
+.tier-row { display: flex; gap: 8px; align-items: center; }
+.tier-row input { width: 110px; }

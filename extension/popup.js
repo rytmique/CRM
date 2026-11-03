@@ -44,6 +44,7 @@ function render(s) {
   $('stop').hidden = !active;
   $('profile').disabled = active;
   $('test-mode').disabled = active;
+  $('test-full').disabled = active;
   $('teach').disabled = active;
   $('invite-box').hidden = !s.inviteText;
   $('invite').textContent = s.inviteText || '';
@@ -183,20 +184,24 @@ $('login-form').addEventListener('submit', async (e) => {
 
 $('logout').addEventListener('click', async () => { await send('logout'); init(); });
 $('profile').addEventListener('change', updateNote);
+$('test-full').addEventListener('change', () => chrome.storage.local.set({ testFull: $('test-full').checked }));
 $('test-mode').addEventListener('change', () => {
   $('start').textContent = $('test-mode').checked ? '🧪 Тест' : '▶ Старт';
+  $('test-full-row').hidden = !$('test-mode').checked;
   updateNote();
   chrome.storage.local.set({ testMode: $('test-mode').checked });
 });
-chrome.storage.local.get('testMode').then(({ testMode }) => {
+chrome.storage.local.get(['testMode', 'testFull']).then(({ testMode, testFull }) => {
   $('test-mode').checked = Boolean(testMode);
+  $('test-full').checked = Boolean(testFull);
+  $('test-full-row').hidden = !testMode;
   $('start').textContent = testMode ? '🧪 Тест' : '▶ Старт';
 });
 
 $('start').addEventListener('click', async () => {
   $('main-error').textContent = '';
   try {
-    await send('start', { profileId: Number($('profile').value), tabId: await activeTabId(), test: $('test-mode').checked });
+    await send('start', { profileId: Number($('profile').value), tabId: await activeTabId(), test: $('test-mode').checked, full: $('test-mode').checked && $('test-full').checked });
   } catch (e) { $('main-error').textContent = e.message; }
 });
 $('stop').addEventListener('click', () => send('stop').catch((e) => { $('main-error').textContent = e.message; }));
@@ -227,6 +232,15 @@ $('teach').addEventListener('click', async () => {
     await send('teach', { profileId: Number($('profile').value), tabId: await activeTabId() });
     window.close();
   } catch (e) { $('main-error').textContent = e.message; }
+});
+$('report').addEventListener('click', async () => {
+  $('main-error').textContent = '';
+  $('main-info').textContent = 'Готую звіт…';
+  try {
+    const r = await send('report', { profileId: Number($('profile').value), tabId: await activeTabId() });
+    await navigator.clipboard.writeText(r.text);
+    $('main-info').textContent = '📋 Звіт скопійовано — встав його в повідомлення розробнику. Імен, ID і даних сайту в ньому немає.';
+  } catch (e) { $('main-info').textContent = ''; $('main-error').textContent = `Звіт не вдався: ${e.message}`; }
 });
 $('probe').addEventListener('click', async () => {
   $('main-error').textContent = '';

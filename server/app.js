@@ -16,6 +16,7 @@ import licenseRoutes from './routes/licenses.js';
 import siteRoutes from './routes/sites.js';
 import settingsRoutes from './routes/settings.js';
 import statsRoutes from './routes/stats.js';
+import billingRoutes from './routes/billing.js';
 import botRoutes from './routes/bot.js';
 import scenarioRoutes from './routes/scenarios.js';
 
@@ -62,6 +63,7 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   api.use('/scenarios', scenarioRoutes(db));
   api.use('/settings', settingsRoutes(db));
   api.use('/stats', statsRoutes(db));
+  api.use('/billing', billingRoutes(db));
   app.use('/api', api);
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Невідомий метод API')));
 

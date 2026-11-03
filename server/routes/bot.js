@@ -527,8 +527,17 @@ export default function botRoutes(db, cfg) {
   r.post('/profiles/:id/heartbeat', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const state = oneOf(req.body?.state || 'running', ['running', 'paused', 'idle', 'error', 'limit', 'done'], 'state');
-    db.prepare('UPDATE profiles SET bot_state = ?, bot_info = ?, bot_last_seen = ? WHERE id = ?')
-      .run(state, str(req.body?.info, { max: 300 }) || '', state === 'idle' ? null : now(), p.id);
+    const t = now();
+    // Payment counts only real work: time between two "working" beats (no sleeping, waiting for hints, captcha, limit).
+    const active = req.body?.active === undefined ? state === 'running' : Boolean(req.body.active) && state === 'running';
+    if (active && p.bot_beat_active && p.bot_beat_at && t - p.bot_beat_at <= 150000 && t > p.bot_beat_at) {
+      const settings = getSettings(db, req.user.agencyId);
+      db.prepare(`INSERT INTO bot_activity (profile_id, operator_id, agency_id, day, seconds) VALUES (?,?,?,?,?)
+        ON CONFLICT(profile_id, operator_id, day) DO UPDATE SET seconds = seconds + excluded.seconds`)
+        .run(p.id, req.user.id, p.agency_id, dayKey(t, settings.timezone), Math.round((t - p.bot_beat_at) / 1000));
+    }
+    db.prepare('UPDATE profiles SET bot_state = ?, bot_info = ?, bot_last_seen = ?, bot_beat_at = ?, bot_beat_active = ? WHERE id = ?')
+      .run(state, str(req.body?.info, { max: 300 }) || '', state === 'idle' ? null : t, t, active ? 1 : 0, p.id);
     const fresh = db.prepare('SELECT status FROM profiles WHERE id = ?').get(p.id);
     res.json({ ok: true, paused: fresh.status !== 'active' });
   });

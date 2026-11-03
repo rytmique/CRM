@@ -38,6 +38,14 @@ export default function settingsRoutes(db) {
     const patch = structuredClone(req.body?.settings || {});
     if (patch.ai && (patch.ai.apiKey === undefined || isMasked(patch.ai.apiKey))) delete patch.ai.apiKey;
     if (patch.telegram && (patch.telegram.botToken === undefined || isMasked(patch.telegram.botToken))) delete patch.telegram.botToken;
+    if (patch.billing) {
+      const b = patch.billing;
+      patch.billing = {
+        ...cur.billing,
+        perReply: b.perReply === undefined ? cur.billing.perReply : Math.max(0, Math.min(100000, Number(b.perReply) || 0)),
+        currency: b.currency === undefined ? cur.billing.currency : (str(b.currency, { max: 8 }) || '$'),
+      };
+    }
     if (patch.timezone) {
       try { new Intl.DateTimeFormat('en', { timeZone: patch.timezone }); } catch { throw bad('Невідомий часовий пояс'); }
     }

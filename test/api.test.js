@@ -830,3 +830,64 @@ test('operator desk: the site hint decides chat or letter; replies matched by na
   assert.equal(r.new, 1);
   assert.equal(r.men[0].id, '1787395165');
 });
+
+test('payment for the bot: % of the operator earnings, a bigger sum → a bigger %, only the time the bot really worked', async () => {
+  await login('admin10', 'root@test', 'rootpass123');
+  const ag = (await call('POST', '/api/admin/agencies', { name: 'Orchid', ownerName: 'O', ownerEmail: 'owner@orchid', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin10')).data;
+  await login('orchid', 'owner@orchid', 'ownerpass1');
+  const op = (await call('POST', '/api/operators', { name: 'Vera', email: 'vera@orchid', password: 'verapass' }, 'orchid')).data;
+  await login('vera', 'vera@orchid', 'verapass', 'bot');
+  const site = (await call('GET', '/api/sites', undefined, 'orchid')).data.sites[0];
+  // a day of 10 working hours, every day
+  await call('PUT', `/api/sites/${site.id}/scenario`, { scenario: { human: { windows: '9-19' } } }, 'orchid');
+  const p = (await call('POST', '/api/profiles', { name: 'Ola', site_id: site.id }, 'vera')).data;
+
+  // heartbeats: working beats count, idle ones do not
+  const t0 = Date.now();
+  const beat = (active, state = 'running') => call('POST', `/api/bot/profiles/${p.id}/heartbeat`, { state, active }, 'vera');
+  await beat(true);
+  db.prepare('UPDATE profiles SET bot_beat_at = ? WHERE id = ?').run(t0 - 60000, p.id); // a minute ago
+  await beat(true); // +60 s
+  db.prepare('UPDATE profiles SET bot_beat_at = ? WHERE id = ?').run(Date.now() - 60000, p.id);
+  await beat(false); // waiting for hints: not counted
+  db.prepare('UPDATE profiles SET bot_beat_at = ? WHERE id = ?').run(Date.now() - 60000, p.id);
+  await beat(true); // the previous beat was idle: still not counted
+  const secs = db.prepare('SELECT SUM(seconds) AS s FROM bot_activity WHERE profile_id = ?').get(p.id).s;
+  assert.ok(secs >= 59 && secs <= 62, `only real work counted: ${secs}`);
+
+  // the admin sets the deal: 5 %, from 1000 — 7 %, from 3000 — 10 %
+  assert.equal((await call('PATCH', `/api/admin/agencies/${ag.id}`, { billing: { tiers: [{ from: 3000, pct: 10 }, { from: 1000, pct: 7 }, { from: 0, pct: 5 }] } }, 'admin10')).status, 200);
+  await call('PUT', '/api/settings', { settings: { billing: { perReply: 20, currency: '€', tiers: [{ from: 0, pct: 0 }] } } }, 'orchid'); // tiers are not the agency's to change
+
+  // 3 positive replies this month → estimate 3 × 20 = 60 → 5 %; the bot worked 1 min of the month's working hours
+  const month = new Date().toISOString().slice(0, 7);
+  const today = `${month}-${String(new Date().getDate()).padStart(2, '0')}`;
+  const ins = db.prepare("INSERT INTO messages (agency_id, profile_id, operator_id, man_id, status, day, sent_at, replied_at, reply_day, reply_mood) VALUES (?,?,?,?, 'sent', ?, 1, 2, ?, ?)");
+  for (let i = 0; i < 4; i++) ins.run(ag.id, p.id, op.id, `pay${i}`, today, today, i < 3 ? 'positive' : 'negative');
+  let rep = (await call('GET', `/api/billing?month=${month}`, undefined, 'orchid')).data;
+  let vera = rep.rows.find((x) => x.user_id === op.id);
+  assert.equal(rep.billing.currency, '€');
+  assert.deepEqual(rep.billing.tiers.map((x) => x.pct), [5, 7, 10]);
+  assert.equal(vera.replies, 3);
+  assert.equal(vera.estimated, true);
+  assert.equal(vera.earnings, 60);
+  assert.equal(vera.pct, 5);
+  assert.ok(vera.share > 0 && vera.share < 0.01, `1 minute of many working hours: ${vera.share}`);
+  assert.ok(vera.fee < 0.1);
+
+  // end of the month: the operator enters the real sum; a bigger sum → a bigger %
+  rep = (await call('PUT', '/api/billing/earnings', { month, amount: 3500 }, 'vera')).data;
+  vera = rep.rows[0];
+  assert.equal(rep.rows.length, 1, 'an operator sees only themself');
+  assert.equal(vera.estimated, false);
+  assert.equal(vera.pct, 10);
+  // not counting idle off: the whole sum
+  await call('PATCH', `/api/admin/agencies/${ag.id}`, { billing: { prorate: false } }, 'admin10');
+  vera = (await call('GET', `/api/billing?month=${month}`, undefined, 'vera')).data.rows[0];
+  assert.equal(vera.share, 1);
+  assert.equal(vera.fee, 350);
+  assert.equal((await call('PUT', '/api/billing/earnings', { month, amount: 10, operator_id: 1 }, 'vera')).status, 403, 'not for others');
+  // the admin sees what each agency owes
+  const all = (await call('GET', `/api/admin/billing?month=${month}`, undefined, 'admin10')).data;
+  assert.equal(all.agencies.find((a) => a.id === ag.id).fee, 350);
+});

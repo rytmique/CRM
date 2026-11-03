@@ -9,6 +9,9 @@ import { bad, notFound, str, int, licenseKey, updateSql } from '../util.js';
 import { licenseState } from '../services.js';
 import { demoSiteConfig } from '../sites.js';
 import { refreshMemory } from '../learning.js';
+import { billingReport, sanitizeTiers, currentMonth, validMonth } from '../billing.js';
+import { getSettings } from '../services.js';
+import { mergeSettings } from '../util.js';
 import { rankingState } from '../scoring.js';
 
 const DAY = 86400000;
@@ -85,6 +88,14 @@ export default function adminRoutes(db, cfg) {
       active: req.body?.active === undefined ? undefined : (req.body.active ? 1 : 0),
     });
     if (!upd.empty) db.prepare(`UPDATE agencies SET ${upd.sql} WHERE id = ?`).run(...upd.values, id);
+    // The deal with the agency: the % scale for the bot (bigger earnings → bigger %), count only the bot's real work.
+    if (req.body?.billing && typeof req.body.billing === 'object') {
+      const cur = getSettings(db, id);
+      const b = { ...cur.billing };
+      if (req.body.billing.tiers !== undefined) b.tiers = sanitizeTiers(req.body.billing.tiers);
+      if (req.body.billing.prorate !== undefined) b.prorate = Boolean(req.body.billing.prorate);
+      db.prepare('UPDATE agencies SET settings = ? WHERE id = ?').run(JSON.stringify(mergeSettings(cur, { billing: b })), id);
+    }
     if (req.body?.active === false) {
       for (const u of db.prepare('SELECT id FROM users WHERE agency_id = ?').all(id)) destroyUserSessions(db, u.id);
     }
@@ -152,6 +163,17 @@ export default function adminRoutes(db, cfg) {
     const out = db.prepare("UPDATE licenses SET status = 'active' WHERE id = ?").run(Number(req.params.id));
     if (!out.changes) throw notFound('Ліцензію не знайдено');
     res.json({ ok: true });
+  });
+
+  // ---------- payment for the bot: what each agency owes for a month ----------
+  r.get('/billing', (req, res) => {
+    const month = validMonth(req.query.month) ? req.query.month : currentMonth('Europe/Kyiv');
+    const agencies = db.prepare('SELECT id, name, active FROM agencies ORDER BY name COLLATE NOCASE').all().map((a) => {
+      const settings = getSettings(db, a.id);
+      const rep = billingReport(db, { agencyId: a.id, month, settings });
+      return { id: a.id, name: a.name, active: Boolean(a.active), ...rep.totals, estimated: rep.rows.some((x) => x.estimated && x.earnings > 0), billing: rep.billing, rows: rep.rows };
+    });
+    res.json({ month, agencies });
   });
 
   // ---------- shared memory of the platform (lessons for invites) ----------

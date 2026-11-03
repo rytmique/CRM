@@ -94,7 +94,9 @@ async function heartbeat(force = false, botState) {
   lastHeartbeat = Date.now();
   const info = `надіслано ${state.sent}${state.followups ? ` (повторних ${state.followups})` : ''}, відповідей ${state.replies}${state.status === 'sleeping' ? ', неробочий час' : state.page ? `, стор. ${state.page}` : ''}`;
   try {
-    const r = await api(`/api/bot/profiles/${state.profileId}/heartbeat`, { method: 'POST', body: { state: botState || mapBotState(), info } });
+    // "active": really working now (writing or pausing between men) — payment for the bot counts only that time
+    const active = running && !state.test && ['running', 'waiting'].includes(state.status);
+    const r = await api(`/api/bot/profiles/${state.profileId}/heartbeat`, { method: 'POST', body: { state: botState || mapBotState(), info, active } });
     if (r.paused && running && !stopRequested) {
       stopRequested = true;
       await log('Анкету поставлено на паузу в панелі — зупиняюсь', 'warn');
@@ -518,7 +520,8 @@ async function writeHere(tabId, site, m, dry, typing) {
   if (letter) {
     if (!site.letterOpen && !site.letterInput) return { ok: false, error: 'листи ще не навчені — 🎯 → вкладка «Листи»' };
     if (site.letterOpen) {
-      const o = await inTab(tabId, 'clickAction', { site, man: m, sel: site.letterOpen, name: 'Лист', ctx: 'page', dry }).catch((e) => ({ ok: false, error: e.message }));
+      // Opening the letter form sends nothing, so the test presses it too (otherwise the form is never seen).
+      const o = await inTab(tabId, 'clickAction', { site, man: m, sel: site.letterOpen, name: 'Лист', ctx: 'page', dry: false }).catch((e) => ({ ok: false, error: e.message }));
       if (!o?.ok) return { ok: false, error: o?.error || 'кнопку «Лист» не знайдено' };
       await sleep(rand(800, 1600));
     }
@@ -983,10 +986,83 @@ const TEST_MEN = 3;
  * Test mode: walks the whole flow on the real site but never presses "Send" or any taught button.
  * Nothing is recorded on the server and the daily limit is untouched.
  */
+const FULL_TEST_MEN = 15;
+const TEST_MAX_WAIT = 15000; // pauses of the real pace, but at most 15 s each in a test
+
+/**
+ * 🧪 Full run: everything as for real on the real site — the site's hints, the list page by page, every action of step 1,
+ * the human pauses (shortened), the text typed into the box — but "Send" and the buttons are never pressed,
+ * nothing is recorded on the server and the daily limit is untouched.
+ */
+async function fullDryRun(ctx, tabId, listUrl) {
+  const { site, profileId } = ctx;
+  ctx.tabId = tabId;
+  const short = (range) => Math.min(TEST_MAX_WAIT, between(range));
+  const stats = { men: 0, chat: 0, letters: 0, errors: 0 };
+  const seen = new Set();
+  await log(`🧪 Повний прогін: до ${FULL_TEST_MEN} чоловіків, як насправді, але НІЧОГО не надсилаю. Паузи справжні, але не довші 15 с`);
+  const one = async (man, where, home) => {
+    seen.add(man.id);
+    await setState({ message: `🧪 Пишу (без відправки): ${man.name || man.id}` });
+    let res;
+    try { res = await runActions(tabId, site, man, man.actions || [], { where, dry: true, typing: ctx.human.typing, home }); } catch (e) { res = { ok: false, error: e.message, warnings: [] }; }
+    stats.men++;
+    const letter = (man.actions || []).some((a) => a.do === 'message' && a.via === 'letter');
+    if (res.ok) {
+      stats[letter ? 'letters' : 'chat']++;
+      await setState({ sent: state.sent + 1 });
+      const text = (man.actions || []).find((a) => a.do === 'message')?.text || '';
+      await log(`🧪 ${man.name || man.id}: ${letter ? '✉ лист' : '💬 повідомлення'} написав би — «${text.slice(0, 60)}${text.length > 60 ? '…' : ''}» (НЕ надіслано)`);
+    } else {
+      stats.errors++;
+      await log(`🧪 ✗ ${man.name || man.id}: ${res.error}`, 'warn');
+    }
+    if (!stopRequested) await sleep(short(ctx.human.gapFrom ? [ctx.human.gapFrom, ctx.human.gapTo] : [ctx.limits.minDelay, ctx.limits.maxDelay]));
+  };
+
+  // the site's hints first
+  if (site.taskItem) {
+    if (listUrl) await navigate(tabId, listUrl);
+    const hints = (await inTab(tabId, 'tasks', { site }).catch(() => null)) || [];
+    for (const t of hints) {
+      if (stopRequested || stats.men >= FULL_TEST_MEN) break;
+      await guard(ctx);
+      await sleep(short(pace.react));
+      const o = await inTab(tabId, 'openTask', { site, task: t, dry: true }).catch((e) => ({ ok: false, error: e.message }));
+      if (!o?.ok || !o.id) { stats.errors++; await log(`🧪 ✗ підказка ${t.name}: ${o?.error || 'не бачу ID'}`, 'warn'); continue; }
+      const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: [{ id: o.id, name: o.name, age: t.age, via: t.via }], test: true } });
+      if (!f.allowed[0]) { await log(`🧪 ${o.name}: йому вже писали — пропустив би`); continue; }
+      await one(f.allowed[0], 'page');
+    }
+  }
+
+  // then the list of men, page by page
+  if (site.card) {
+    if (listUrl) await navigate(tabId, listUrl);
+    for (let page = 1; page <= 10 && !stopRequested && stats.men < FULL_TEST_MEN; page++) {
+      await guard(ctx);
+      const scan = await inTab(tabId, 'scan', { site });
+      const cands = (scan?.candidates || []).filter((c) => !seen.has(c.id));
+      if (!cands.length && page > 1) break;
+      const f = cands.length ? await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: cands, test: true } }) : { allowed: [] };
+      await log(`🧪 Стор. ${page}: чоловіків ${scan?.candidates?.length || 0}, написав би ${f.allowed.length}`);
+      const here = (await chrome.tabs.get(tabId)).url;
+      for (const man of f.allowed) {
+        if (stopRequested || stats.men >= FULL_TEST_MEN) break;
+        await one(man, 'card', here);
+      }
+      if (stats.men >= FULL_TEST_MEN || stopRequested) break;
+      if (!(await advance(tabId, site))) break;
+      await sleep(short(pace.pageGap));
+    }
+  }
+  await log(`🧪 Повний прогін готово: пройшов ${stats.men} чоловіків (💬 ${stats.chat}, ✉ ${stats.letters}), помилок ${stats.errors}. НІЧОГО не надіслано, ліміт не витрачено`, stats.errors ? 'warn' : 'reply');
+}
+
 /** Only the outcome of a test goes to the panel (for the setup wizard) — nothing about men or messages. */
 const reportTest = (profileId, problems) => api(`/api/bot/profiles/${profileId}/test`, { method: 'POST', body: { ok: !problems.length, problems } }).catch(() => {});
 
-async function runTest(profileId, tabId) {
+async function runTest(profileId, tabId, { full = false } = {}) {
   const ctx = await loadRun(profileId, true);
   const { cfg, site } = ctx;
   await setState({
@@ -1014,10 +1090,18 @@ async function runTest(profileId, tabId) {
       await warn('Підказок сайту «напиши йому» зараз немає — нормально, якщо сайт ще не підкинув. Запустіть тест, коли з’являться');
     } else {
       await log(`✓ Підказки сайту: ${ts.length}. Напр.: ${ts.slice(0, 3).map((t) => `${t.name}${t.age ? ` ${t.age}` : ''} (${t.via === 'letter' ? 'лист' : 'чат'})`).join('; ')}`);
-      const t = ts[0];
-      const o = await inTab(tabId, 'openTask', { site, task: t, dry: true }).catch((e) => ({ ok: false, error: e.message }));
-      if (!o?.ok) problems.push(`Підказка «${t.name}»: ${o?.error || 'не відкрилась'} — перевірте «Підказка» та «Ім’я в шапці відкритого чату»`);
-      else if (!o.id) problems.push('Чат з підказки відкрився, але бот не бачить ID — навчіть «ID у шапці відкритого чату»');
+      // up to 3 hints: one odd hint (the site opened another chat) is a warning; none opening right is a problem
+      let o = null;
+      let t = null;
+      const failed = [];
+      for (const cand of ts.slice(0, 3)) {
+        const r = await inTab(tabId, 'openTask', { site, task: cand, dry: true }).catch((e) => ({ ok: false, error: e.message }));
+        if (r?.ok && r.id) { o = r; t = cand; break; }
+        failed.push(`${cand.name}: ${r?.ok ? 'не бачу ID у шапці чату' : r?.error || 'не відкрилась'}`);
+      }
+      for (const f of failed) await warn(`Підказка ${f}`);
+      if (!o) problems.push(failed.some((f) => f.includes('ID')) ? 'Чат з підказки відкривається, але бот не бачить ID — навчіть «ID у шапці відкритого чату»'
+        : 'Жодна підказка не відкрила потрібний чат — перевірте «Підказка» та «Ім’я в шапці відкритого чату»');
       else {
         await log(`✓ Чат з підказки відкрився: ${o.name} [${o.id}]`);
         const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { candidates: [{ id: o.id, name: o.name, age: t.age, via: t.via }], test: true } });
@@ -1135,6 +1219,9 @@ async function runTest(profileId, tabId) {
 
   if (stopRequested) { await log('🧪 Тест перервано'); return; }
   await reportTest(profileId, problems);
+  if (full && !problems.length) await fullDryRun(ctx, tabId, listUrl);
+  else if (full) await warn('Повний прогін пропущено: спершу виправте проблеми нижче');
+  if (stopRequested) { await log('🧪 Тест перервано'); return; }
   if (problems.length) {
     for (const p of problems) await log(`✗ ${p}`, 'error');
     throw new Error(`тест знайшов проблем: ${problems.length}. Виправте (🎯 Навчити бота або панель) й запустіть тест ще раз`);
@@ -1179,14 +1266,14 @@ async function autopilotTick() {
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'autopilot') autopilotTick().catch(() => {}); });
 chrome.alarms.get('autopilot').then((a) => { if (!a) chrome.alarms.create('autopilot', { periodInMinutes: 1 }); });
 
-async function start(profileId, tabId, test = false, { auto = false } = {}) {
+async function start(profileId, tabId, test = false, { auto = false, full = false } = {}) {
   if (running) return;
   running = true;
   stopRequested = false;
   keepAlive(true);
   try {
     if (test) {
-      await runTest(profileId, tabId);
+      await runTest(profileId, tabId, { full });
       await setState({ status: 'stopped' });
       return;
     }
@@ -1207,6 +1294,49 @@ async function start(profileId, tabId, test = false, { auto = false } = {}) {
     keepAlive(false);
     await chrome.storage.session.remove('active');
   }
+}
+
+// ---------------- 📋 report for the developer (safe under NDA) ----------------
+/** No names, IDs, message texts, addresses or the site's name — only what is taught and what the bot sees. */
+const maskText = (t) => String(t || '')
+  .replace(/https?:\/\/\S+/g, '[посилання]')
+  .replace(/\b[\w-]+\.(com|net|org|date|dating|io|ua|ru|de|co|uk|me|club|site|app)\b/gi, '[сайт]')
+  .replace(/\d{5,}/g, '#####')
+  .replace(/«([^»]{25,})»/g, '«…»')
+  .replace(/\b[a-z]+_\d{2,4}\b/gi, 'Ч')
+  .replace(/\b[A-Z][a-z]+\b/g, 'Ч');
+
+const REPORT_FIELDS = ['searchUrl', 'card', 'cardId', 'cardName', 'openChat', 'nextPage', 'taskItem', 'taskName', 'taskText', 'messageInput', 'sendButton',
+  'sentConfirm', 'sendError', 'chatName', 'chatId', 'chatLeft', 'translateButton', 'attachButton', 'letterOpen', 'letterSubject', 'letterLeft',
+  'findInput', 'manUrl', 'inboxUrl', 'inboxItem', 'inboxUnread', 'inboxName', 'inboxText'];
+
+async function buildReport(profileId, tabId) {
+  const lines = [];
+  const m = chrome.runtime.getManifest();
+  lines.push(`Agency Bot ${m.version} · ${new Date().toLocaleString('uk-UA')}`);
+  lines.push(`Стан: ${state.status}${state.test ? ' (тест)' : ''} · надіслано ${state.sent} · помилок ${state.failed} · відповідей ${state.replies} · лишилось ${state.remaining ?? '—'}`);
+  const ap = await getAutopilot();
+  lines.push(`Автопілот: ${ap?.on ? `увімкнено (${ap.human ? scheduleText(ap.human) : '—'})` : 'вимкнено'}`);
+  let cfg = null;
+  try { cfg = profileId ? await api(`/api/bot/profiles/${profileId}/config`) : null; } catch (e) { lines.push(`Налаштування анкети: ${maskText(e.message)}`); }
+  if (cfg) {
+    const c = cfg.site.config;
+    lines.push(`Навчено: ${REPORT_FIELDS.map((k) => `${k}${c[k] ? '✓' : '·'}`).join(' ')}`);
+    lines.push(`Кнопок ${(c.actions || []).length}, ознак ${(c.marks || []).length}; сценарій: кроків ${cfg.scenario.steps}, спроб ${cfg.scenario.attempts}; ліміт ${cfg.limits.dailyLimit}, лишилось ${cfg.limits.remaining}; варіантів інвайту ${cfg.variants}`);
+    if (tabId) {
+      const at = (cmd, payload) => inTab(tabId, cmd, payload).catch(() => null);
+      const pr = await at('probe', { site: c });
+      const hints = c.taskItem ? ((await at('tasks', { site: c })) || []).length : '—';
+      const hdr = c.chatName || c.chatId ? await at('chatHeader', { site: c }) : null;
+      const left = c.chatLeft ? await at('leftCount', { sel: c.chatLeft }) : null;
+      const blocked = await at('blocked', { site: c });
+      lines.push(`На сторінці зараз: карток ${pr?.cards ?? '—'}, підказок ${hints}, діалогів ${pr?.inboxItems ?? '—'}, поле вводу ${pr?.messageInput ? 'видно' : 'не видно'}`
+        + `${hdr ? `, шапка чату: ім’я ${hdr.name ? 'є' : 'нема'}, ID ${hdr.id ? 'є' : 'нема'}` : ''}${left !== null ? `, лічильник ${left}` : ''}, блок/капча: ${blocked ? blocked.kind : 'нема'}`);
+    }
+  }
+  lines.push('Останні події (без імен і даних):');
+  for (const e of (state.log || []).slice(0, 40)) lines.push(`${new Date(e.t).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' })} ${maskText(e.text)}`);
+  return lines.join('\n');
 }
 
 // ---------------- messages from the popup ----------------
@@ -1260,12 +1390,12 @@ const handlers = {
   async profiles() {
     return api('/api/bot/profiles');
   },
-  async start({ profileId, tabId, test }) {
+  async start({ profileId, tabId, test, full }) {
     if (running) throw new Error('Бот уже працює');
     unseenReplies = 0;
     const ap = await getAutopilot();
     if (ap?.heldDay) await setAutopilot({ ...ap, heldDay: null });
-    start(Number(profileId), tabId, Boolean(test));
+    start(Number(profileId), tabId, Boolean(test), { full: Boolean(full) });
     return {};
   },
   async stop() {
@@ -1317,6 +1447,10 @@ const handlers = {
     const { teach } = await chrome.storage.session.get('teach');
     if (teach) await chrome.storage.session.set({ teach: { ...teach, config: r.config } });
     return { config: r.config };
+  },
+  /** 📋 A report to paste to the developer: nothing about men or the site itself. */
+  async report({ profileId, tabId }) {
+    return { text: await buildReport(Number(profileId) || state.profileId, tabId) };
   },
   async probe({ profileId, tabId }) {
     const cfg = await api(`/api/bot/profiles/${profileId}/config`);

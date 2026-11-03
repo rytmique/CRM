@@ -490,6 +490,37 @@ try {
   await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
   log('operator desk ok: hints → chat / letter as asked, ID from the chat header, wrong chat refused, follow-ups found by ID');
 
+  // ---------- 🧪 full test run: everything as for real, nothing sent ----------
+  const beforeFull = await sitePage.evaluate(() => [localStorage.getItem('demo_sent'), localStorage.getItem('demo_letters')]);
+  await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${kate.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(kate.id));
+  if (!(await popup.isChecked('#test-mode'))) await popup.click('#test-mode');
+  await popup.waitForSelector('#test-full', { state: 'visible' });
+  if (!(await popup.isChecked('#test-full'))) await popup.click('#test-full');
+  await popup.click('#start');
+  const t7 = Date.now();
+  do { await sleep(1000); st = await readState(); } while (!(st.startedAt >= t7 - 5000 && ['stopped', 'error'].includes(st.status)) && Date.now() - t7 < 240000);
+  const fullLog = st.log.map((l) => l.text).join('\n');
+  if (!/Повний прогін готово: пройшов [1-9]/.test(fullLog)) fail(`full test run:\n${fullLog}`);
+  if (!/✉ лист написав би/.test(fullLog) || !/НЕ надіслано/.test(fullLog)) fail(`full test run should walk a letter hint:\n${fullLog}`);
+  const afterFull = await sitePage.evaluate(() => [localStorage.getItem('demo_sent'), localStorage.getItem('demo_letters')]);
+  if (JSON.stringify(afterFull) !== JSON.stringify(beforeFull)) fail('the full test run sent something');
+  await popup.screenshot({ path: path.join(OUT, '28-popup-full-test.png') });
+  await popup.click('#test-mode'); // back to normal
+  log('full test run ok: hints walked as for real, nothing sent');
+
+  // ---------- 📋 report for the developer: no names, no IDs ----------
+  const rep = await popup.evaluate(({ pid }) => new Promise((r) => chrome.tabs.query({}, (tabs) => {
+    const t = tabs.find((x) => x.url.includes('/demo-site/desk.html'));
+    chrome.runtime.sendMessage({ type: 'report', profileId: pid, tabId: t?.id }, r);
+  })), { pid: kate.id });
+  if (!rep?.ok) fail(`report: ${rep?.error}`);
+  const repText = rep.data.text;
+  if (!/Навчено: .*taskItem✓/.test(repText) || !/На сторінці зараз: .*підказок \d/.test(repText)) fail(`report content:\n${repText}`);
+  if (/\d{5,}/.test(repText) || /localhost|127\.0\.0\.1/.test(repText) || /(William|Richard|Edward|Michael|Paul)\b/.test(repText)) fail(`report leaks data:\n${repText}`);
+  log('report ok: taught fields + what the bot sees, no names / IDs / addresses');
+
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();
   await page.click('a[href="#/dashboard"]');

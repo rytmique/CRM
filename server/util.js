@@ -30,6 +30,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   defaults: { dailyLimit: 150, minDelay: 40, maxDelay: 90 },
   inboxCheckEvery: 10,
   dedupeAcrossAgency: false,
+  // payment for the bot: tiers are set by the platform admin, the rest by the agency
+  billing: { currency: '$', perReply: 10, tiers: [{ from: 0, pct: 5 }], prorate: true },
 });
 
 function deepMerge(base, over) {

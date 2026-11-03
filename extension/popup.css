@@ -2,6 +2,7 @@
 @media (prefers-color-scheme: dark) { :root { --ink:#f1edf3; --muted:#a59bab; --line:#3a3340; --bg:#1d1a21; --soft:#26222b; } }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+.check.sub { margin-left: 22px; }
 .guide { border: 1px dashed var(--accent); background: var(--soft); color: var(--ink); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; line-height: 1.45; margin: 6px 0; }
 .guide b { color: var(--accent); }
 .pulse { animation: pulse 1.4s ease-in-out infinite; }

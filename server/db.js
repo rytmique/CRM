@@ -184,6 +184,29 @@ CREATE TABLE IF NOT EXISTS ai_memory (
   created_at INTEGER NOT NULL
 );
 
+-- payment for the bot: seconds the bot really worked (no idle), per profile / who ran it / day
+CREATE TABLE IF NOT EXISTS bot_activity (
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  operator_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  seconds INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (profile_id, operator_id, day)
+);
+
+-- the operator's earnings for a month (entered at the end of the month)
+CREATE TABLE IF NOT EXISTS earnings (
+  id INTEGER PRIMARY KEY,
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  operator_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  month TEXT NOT NULL,
+  amount REAL NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  entered_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (operator_id, month)
+);
+
 -- men the bot saw while scanning ahead, best first
 CREATE TABLE IF NOT EXISTS pool (
   profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
@@ -236,11 +259,16 @@ const MIGRATIONS = [
   ['profiles', 'test_at', 'INTEGER'],
   ['profiles', 'test_ok', 'INTEGER'],
   ['profiles', 'test_info', "TEXT NOT NULL DEFAULT ''"],
+  // last heartbeat and whether the bot was really working then (payment counts only that)
+  ['profiles', 'bot_beat_at', 'INTEGER'],
+  ['profiles', 'bot_beat_active', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */
 const LATE_SQL = `
 CREATE INDEX IF NOT EXISTS idx_messages_due ON messages(profile_id, stage, next_at);
+CREATE INDEX IF NOT EXISTS idx_activity_agency ON bot_activity(agency_id, operator_id, day);
+CREATE INDEX IF NOT EXISTS idx_messages_operator_reply ON messages(agency_id, operator_id, reply_day);
 `;
 
 export function openDb(file) {

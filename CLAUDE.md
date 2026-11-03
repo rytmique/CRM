@@ -27,6 +27,7 @@ server/
   auth.js         scrypt, Bearer-сесії (sha256 токена), ролі admin/owner/operator
   services.js     ліцензії (+ autoLicense з пулу), canEditSite, ліміти, sentToday (перші + повторні), hourWindow, followups
   scoring.js      бал чоловіка: ознаки картки (країна, вік, marks, слова) → спільна анонімна таблиця man_stats; rankingState
+  billing.js      оплата за бота: operatorMonth/billingReport (заробіток введений або ≈ відповіді × perReply, шкала tiers, частка часу bot_activity / графік)
   learning.js     варіанти інвайтів (inviteStats, pickInvite = Thompson), optimizeProfile, спільна пам’ять ai_memory (refreshMemory, memoryLines), runLearning (таймер 30 хв в index.js)
   ai.js           інвайт (+memory, bestExample), повторні, нагадування після відповіді (generateReengage), лист (generateLetter), classifyReply («не цікаво»), askClaude
   scenario.js     СЦЕНАРІЙ: DEFAULT_SCENARIO, PRESETS, sanitizeScenario (message.via chat|letter; human: windows, паузи *From/*To, typeSpeed), readWindows, usesLetters
@@ -40,7 +41,7 @@ server/
     sites.js      сайти + PUT /:id/scenario
     scenarios.js  шаблони сценаріїв (CRUD)
     profiles.js   анкети, інвайти, followups, media (upload raw body + X-File-Name)
-    stats.js      overview, /setup (майстер підключення: 6 кроків), messages; admin.js (+ /memory), operators, licenses, settings (+ /prompt-info), auth
+    stats.js      overview, /setup (майстер підключення: 6 кроків), messages; billing.js (/api/billing, PUT earnings); admin.js (+ /memory, /billing, PATCH agencies billing.tiers)
 extension/
   background.js   оркестрація: run(), runTest() (+ звіт /test), runActions(), processDue() (нагадування + повторні), scanAhead() (розвідка),
                   guard() (капча/блок → пауза, людина, далі повільніше), автопілот (chrome.alarms 1 хв, autopilotTick),
@@ -66,6 +67,8 @@ test/e2e.mjs      Playwright: справжнє розширення в Chromium 
 6. Стан чоловіка в `messages`: `step`, `stage` (active/replied/done), `next_at`, `bonus_left`, `reply_mood`. Відповів позитивно → `replied`, +`afterReply.attempts` (10) нагадувань; мовчить `silenceHours` (48) → нагадування кожні `everyHours`; ті самі «непрочитані» знову → лише відкладає. «Не цікаво» → bonus 0. Нагадування скінчились → `done`.
 7. Повідомлення (`writeHere`): ✉ лист → клік «Лист» → лічильник сайту (0 → `exhausted`, чоловік `done`) → тема → текст (думає `think`, друкує `typeSpeed`) → файли → «Перекласти» → «Надіслати». Між діями кроку — `actionGap`, між сторінками — `pageGap`. Тест-режим: нічого не натискає/не надсилає, на сервер — лише підсумок `/test`.
    Тексти в followups: step 2.. — повторні, 100 — нагадування, 200 — лист.
+10. Оплата: heartbeat з `active` (running/waiting, не тест) → `bot_activity` секунди між двома активними «пульсами» (≤150 с). Фіксується на того, хто запустив бота.
+11. Тест: швидкий (`runTest`) + `fullDryRun` (до 15 чоловіків, dry, нічого на сервер); 📋 `buildReport` + `maskText` (без імен/ID/адрес).
 9. Сайт-«робочий стіл» (немає `card`, є `taskItem`): цикл = повторні (`/due`, без `manUrl` — `findMan` за ID у полі пошуку) → `processTasks` (підказки сайту: реакція `react`, `openTask` клік → `waitChat` перевіряє шапку → ID з `chatId` → `/filter` з `via` з підказки → пише) → чекає нових підказок 1–2.5 хв. `writeHere` на таких сайтах завжди перевіряє, що відкритий чат його (`chatName`/`chatId`). Відповіді без ID — сервер матчить за ім’ям.
 8. Навчання: сервер раз на 30 хв (`runLearning`): слабкий варіант (≥40 надсилань, ≥90 % гірший) → вимкнути + написати новий за зразком кращого; уроки пам’яті кожні 6 год (з цифр завжди; ШІ — якщо є ANTHROPIC_API_KEY на сервері).
 
@@ -108,6 +111,7 @@ npm run test-stand            # тестовий стенд на :3001 (той �
 1. Інструкція v2 у Claude Docs (https://claude.ai/artifact/VZCM1V3FoWKXeoUG7HHU9h) — почата, розділи 3–8 порожні (pending). Стара (BmrmPduhLTeCVcf1pbVf4P) з цієї сесії недоступна. Дописати після того, як інтерфейс устоїться.
 2. Фідбек адміна сайту після тестового прогону на реальному сайті: найімовірніші правки — селектори, скрепка, сповіщення про відправку, тексти капчі конкретного сайту.
 3. Гілку `agency-crm` у старому репо `rytmique/KENTAVR-` користувач має видалити вручну.
+0. Тест на реальному сайті — вихідні (листопад 2026), чекліст для користувача/адміна: https://claude.ai/artifact/EcPHG2CqGDjotDbBvdNU7q. Код у гілці `claude/crm-continuation-05n5h1`, у `main` (Railway) ще не злито — спитати користувача.
 4. Можливо: бал чоловіка з його повної сторінки (не лише з картки); автопілот для кількох анкет по черзі; «Готові сайти» — навчити сайт один раз і роздати всім агенціям (пропонувалось, не зроблено).
 5. Сайт користувача (зі скрінів, NDA — назву не згадувати в коді/комітах): нових чоловіків сайт сам дає панеллю підказок «Please write him message / letter» (8–12 за зміну, за словами адміна) → зроблено режим «Підказки сайту». Оператори кажуть, що їм капча не вилазить → бот має поводитись максимально по-людськи (паузи, реакція, гортання; без підробки fingerprint). Операторська SPA — ліворуч список чатів з вкладками (Усі чати, Без відповіді, Улюблені, Діалоги, …, Листи), праворуч чат; композер з перекладачем (UA → EN, «ПЕРЕКЛАСТИ»), іконки фото/відео/аудіо; у шапці чату лайк, обране, конверт (лист); лічильники «Залишилося N повідомлень / N літери». Користувач: різні типи повідомлень — «дуже потрібно» (зроблено: листи); кілька вкладок-джерел — «поки не знаю»; макроси переходів — «мабуть буде потрібне».
 6. Капчу бот НЕ проходить (правило вище) — лише пауза + сповіщення людині (браузер + Telegram).
