@@ -6,11 +6,12 @@ import {
   getSettings, today, licenseState, profileScope, getVisibleProfile,
   activeInvite, limitsFor, insertInvite, BOT_ONLINE_MS, followupTexts, saveFollowup, autoLicense,
 } from '../services.js';
-import { generateInvite, generateFollowup } from '../ai.js';
+import { generateInvite, generateFollowup, generateReengage } from '../ai.js';
 import express from 'express';
 import { profileScenario, followupSteps } from '../scenario.js';
 import { listMedia, saveMedia, removeMedia, mediaFile, readSteps } from '../media.js';
 import { personalize } from '../personalize.js';
+import { REENGAGE_STEP } from './bot.js';
 
 const DAY = 86400000;
 
@@ -122,15 +123,20 @@ export default function profileRoutes(db, cfg) {
     const invites = db.prepare('SELECT * FROM invites WHERE profile_id = ? ORDER BY id DESC LIMIT 50').all(p.id);
     const site = p.site_id ? db.prepare('SELECT * FROM sites WHERE id = ?').get(p.site_id) : null;
     const scenario = profileScenario(db, p, site);
-    const followups = db.prepare('SELECT * FROM followups WHERE profile_id = ? ORDER BY step').all(p.id);
+    const allFollowups = db.prepare('SELECT * FROM followups WHERE profile_id = ? ORDER BY step').all(p.id);
+    const followups = allFollowups.filter((f) => f.step < REENGAGE_STEP);
+    const reengage = allFollowups.find((f) => f.step === REENGAGE_STEP) || null;
     const funnel = db.prepare(`SELECT
         COALESCE(SUM(stage = 'active' AND next_at IS NOT NULL), 0) AS waiting,
         COALESCE(SUM(stage = 'done'), 0) AS done,
-        COALESCE(SUM(stage = 'replied'), 0) AS replied
+        COALESCE(SUM(replied_at IS NOT NULL), 0) AS replied,
+        COALESCE(SUM(stage = 'replied' AND bonus_left > 0), 0) AS talking,
+        COALESCE(SUM(reply_mood = 'negative'), 0) AS negative
       FROM messages WHERE profile_id = ? AND status = 'sent'`).get(p.id);
     const scenarioName = p.scenario_id ? db.prepare('SELECT name FROM scenario_templates WHERE id = ?').get(p.scenario_id)?.name : null;
     res.json({
       profile: decorate(db, req.user, p), invites, followups, followupSteps: followupSteps(scenario), steps: scenario.steps.length, funnel,
+      reengage, afterReply: scenario.afterReply,
       media: listMedia(db, p.id), scenarioName,
     });
   });
@@ -269,7 +275,11 @@ export default function profileRoutes(db, cfg) {
   });
 
   // ---------- follow-ups (2nd, 3rd… attempt) ----------
-  const stepParam = (req) => int(req.params.step, { min: 2, max: 50, field: 'крок' });
+  const stepParam = (req) => {
+    const step = int(req.params.step, { min: 2, max: REENGAGE_STEP, field: 'крок' });
+    if (step > 50 && step !== REENGAGE_STEP) throw bad('Невідомий крок');
+    return step;
+  };
 
   r.post('/:id/followups/:step/generate', ah(async (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
@@ -277,7 +287,7 @@ export default function profileRoutes(db, cfg) {
     const settings = getSettings(db, req.user.agencyId);
     const have = followupTexts(db, p.id);
     const previous = [activeInvite(db, p.id)?.text, ...[...have.entries()].filter(([k]) => k !== step).sort((a, b) => a[0] - b[0]).map(([, t]) => t)];
-    const gen = await generateFollowup({ profile: p, settings, step, previous });
+    const gen = step === REENGAGE_STEP ? await generateReengage({ profile: p, settings }) : await generateFollowup({ profile: p, settings, step, previous });
     const followup = saveFollowup(db, { profileId: p.id, step, text: gen.text, source: gen.source, model: gen.model });
     res.status(201).json({ followup, preview: personalize(followup.text, { name: 'Michael', age: 45, country: 'USA' }) });
   }));
@@ -285,7 +295,7 @@ export default function profileRoutes(db, cfg) {
   r.put('/:id/followups/:step', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const step = stepParam(req);
-    const text = str(req.body?.text, { required: true, field: 'текст', max: 1000 });
+    const text = str(req.body?.text, { required: true, field: 'текст', max: step === REENGAGE_STEP ? 3000 : 1000 });
     if (text.length < 10) throw bad('Текст занадто короткий');
     res.json({ followup: saveFollowup(db, { profileId: p.id, step, text, source: 'manual' }) });
   });

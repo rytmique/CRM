@@ -5,15 +5,19 @@ import {
   getSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
-import { generateInvite, generateFollowup, templateFollowup } from '../ai.js';
+import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply } from '../ai.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
 import { SITE_FIELDS, sanitizeSiteConfig, fillUrl } from '../sites.js';
 import { profileScenario, followupSteps, filterReason, pickVariant, attempts } from '../scenario.js';
 import { filesForStep, mediaFile } from '../media.js';
+import { scoreMen, manFeatures, hostOf, learnSent, learnReply, rankingState } from '../scoring.js';
 
 const HOUR = 3600000;
 const MAX_STEP_FAILS = 3;
+/** followups.step that holds the "---"-separated reminders for men who replied and went quiet. */
+export const REENGAGE_STEP = 100;
+const MAX_BONUS = 100;
 
 /** API used by the browser extension (the bot). */
 export default function botRoutes(db, cfg) {
@@ -32,8 +36,13 @@ export default function botRoutes(db, cfg) {
       country: String(m.country ?? '').trim().slice(0, 80),
       url: /^https?:\/\//i.test(url) ? url.slice(0, 500) : '',
       marks: Array.isArray(m.marks) ? m.marks.map(String).slice(0, 20) : [],
+      text: String(m.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500),
+      info: String(m.info ?? '').replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   };
+  const siteHost = (site, config) => hostOf(config?.searchUrl || site?.base_url || '');
+  /** Taught mark keys → their names, for "why first" hints. */
+  const markNames = (config, why) => why.map((w) => (config.marks || []).find((mk) => mk.key === w)?.name || w);
 
   const siteOf = (p) => (p.site_id ? db.prepare('SELECT * FROM sites WHERE id = ?').get(p.site_id) : null);
   const configOf = (site) => { try { return JSON.parse(site?.config || '{}'); } catch { return {}; } };
@@ -77,7 +86,9 @@ export default function botRoutes(db, cfg) {
   const manUrl = (ctx, id, stored) => fillUrl(ctx.config.manUrl, id) || stored || '';
 
   /** Next step time or "done" after the step with index `done` (0-based) has been completed at time t. */
-  const dueNow = (pid, t = now()) => db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND replied_at IS NULL AND next_at IS NOT NULL AND next_at <= ?").get(pid, t).n;
+  const WAITING = "status = 'sent' AND next_at IS NOT NULL AND ((stage = 'active' AND replied_at IS NULL) OR (stage = 'replied' AND bonus_left > 0))";
+  const dueNow = (pid, t = now()) => db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND ${WAITING} AND next_at <= ?`).get(pid, t).n;
+  const pendingOf = (pid) => db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND ${WAITING}`).get(pid).n;
 
   const after = (scenario, done, t) => {
     const next = scenario.steps[done + 1];
@@ -142,7 +153,12 @@ export default function botRoutes(db, cfg) {
       }
       previous.push(have.get(step));
     }
-    const pending = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND next_at IS NOT NULL").get(p.id).n;
+    if (scenario.afterReply.attempts > 0 && !have.has(REENGAGE_STEP)) {
+      let gen;
+      try { gen = await generateReengage({ profile: p, settings }); } catch { gen = templateReengage(); }
+      saveFollowup(db, { profileId: p.id, step: REENGAGE_STEP, text: gen.text, source: gen.source, model: gen.model });
+    }
+    const pending = pendingOf(p.id);
     res.json({
       profile: { id: p.id, name: p.name, age: p.age, site_profile_id: p.site_profile_id },
       site: { id: site.id, name: site.name, base_url: site.base_url, config: JSON.parse(site.config || '{}') },
@@ -151,8 +167,12 @@ export default function botRoutes(db, cfg) {
       license: lic,
       inboxCheckEvery: settings.inboxCheckEvery,
       timezone: settings.timezone,
-      scenario: { steps: scenario.steps.length, attempts: attempts(scenario), human: scenario.human, followups: scenario.steps.length > 1 },
+      scenario: {
+        steps: scenario.steps.length, attempts: attempts(scenario), human: scenario.human, afterReply: scenario.afterReply,
+        followups: scenario.steps.length > 1 || scenario.afterReply.attempts > 0,
+      },
       pending,
+      ranking: { ...rankingState(db), manUrl: Boolean(JSON.parse(site.config || '{}').manUrl) },
     });
   }));
 
@@ -184,37 +204,94 @@ export default function botRoutes(db, cfg) {
     res.json({ ok: true, config });
   });
 
-  r.post('/profiles/:id/filter', (req, res) => {
-    const { p, settings, remaining } = runnable(req);
-    const list = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 300) : [];
+  /** Men who may get a first message: never contacted, right age, pass the filters. Best first. */
+  const eligible = (p, ctx, settings, list) => {
     const men = [];
     const seen = new Set();
     for (const raw of list) {
       const m = readMan(raw);
       if (m && !seen.has(m.id)) { seen.add(m.id); men.push(m); }
     }
-    const ctx = stepContext(p);
-    if (!ctx.invite) throw new HttpError(409, 'У анкети немає активного інвайту');
     const contacted = db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'");
     const contactedByAgency = db.prepare("SELECT 1 FROM messages WHERE agency_id = ? AND site_id IS ? AND man_id = ? AND status = 'sent' LIMIT 1");
     const skipped = { contacted: 0, age: 0, filter: 0, limit: 0 };
-    const allowed = [];
-    const hour = hourWindow(db, p.id, ctx.scenario.human.perHour);
-    // Test mode in the extension never sends, so it is not bound by the daily limit.
-    const cap = req.body?.test ? 5 : remaining;
+    const ok = [];
     for (const m of men) {
       if (contacted.get(p.id, m.id) || (settings.dedupeAcrossAgency && contactedByAgency.get(p.agency_id, p.site_id, m.id))) { skipped.contacted++; continue; }
       if (m.age && ((p.target_age_min && m.age < p.target_age_min) || (p.target_age_max && m.age > p.target_age_max))) { skipped.age++; continue; }
       if (filterReason(m, ctx.scenario.filters)) { skipped.filter++; continue; }
-      if (allowed.length >= cap) { skipped.limit++; continue; }
-      const step = resolveStep(ctx, 0, m);
-      const first = step.actions.find((a) => a.do === 'message');
-      allowed.push({ ...m, url: manUrl(ctx, m.id, m.url), step: 1, actions: step.actions, text: first?.text || '', invite_id: step.inviteId });
+      ok.push(m);
     }
+    // Stable sort: equal scores (no data yet) keep the site's own order.
+    const ranked = scoreMen(db, ok, siteHost(ctx.site, ctx.config)).map((m, i) => ({ m, i }))
+      .sort((a, b) => b.m.score - a.m.score || a.i - b.i).map(({ m }) => ({ ...m, why: markNames(ctx.config, m.why) }));
+    return { ranked, skipped };
+  };
+
+  const firstStep = (ctx, m) => {
+    const step = resolveStep(ctx, 0, m);
+    const first = step.actions.find((a) => a.do === 'message');
+    const { features, ...man } = m;
+    return { ...man, url: manUrl(ctx, m.id, m.url), step: 1, actions: step.actions, text: first?.text || '', invite_id: step.inviteId };
+  };
+
+  r.post('/profiles/:id/filter', (req, res) => {
+    const { p, settings, remaining } = runnable(req);
+    const ctx = stepContext(p);
+    if (!ctx.invite) throw new HttpError(409, 'У анкети немає активного інвайту');
+    const list = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 300) : [];
+    const { ranked, skipped } = eligible(p, ctx, settings, list);
+    const hour = hourWindow(db, p.id, ctx.scenario.human.perHour);
+    // Test mode in the extension never sends, so it is not bound by the daily limit.
+    const cap = req.body?.test ? 5 : remaining;
+    skipped.limit = Math.max(0, ranked.length - cap);
+    const allowed = ranked.slice(0, cap).map((m) => firstStep(ctx, m));
     res.json({ allowed, remaining, skipped, hourLeft: hour.left, hourResetAt: hour.resetAt });
   });
 
-  /** Men whose next scenario step is due (he has not replied yet). */
+  // ---------- scanning ahead: the best men of several pages first ----------
+  const POOL_TTL = 6 * HOUR; // "online" and the like go stale
+
+  /** Men seen while scanning ahead (no messages yet). */
+  r.post('/profiles/:id/pool', (req, res) => {
+    const { p, settings } = runnable(req);
+    const ctx = stepContext(p);
+    const list = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 600) : [];
+    const { ranked } = eligible(p, ctx, settings, list);
+    const t = now();
+    db.prepare('DELETE FROM pool WHERE profile_id = ? AND seen_at < ?').run(p.id, t - POOL_TTL);
+    const put = db.prepare(`INSERT INTO pool (profile_id, man_id, man, score, seen_at) VALUES (?,?,?,?,?)
+      ON CONFLICT(profile_id, man_id) DO UPDATE SET man = excluded.man, score = excluded.score, seen_at = excluded.seen_at`);
+    tx(db, () => { for (const m of ranked) put.run(p.id, m.id, JSON.stringify(m), m.score, t); });
+    const total = db.prepare('SELECT COUNT(*) AS n FROM pool WHERE profile_id = ? AND taken_at IS NULL').get(p.id).n;
+    res.json({ ok: true, added: ranked.length, total, ranking: rankingState(db) });
+  });
+
+  /** The best not-yet-contacted men from the scan: written to on their own pages, before the usual walk. */
+  r.get('/profiles/:id/pool/next', (req, res) => {
+    const { p, remaining } = runnable(req);
+    const ctx = stepContext(p);
+    const limit = Math.min(int(req.query.limit, { min: 1, max: 50, field: 'limit' }) || 10, remaining);
+    const t = now();
+    const out = [];
+    if (limit > 0 && rankingState(db).ready && ctx.config.manUrl) {
+      // Only the top part of what was seen: the rest is reached by the usual page walk anyway.
+      const all = db.prepare('SELECT * FROM pool WHERE profile_id = ? AND seen_at > ? ORDER BY score DESC').all(p.id, t - POOL_TTL);
+      const top = all.slice(0, Math.max(1, Math.ceil(all.length * 0.3))).filter((r2) => r2.score > 0.05 && !r2.taken_at);
+      const contacted = db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'");
+      const take = db.prepare('UPDATE pool SET taken_at = ? WHERE profile_id = ? AND man_id = ?');
+      for (const row of top) {
+        if (out.length >= limit) break;
+        take.run(t, p.id, row.man_id);
+        if (contacted.get(p.id, row.man_id)) continue;
+        const m = JSON.parse(row.man);
+        out.push(firstStep(ctx, m));
+      }
+    }
+    res.json({ men: out, remaining });
+  });
+
+  /** Men due for the bot: reminders to men who replied and went quiet (warmest) first, then scenario follow-ups. */
   r.get('/profiles/:id/due', (req, res) => {
     const { p, remaining } = runnable(req);
     const ctx = stepContext(p);
@@ -223,23 +300,30 @@ export default function botRoutes(db, cfg) {
     const hour = hourWindow(db, p.id, ctx.scenario.human.perHour, t);
     const out = [];
     if (remaining > 0) {
-      const rows = db.prepare(`SELECT * FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND replied_at IS NULL
-        AND next_at IS NOT NULL AND next_at <= ? ORDER BY next_at LIMIT ?`).all(p.id, t, limit * 2);
+      const rows = db.prepare(`SELECT * FROM messages WHERE profile_id = ? AND ${WAITING} AND next_at <= ?
+        ORDER BY stage = 'replied' DESC, next_at LIMIT ?`).all(p.id, t, limit * 2);
       const finish = db.prepare("UPDATE messages SET stage = 'done', next_at = NULL WHERE id = ?");
       const later = db.prepare('UPDATE messages SET next_at = ? WHERE id = ?');
+      const stopReminders = db.prepare('UPDATE messages SET bonus_left = 0, next_at = NULL WHERE id = ?');
       for (const m of rows) {
         if (out.length >= limit) break;
-        if (m.step >= ctx.scenario.steps.length) { finish.run(m.id); continue; } // the scenario got shorter
         const man = { id: m.man_id, name: m.man_name, age: m.man_age, country: m.man_country };
         const url = manUrl(ctx, m.man_id, m.man_url);
+        if (m.stage === 'replied') {
+          if (!ctx.scenario.afterReply.attempts) { stopReminders.run(m.id); continue; } // switched off in the scenario
+          if (!url) { later.run(t + 6 * HOUR, m.id); continue; }
+          const text = personalize(fillHer(pickVariant(ctx.followups.get(REENGAGE_STEP) || templateReengage().text), p), man);
+          out.push({ ...man, url, kind: 'reengage', step: m.step, left: m.bonus_left, actions: [{ do: 'message', text, files: [] }] });
+          continue;
+        }
+        if (m.step >= ctx.scenario.steps.length) { finish.run(m.id); continue; } // the scenario got shorter
         if (!url) { later.run(t + 6 * HOUR, m.id); continue; } // nowhere to go until "URL профілю чоловіка" is set
         const step = resolveStep(ctx, m.step, man);
-        out.push({ ...man, url, step: m.step + 1, of: ctx.scenario.steps.length, actions: step.actions });
+        out.push({ ...man, url, kind: 'followup', step: m.step + 1, of: ctx.scenario.steps.length, actions: step.actions });
       }
     }
-    const pending = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND next_at IS NOT NULL").get(p.id).n;
-    const nextAt = db.prepare("SELECT MIN(next_at) AS t FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND next_at IS NOT NULL").get(p.id).t;
-    res.json({ men: out, remaining, pending, nextAt, hourLeft: hour.left, hourResetAt: hour.resetAt, noManUrl: !ctx.config.manUrl });
+    const nextAt = db.prepare(`SELECT MIN(next_at) AS t FROM messages WHERE profile_id = ? AND ${WAITING}`).get(p.id).t;
+    res.json({ men: out, remaining, pending: pendingOf(p.id), nextAt, hourLeft: hour.left, hourResetAt: hour.resetAt, noManUrl: !ctx.config.manUrl });
   });
 
   /** Result of a follow-up step (2, 3…) for one man. */
@@ -248,7 +332,8 @@ export default function botRoutes(db, cfg) {
     const settings = getSettings(db, req.user.agencyId);
     const ctx = stepContext(p);
     const manId = String(req.body?.man?.id ?? req.body?.man_id ?? '').trim();
-    const stepNo = int(req.body?.step, { min: 2, max: 50, field: 'step' });
+    const reminder = req.body?.kind === 'reengage';
+    const stepNo = reminder ? REENGAGE_STEP : int(req.body?.step, { min: 2, max: 50, field: 'step' });
     if (!manId || !stepNo) throw bad('Немає даних кроку');
     const m = db.prepare("SELECT * FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'").get(p.id, manId);
     if (!m) throw notFound('Цьому чоловіку анкета ще не писала');
@@ -257,10 +342,26 @@ export default function botRoutes(db, cfg) {
     const day = dayKey(t, settings.timezone);
     const messages = ok ? Math.min(10, int(req.body?.messages, { min: 0, max: 10, field: 'messages' }) ?? 0) : 0;
     let state = { stage: m.stage, next_at: m.next_at };
-    if (m.step === stepNo - 1 && m.stage === 'active') {
+    const touch = () => db.prepare('INSERT INTO touches (agency_id, profile_id, operator_id, man_id, step, ok, messages, text, error, day, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(p.agency_id, p.id, req.user.id, manId, stepNo, ok ? 1 : 0, messages, str(req.body?.text, { max: 2000 }) || '', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t);
+    if (reminder && m.stage === 'replied' && m.bonus_left > 0) {
       tx(db, () => {
-        db.prepare('INSERT INTO touches (agency_id, profile_id, operator_id, man_id, step, ok, messages, text, error, day, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-          .run(p.agency_id, p.id, req.user.id, manId, stepNo, ok ? 1 : 0, messages, str(req.body?.text, { max: 2000 }) || '', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t);
+        touch();
+        if (ok) {
+          // He stays silent through all of them → he is dropped, like after the first 3 attempts.
+          const left = m.bonus_left - 1;
+          state = left > 0 ? { stage: 'replied', next_at: t + ctx.scenario.afterReply.everyHours * HOUR } : { stage: 'done', next_at: null };
+          db.prepare('UPDATE messages SET bonus_left = ?, stage = ?, next_at = ?, last_at = ?, fails = 0 WHERE id = ?').run(left, state.stage, state.next_at, t, m.id);
+        } else {
+          const fails = m.fails + 1;
+          state = { stage: 'replied', next_at: fails >= MAX_STEP_FAILS ? null : t + HOUR };
+          db.prepare('UPDATE messages SET next_at = ?, fails = ?, bonus_left = ?, error = ? WHERE id = ?')
+            .run(state.next_at, fails, fails >= MAX_STEP_FAILS ? 0 : m.bonus_left, str(req.body?.error, { max: 300 }) || 'помилка', m.id);
+        }
+      });
+    } else if (!reminder && m.step === stepNo - 1 && m.stage === 'active') {
+      tx(db, () => {
+        touch();
         if (ok) {
           state = after(ctx.scenario, stepNo - 1, t);
           db.prepare('UPDATE messages SET step = ?, stage = ?, next_at = ?, last_at = ?, fails = 0 WHERE id = ?').run(stepNo, state.stage, state.next_at, t, m.id);
@@ -275,7 +376,8 @@ export default function botRoutes(db, cfg) {
     const limits = limitsFor(p, settings);
     const remaining = Math.max(0, limits.dailyLimit - sentToday(db, p.id, day));
     const hour = hourWindow(db, p.id, ctx.scenario.human.perHour, t);
-    res.json({ ok: true, stage: state.stage, remaining, stop: remaining === 0, hourLeft: hour.left, hourResetAt: hour.resetAt, due: dueNow(p.id, t) });
+    const left = db.prepare('SELECT bonus_left FROM messages WHERE id = ?').get(m.id).bonus_left;
+    res.json({ ok: true, stage: state.stage, left, remaining, stop: remaining === 0, hourLeft: hour.left, hourResetAt: hour.resetAt, due: dueNow(p.id, t) });
   });
 
   r.post('/profiles/:id/sent', (req, res) => {
@@ -288,44 +390,70 @@ export default function botRoutes(db, cfg) {
     const day = dayKey(t, settings.timezone);
     const inviteId = int(req.body?.invite_id, { min: 1, field: 'invite_id' }) ?? null;
     const validInvite = inviteId && db.prepare('SELECT 1 FROM invites WHERE id = ? AND profile_id = ?').get(inviteId, p.id) ? inviteId : null;
-    const scenario = profileScenario(db, p, siteOf(p));
+    const site = siteOf(p);
+    const scenario = profileScenario(db, p, site);
     const next = ok ? after(scenario, 0, t) : { stage: 'active', next_at: null };
-    db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
-        step, stage, next_at, man_url, last_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)
+    const features = manFeatures(man, siteHost(site, configOf(site)));
+    const written = db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
+        step, stage, next_at, man_url, last_at, man_info, features)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)
       ON CONFLICT(profile_id, man_id) DO UPDATE SET
         status = excluded.status, error = excluded.error, day = excluded.day, sent_at = excluded.sent_at,
         text = excluded.text, invite_id = excluded.invite_id, operator_id = excluded.operator_id,
         man_name = excluded.man_name, man_age = excluded.man_age, man_country = excluded.man_country,
-        step = 1, stage = excluded.stage, next_at = excluded.next_at, man_url = excluded.man_url, last_at = excluded.last_at
+        step = 1, stage = excluded.stage, next_at = excluded.next_at, man_url = excluded.man_url, last_at = excluded.last_at,
+        man_info = excluded.man_info, features = excluded.features
       WHERE messages.status = 'failed'`)
       .run(p.agency_id, p.id, req.user.id, p.site_id, man.id, man.name, man.age, man.country, validInvite,
         str(req.body?.text, { max: 2000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t,
-        next.stage, next.next_at, man.url, t);
+        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features));
+    if (ok && written.changes) learnSent(db, features);
+    db.prepare('DELETE FROM pool WHERE profile_id = ? AND man_id = ?').run(p.id, man.id);
     const limits = limitsFor(p, settings);
     const remaining = Math.max(0, limits.dailyLimit - sentToday(db, p.id, day));
     const hour = hourWindow(db, p.id, scenario.human.perHour, t);
     res.json({ ok: true, remaining, stop: remaining === 0, hourLeft: hour.left, hourResetAt: hour.resetAt, due: dueNow(p.id, t) });
   });
 
+  /**
+   * Unread dialogs from the inbox. A reply stops his scenario: from here on a live person writes to him.
+   * A positive reply adds `afterReply.attempts` reminders for the case he goes quiet again; "not interested" ends it.
+   * The same unread dialog is reported on every inbox check: it only postpones the reminders (the talk is alive).
+   */
   r.post('/profiles/:id/replies', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const settings = getSettings(db, req.user.agencyId);
+    const { afterReply } = profileScenario(db, p, siteOf(p));
     const list = Array.isArray(req.body?.men) ? req.body.men.slice(0, 300) : [];
     const t = now();
     const day = dayKey(t, settings.timezone);
-    // A reply stops his scenario: from here on a live person writes to him.
-    const mark = db.prepare("UPDATE messages SET replied_at = ?, reply_day = ?, stage = 'replied', next_at = NULL WHERE profile_id = ? AND man_id = ? AND status = 'sent' AND replied_at IS NULL");
+    const find = db.prepare("SELECT * FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'");
     const fresh = [];
+    let negative = 0;
     for (const raw of list) {
-      const m = readMan(raw);
+      const man = readMan(raw);
+      if (!man) continue;
+      const m = find.get(p.id, man.id);
       if (!m) continue;
-      if (mark.run(t, day, p.id, m.id).changes) {
-        fresh.push(db.prepare('SELECT * FROM messages WHERE profile_id = ? AND man_id = ?').get(p.id, m.id));
+      const lastReply = m.last_reply_at ?? m.replied_at;
+      const isNew = m.replied_at == null || (m.last_at != null && lastReply != null && m.last_at > lastReply);
+      if (!isNew) {
+        if (m.stage === 'replied' && m.bonus_left > 0) {
+          db.prepare('UPDATE messages SET next_at = MAX(COALESCE(next_at, 0), ?) WHERE id = ?').run(t + afterReply.silenceHours * HOUR, m.id);
+        }
+        continue;
       }
+      const mood = classifyReply(man.text);
+      if (mood === 'negative') negative++;
+      else if (m.replied_at == null) { try { learnReply(db, JSON.parse(m.features || '[]')); } catch { /* old row */ } }
+      const bonus = mood === 'negative' ? 0 : Math.min(MAX_BONUS, m.bonus_left + afterReply.attempts);
+      db.prepare(`UPDATE messages SET replied_at = COALESCE(replied_at, ?), reply_day = COALESCE(reply_day, ?), replies = replies + 1, last_reply_at = ?,
+          reply_text = ?, reply_mood = ?, stage = 'replied', bonus_left = ?, next_at = ?, fails = 0 WHERE id = ?`)
+        .run(t, day, t, man.text, mood, bonus, bonus > 0 ? t + afterReply.silenceHours * HOUR : null, m.id);
+      fresh.push(find.get(p.id, man.id));
     }
     if (fresh.length) notifyReplies(db, p, settings, fresh, req.user);
-    res.json({ ok: true, new: fresh.length, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name })) });
+    res.json({ ok: true, new: fresh.length, negative, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name, mood: m.reply_mood })) });
   });
 
   r.post('/profiles/:id/heartbeat', (req, res) => {

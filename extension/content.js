@@ -389,7 +389,7 @@
     const unread = items.filter((it) => !site.inboxUnread || selfMatch(it, site.inboxUnread) || qs(it, site.inboxUnread));
     return {
       total: items.length,
-      men: unread.map((it) => ({ id: normId(extract(it, site.inboxId)), name: extract(it, site.inboxName) })).filter((m) => m.id),
+      men: unread.map((it) => ({ id: normId(extract(it, site.inboxId)), name: extract(it, site.inboxName), text: site.inboxText ? extract(it, site.inboxText) : '' })).filter((m) => m.id),
     };
   }
 

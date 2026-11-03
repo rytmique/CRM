@@ -207,6 +207,56 @@ export async function generateFollowup({ profile, settings, step, previous = [] 
   return { text: out.text, source: 'ai', model: out.model };
 }
 
+// ---------- reminders after a conversation went quiet (he replied before) ----------
+const REENGAGE_PROMPT = `You write short messages a woman sends on an international dating site to a man she has already been chatting with, after he went quiet for a couple of days. She reads and answers every reply herself, so it must sound like her, in the first person.
+
+Write three different messages. Each one:
+- is warm and easy-going, like picking up a pleasant conversation again: no guilt, no pressure, never asks why he went quiet;
+- works without knowing what they talked about: no references to specific earlier topics;
+- shares one small fresh detail from her day and ends with one easy question;
+- is 80-220 characters, 1-2 sentences, plain text, with at most one emoji;
+- may use the placeholder {name} once (it is replaced with his first name before sending).
+
+Never include contact details, links, other apps or messengers, requests for money or gifts, sexual content, or promises to meet.
+
+Reply with the three messages only, separated by a line containing just ---. No numbering, no quotes, no explanation.`;
+
+const REENGAGE_TEMPLATES = [
+  'Hi {name} :) I was just thinking about our chat. How has your week been so far?',
+  'Hey {name}! I had such a lazy, cozy evening today. What are you up to these days?',
+  '{name}, I hope everything is fine with you. I missed our little talks :) How is your day?',
+];
+
+export const templateReengage = () => ({ text: REENGAGE_TEMPLATES.join('\n---\n'), source: 'template', model: null });
+
+/** Three reminder variants ("---"-separated) for men who replied and then went quiet. */
+export async function generateReengage({ profile, settings }) {
+  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const language = profile.language || settings.ai.language || 'English';
+  if (!apiKey) return templateReengage();
+  const model = settings.ai.model || 'claude-opus-5-5';
+  const out = await callClaude({ apiKey, model, system: REENGAGE_PROMPT, language, profile, instructions: settings.ai.instructions });
+  const variants = out.text.split(/\n\s*-{3,}\s*\n/).map((t) => cleanInvite(t)).filter((t) => t.length >= 20 && !FORBIDDEN.some((re) => re.test(t)));
+  if (!variants.length) return templateReengage();
+  return { text: variants.slice(0, 5).join('\n---\n'), source: 'ai', model: out.model };
+}
+
+// ---------- his reply: keep going or leave him alone ----------
+const NEGATIVE = [
+  /\bnot\s+(really\s+)?interested\b/i, /\bno\s+thanks?\b/i, /\bno,?\s+thank\s+you\b/i, /\b(stop|quit)\s+(writing|messaging|texting|sending)\b/i,
+  /\b(don'?t|do\s+not|pls\s+don'?t)\s+(write|message|text|contact)\b/i, /\bleave\s+me\s+alone\b/i, /\bunsubscribe\b/i, /\bremove\s+me\b/i,
+  /\b(scam|scammer|fake|catfish|bot)\b/i, /\bgo\s+away\b/i, /\bnot\s+for\s+me\b/i, /\bi'?m\s+(married|taken|in\s+a\s+relationship)\b/i,
+  /\bblock(ed)?\s+you\b/i, /\bfuck\s+off\b/i,
+  /не\s+(пиши|пишіть|пишите|цікаво|интересно)/i, /відчепись|отстань|отвали|не\s+беспокойте|не\s+турбуйте/i, /(?<![а-яёіїєґ])(шахра|мошенни|фейк(?![а-яёіїєґ])|бот(?![а-яёіїєґ]))/i,
+];
+
+/** 'negative' when he clearly asks to stop; otherwise 'positive' (no text = any reply counts as interest). */
+export function classifyReply(text) {
+  const t = String(text || '').trim();
+  if (!t) return 'positive';
+  return NEGATIVE.some((re) => re.test(t)) ? 'negative' : 'positive';
+}
+
 // ---------- local template fallback (no API key) ----------
 const OPENERS = ['Hi {name}!', 'Hello {name} :)', 'Hey {name}!', 'Good day, {name}!'];
 const QUESTIONS = [

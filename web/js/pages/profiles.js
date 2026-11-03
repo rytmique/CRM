@@ -134,7 +134,7 @@ export default async function profilesPage(main, { user }) {
 
   // ---------- details + invites ----------
   async function openDetail(id) {
-    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName } = await get(`/api/profiles/${id}`);
+    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName, reengage, afterReply } = await get(`/api/profiles/${id}`);
     const body = h('div.detail');
     const m = modal({ title: `${p.name}${p.age ? `, ${p.age}` : ''}`, body, wide: true });
 
@@ -200,9 +200,12 @@ export default async function profilesPage(main, { user }) {
       media.length ? h('div.media-grid', media.map(mediaCard)) : null,
       h('div.row-wrap', addFiles, picker));
 
+    const REENGAGE = 100;
     const followupBox = (step) => {
-      const f = followups.find((x) => x.step === step);
-      const ta = textarea(`followup-${step}`, f?.text || '', { rows: 3, maxlength: 1000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨' });
+      const f = step === REENGAGE ? reengage : followups.find((x) => x.step === step);
+      const ta = textarea(`followup-${step}`, f?.text || '', step === REENGAGE
+        ? { rows: 6, maxlength: 3000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨. Варіанти розділяйте рядком ---' }
+        : { rows: 3, maxlength: 1000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨' });
       const gen = h('button.btn.sm', '✨ ШІ');
       gen.addEventListener('click', () => busy(gen, async () => {
         const r = await post(`/api/profiles/${p.id}/followups/${step}/generate`);
@@ -214,7 +217,7 @@ export default async function profilesPage(main, { user }) {
         await put(`/api/profiles/${p.id}/followups/${step}`, { text: ta.value });
         toast('Збережено');
       }).catch(() => {}));
-      return h('div.followup-box', h('b.small', `Спроба ${step}`, f ? h('span.muted', ` · ${SOURCE[f.source] || f.source}`) : null), ta, h('div.row-wrap', gen, save));
+      return h('div.followup-box', h('b.small', step === REENGAGE ? 'Нагадування (бот бере випадковий варіант)' : `Спроба ${step}`, f ? h('span.muted', ` · ${SOURCE[f.source] || f.source}`) : null), ta, h('div.row-wrap', gen, save));
     };
     body.append(...[
       h('div.detail-head',
@@ -234,7 +237,9 @@ export default async function profilesPage(main, { user }) {
       funnel ? h('div.funnel',
         h('span', `↻ чекають повторної спроби: ${fmtInt(funnel.waiting)}`),
         h('span', `🚫 не відповіли на всі спроби: ${fmtInt(funnel.done)}`),
-        h('span', `💌 відповіли: ${fmtInt(funnel.replied)}`)) : null,
+        h('span', `💌 відповіли: ${fmtInt(funnel.replied)}`),
+        funnel.talking ? h('span', `💬 у розмові (бот нагадає, якщо замовкне): ${fmtInt(funnel.talking)}`) : null,
+        funnel.negative ? h('span', `🙅 «не цікаво»: ${fmtInt(funnel.negative)}`) : null) : null,
       h('section',
         h('h3', 'Інвайт-повідомлення', active ? badge(SOURCE[active.source] || active.source, 'muted') : null),
         h('p.small.muted', 'Бот надсилає цей текст усім новим чоловікам. Відповіді веде жінка сама.'),
@@ -245,6 +250,10 @@ export default async function profilesPage(main, { user }) {
         h('h3', 'Повторні повідомлення', scenarioName ? badge(`шаблон: ${scenarioName}`, 'accent') : null),
         h('p.small.muted', 'Бот надсилає їх тим, хто не відповів, за сценарієм сайту (Сайти → ⚙ Сценарій). {name} — ім’я чоловіка.'),
         followupSteps.map(followupBox)) : null,
+      afterReply?.attempts ? h('section',
+        h('h3', 'Після відповіді: якщо він замовк'),
+        h('p.small.muted', `Через ${afterReply.silenceHours} год тиші бот нагадає про себе, далі кожні ${afterReply.everyHours} год, до ${afterReply.attempts} разів (+${afterReply.attempts} за кожну нову відповідь). {name} — ім’я чоловіка.`),
+        followupBox(REENGAGE)) : null,
       history.length ? h('section',
         h('h3', 'Попередні варіанти'),
         h('ul.invite-history', history.map((i) => h('li',

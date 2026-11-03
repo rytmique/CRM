@@ -20,15 +20,27 @@ const TEXTS = [
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 
+const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'];
+/** "Пн–Пт", "щодня", "Пн, Ср, Пт". */
+export function daysText(days) {
+  const d = (days?.length ? days : [1, 2, 3, 4, 5, 6, 7]).slice().sort();
+  if (d.length === 7) return 'щодня';
+  const run = d.every((x, i) => i === 0 || x === d[i - 1] + 1);
+  return run && d.length > 2 ? `${DAY_NAMES[d[0] - 1]}–${DAY_NAMES[d.at(-1) - 1]}` : d.map((x) => DAY_NAMES[x - 1]).join(', ');
+}
+
 /** One-line summary of a scenario for the site card. */
 export function scenarioSummary(sc) {
   const tries = sc.steps.filter((s) => s.actions.some((a) => a.do === 'message')).length;
   const hm = sc.human;
   return [
     `${tries} ${tries === 1 ? 'спроба' : tries < 5 ? 'спроби' : 'спроб'}`,
+    hm.days && hm.days.length < 7 ? daysText(hm.days) : null,
     hm.hoursFrom !== hm.hoursTo ? `${hm.hoursFrom}:00–${hm.hoursTo}:00` : 'цілодобово',
+    hm.spread ? 'рівномірно на день' : null,
     hm.perHour ? `до ${hm.perHour}/год` : null,
     hm.typing ? 'друкує як людина' : null,
+    sc.afterReply?.attempts ? `після відповіді +${sc.afterReply.attempts}` : null,
   ].filter(Boolean).join(' · ');
 }
 
@@ -120,7 +132,7 @@ export async function openScenarioEditor(opts) {
         step.actions.map((a, i) => actionRow(step, a, i)),
         step.actions.length < 8 ? h('button.btn.sm.ghost', { type: 'button', onclick: () => { step.actions.push(defaultAction(taught.length ? 'click' : 'view')); renderSteps(); } }, '+ дія') : null)),
       sc.steps.length < 10 ? h('button.btn.sm', { type: 'button', onclick: () => { sc.steps.push({ wait: 24, actions: [defaultAction('message')] }); renderSteps(); } }, '+ Додати крок') : null,
-      h('p.step-end', `Після кроку ${n} без відповіді чоловік зникає зі списку бота. Спроб написати: ${sc.steps.filter((s) => s.actions.some((a) => a.do === 'message')).length}.`));
+      h('p.step-end', `Після кроку ${n} без відповіді чоловік зникає зі списку бота. Спроб написати: ${sc.steps.filter((s) => s.actions.some((a) => a.do === 'message')).length}. Відповів — дивіться «Після відповіді» нижче.`));
   }
 
   const markPick = (list, label) => h('div.field', h('label', label), marks.length
@@ -163,9 +175,11 @@ export async function openScenarioEditor(opts) {
   let body = buildBody();
   function buildBody() {
   const hm = sc.human;
+  sc.afterReply ||= { attempts: 10, silenceHours: 48, everyHours: 48 };
+  const ar = sc.afterReply;
   return h('div.scenario',
     nameInput ? field('Назва шаблону', nameInput) : null,
-    h('p.muted.lead', 'Що бот робить з кожним чоловіком. Щойно він відповів — бот зупиняється, далі пише жива людина.'),
+    h('p.muted.lead', 'Що бот робить з кожним чоловіком. Щойно він відповів — бот зупиняється, далі пише жива людина (а якщо чоловік знову замовк — бот нагадає).'),
     tplBar,
     h('h3', 'Кроки'),
     stepsBox,
@@ -176,9 +190,24 @@ export async function openScenarioEditor(opts) {
       markPick(sc.filters.needMarks, 'Писати тільки тим, у кого є'),
       markPick(sc.filters.skipMarks, 'Пропускати тих, у кого є'),
       h('small.hint.span-2', 'Вік чоловіків задається в анкеті (поля «Вік чоловіків від / до»).')),
-    h('h3', 'Обережність — щоб не палити анкету'),
+    h('h3', 'Після відповіді'),
+    h('p.small.muted', 'Відповів — пише жива людина. Якщо він знову замовк, бот сам нагадає про себе короткими повідомленнями. Кожна позитивна відповідь додає ще стільки ж спроб; «не цікаво» — бот більше не пише.'),
+    h('div.form-grid',
+      field('Спроб після відповіді', num(ar.attempts, { min: 0, max: 50 }, (v) => { ar.attempts = v ?? 0; }), '0 — не нагадувати'),
+      field('Нагадати, якщо мовчить, год', num(ar.silenceHours, { min: 1, max: 720 }, (v) => { ar.silenceHours = v ?? 48; })),
+      field('Далі кожні, год', num(ar.everyHours, { min: 1, max: 720 }, (v) => { ar.everyHours = v ?? 48; }))),
+    h('h3', 'Розклад і темп — щоб не палити анкету'),
     h('div.form-grid',
       h('div.pair', field('Працювати з, год', num(hm.hoursFrom, { min: 0, max: 24 }, (v) => { hm.hoursFrom = v ?? 0; })), field('до, год', num(hm.hoursTo, { min: 0, max: 24 }, (v) => { hm.hoursTo = v ?? 0; }))),
+      h('div.field', h('label', 'Робочі дні'), h('div.row-wrap', DAY_NAMES.map((name, i) => {
+        hm.days ||= [1, 2, 3, 4, 5, 6, 7];
+        return h('label.check', h('input', { type: 'checkbox', checked: hm.days.includes(i + 1), onchange: (e) => {
+          hm.days = e.target.checked ? [...new Set([...hm.days, i + 1])].sort() : hm.days.filter((x) => x !== i + 1);
+        } }), name);
+      }))),
+      h('label.check.span-2', h('input', { type: 'checkbox', checked: hm.spread !== false, onchange: (e) => { hm.spread = e.target.checked; } }),
+        'Рівномірно на весь робочий день — денний ліміт розтягується до кінця робочого часу, а не витрачається за пів години'),
+      h('small.hint.span-2', '⏰ Автопілот у розширенні сам вмикає бота в робочий час і вимикає після. Галочка «Автопілот» — у вікні розширення.'),
       field('Не більше повідомлень на годину', num(hm.perHour, { min: 0, max: 500 }, (v) => { hm.perHour = v ?? 0; }), '0 — без обмеження'),
       h('div.pair', field('Перерва кожні, повідомл.', num(hm.breakEvery, { min: 0, max: 500 }, (v) => { hm.breakEvery = v ?? 0; })), field('на, хв', num(hm.breakMinutes, { min: 1, max: 180 }, (v) => { hm.breakMinutes = v ?? 10; }))),
       h('label.check', h('input', { type: 'checkbox', checked: hm.typing, onchange: (e) => { hm.typing = e.target.checked; } }), 'Друкувати текст по літері, як людина'),

@@ -9,7 +9,7 @@
   // ---------- field kinds ----------
   const CONTAINER = { card: 'list', inboxItem: 'inbox' };
   const IN_CARD = ['cardId', 'cardName', 'cardAge', 'cardCountry', 'openChat'];
-  const IN_ITEM = ['inboxUnread', 'inboxId', 'inboxName'];
+  const IN_ITEM = ['inboxUnread', 'inboxId', 'inboxName', 'inboxText'];
   const ATTR_FIELDS = ['cardId', 'inboxId'];
   const URL_FIELDS = ['searchUrl', 'inboxUrl', 'manUrl', 'chatUrl'];
   const TABS = [

@@ -32,6 +32,7 @@ export const SITE_FIELDS = [
   { key: 'inboxUnread', group: 'Вхідні', label: 'Ознака непрочитаного', hint: 'Селектор всередині діалогу або .unread на самому діалозі' },
   { key: 'inboxId', group: 'Вхідні', label: 'ID чоловіка в діалозі', hint: 'Має дати те саме число, що й ID у пошуку (напр. a@href)' },
   { key: 'inboxName', group: 'Вхідні', label: 'Ім’я в діалозі', hint: '.name' },
+  { key: 'inboxText', group: 'Вхідні', label: 'Текст його повідомлення', hint: 'Необов’язково: останнє повідомлення в діалозі. Бот зрозуміє «не цікаво» і не турбуватиме його' },
   { key: 'chatUrl', group: 'Вхідні', label: 'Посилання на чат', hint: 'Шаблон з {id}, для сповіщень у Telegram' },
 ];
 
@@ -92,6 +93,7 @@ export function demoSiteConfig(publicUrl) {
     inboxUnread: '.unread',
     inboxId: '@data-man-id',
     inboxName: '.dialog-name',
+    inboxText: '.last',
     chatUrl: `${base}/inbox.html#man-{id}`,
     actions: [{ key: 'like', name: 'Лайк', sel: '.btn-like', where: 'card' }],
     marks: [{ key: 'online', name: 'Онлайн', sel: '.online' }],

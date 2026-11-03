@@ -167,6 +167,25 @@ CREATE TABLE IF NOT EXISTS media (
   created_at INTEGER NOT NULL
 );
 
+-- platform-wide, anonymous: which features of a man (country, age group, marks, card words) come with replies
+CREATE TABLE IF NOT EXISTS man_stats (
+  feature TEXT PRIMARY KEY,
+  sent INTEGER NOT NULL DEFAULT 0,
+  replied INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+
+-- men the bot saw while scanning ahead, best first
+CREATE TABLE IF NOT EXISTS pool (
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  man_id TEXT NOT NULL,
+  man TEXT NOT NULL,
+  score REAL NOT NULL DEFAULT 0,
+  seen_at INTEGER NOT NULL,
+  taken_at INTEGER,
+  PRIMARY KEY (profile_id, man_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_media_profile ON media(profile_id);
 CREATE INDEX IF NOT EXISTS idx_touches_profile_day ON touches(profile_id, day);
 CREATE INDEX IF NOT EXISTS idx_messages_agency_day ON messages(agency_id, day);
@@ -193,6 +212,15 @@ const MIGRATIONS = [
   // operators create their own sites/templates; the owner controls everything
   ['sites', 'created_by', 'INTEGER'],
   ['scenario_templates', 'created_by', 'INTEGER'],
+  // after a reply: extra attempts if he goes quiet again
+  ['messages', 'bonus_left', 'INTEGER NOT NULL DEFAULT 0'],
+  ['messages', 'replies', 'INTEGER NOT NULL DEFAULT 0', "UPDATE messages SET replies = 1 WHERE replied_at IS NOT NULL"],
+  ['messages', 'last_reply_at', 'INTEGER', 'UPDATE messages SET last_reply_at = replied_at'],
+  ['messages', 'reply_text', "TEXT NOT NULL DEFAULT ''"],
+  ['messages', 'reply_mood', "TEXT NOT NULL DEFAULT ''"],
+  // what his card showed: for learning who answers
+  ['messages', 'man_info', "TEXT NOT NULL DEFAULT ''"],
+  ['messages', 'features', "TEXT NOT NULL DEFAULT '[]'"],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

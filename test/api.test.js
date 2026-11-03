@@ -388,13 +388,52 @@ test('scenario: follow-ups until reply, three attempts, then dropped', async () 
   assert.match(due.men[0].actions[1].text, /^(Hey Mike, me again!|Hi Mike, still here :\))$/);
   st = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '700001' }, step: 3, ok: true, messages: 1 }, 'lily');
   assert.equal(st.data.stage, 'done', 'three attempts used → dropped');
-  db.prepare('UPDATE messages SET next_at = 1 WHERE profile_id = ?').run(p.id);
-  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data.men.length, 0);
-
   // daily counter includes follow-ups: 2 first + 2 follow-ups
   assert.equal(st.data.remaining, 10 - 4);
+
+  // Sam replied: +10 reminders, but only after he goes quiet (48 h by default)
+  const samRow = () => db.prepare("SELECT * FROM messages WHERE profile_id = ? AND man_id = '700004'").get(p.id);
+  assert.equal(samRow().bonus_left, 10);
+  assert.ok(samRow().next_at > Date.now() + 47 * 3600000);
+  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data.men.length, 0, 'mike is done, sam is talking');
+  // the same unread dialog seen again: no new reply, reminders postponed
+  db.prepare("UPDATE messages SET next_at = 5 WHERE profile_id = ? AND man_id = '700004'").run(p.id);
+  const again = await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '700004' }] }, 'lily');
+  assert.equal(again.data.new, 0);
+  assert.ok(samRow().next_at > Date.now() + 47 * 3600000, 'talk is alive → reminder postponed');
+  assert.equal(samRow().bonus_left, 10, 'no double bonus for the same reply');
+  // he goes quiet → the bot reminds him on his page
+  db.prepare("UPDATE messages SET next_at = 1 WHERE profile_id = ? AND man_id = '700004'").run(p.id);
+  due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data;
+  assert.equal(due.men.length, 1);
+  assert.equal(due.men[0].kind, 'reengage');
+  assert.equal(due.men[0].left, 10);
+  assert.match(due.men[0].url, /id=700004$/);
+  assert.doesNotMatch(due.men[0].actions[0].text, /\{name\}|---/);
+  st = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '700004' }, kind: 'reengage', ok: true, messages: 1, text: 'hi' }, 'lily');
+  assert.equal(st.data.left, 9);
+  assert.equal(st.data.stage, 'replied');
+  assert.equal(st.data.remaining, 10 - 5, 'reminders count into the daily limit');
+  // he answers the reminder → a new positive reply → +10 more
+  const back = await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '700004', text: 'Hey! sorry, busy week :)' }] }, 'lily');
+  assert.equal(back.data.new, 1);
+  assert.equal(samRow().bonus_left, 19);
+  assert.equal(samRow().replies, 2);
+  // "not interested" ends it for good
+  db.prepare("UPDATE messages SET last_at = ? WHERE profile_id = ? AND man_id = '700004'").run(Date.now() + 1000, p.id);
+  const no = await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '700004', text: 'Sorry, I am not interested. Please do not write me.' }] }, 'lily');
+  assert.equal(no.data.negative, 1);
+  assert.equal(samRow().bonus_left, 0);
+  assert.equal(samRow().next_at, null);
+  // the last reminder without an answer → dropped
+  db.prepare("UPDATE messages SET bonus_left = 1, next_at = 1, reply_mood = 'positive' WHERE profile_id = ? AND man_id = '700004'").run(p.id);
+  st = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '700004' }, kind: 'reengage', ok: true, messages: 1 }, 'lily');
+  assert.equal(st.data.stage, 'done');
+  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data.men.length, 0);
+  const funnel = (await call('GET', `/api/profiles/${p.id}`, undefined, 'lily')).data.funnel;
+  assert.equal(funnel.replied, 1, 'he still counts as replied');
   const j = await call('GET', '/api/stats/messages?status=done', undefined, 'lily');
-  assert.deepEqual(j.data.messages.map((m) => m.man_id), ['700001']);
+  assert.deepEqual(j.data.messages.map((m) => m.man_id).sort(), ['700001', '700004']);
 
   // operator teaching: may save only sites of own profiles
   const op = await call('POST', '/api/operators', { name: 'Op', email: 'op@lily', password: 'oppass1' }, 'lily');
@@ -543,4 +582,60 @@ test('roles: operator creates own profiles, sites and templates; owner controls'
   // settings stay with the owner; the prompt editor info is open to operators
   assert.equal((await call('GET', '/api/settings', undefined, 'op1')).status, 403);
   assert.ok((await call('GET', '/api/settings/prompt-info', undefined, 'op1')).data.defaultPrompt);
+});
+
+test('men are ranked by what their profile shows: platform-wide reply stats', async () => {
+  await login('admin5', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Peony', ownerName: 'P', ownerEmail: 'owner@peony', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin5');
+  await login('peony', 'owner@peony', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'peony')).data.sites[0];
+  const p = (await call('POST', '/api/profiles', { name: 'Olga', site_id: site.id, license_id: 'auto', daily_limit: 50 }, 'peony')).data;
+  assert.equal(p.licensed, true);
+  db.exec('DELETE FROM man_stats'); // earlier tests taught the shared table: start clean
+  const cfg0 = (await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'peony')).data;
+  assert.equal(cfg0.ranking.ready, false, 'no data yet');
+  assert.equal(cfg0.ranking.manUrl, true);
+
+  // no data: the site's own order is kept
+  const men = [
+    { id: '810001', name: 'Ian', age: 33, country: 'UK', info: 'Teacher from London, likes football' },
+    { id: '810002', name: 'Bill', age: 52, country: 'USA', info: 'Retired engineer, loves fishing and travel', marks: ['online'] },
+    { id: '810003', name: 'Ken', age: 48, country: 'USA', info: 'Business owner' },
+  ];
+  let f = (await call('POST', `/api/bot/profiles/${p.id}/filter`, { candidates: men }, 'peony')).data;
+  assert.deepEqual(f.allowed.map((m) => m.id), ['810001', '810002', '810003']);
+
+  // the platform learned: Americans 50+ who are online answer more, the UK less
+  const seed = db.prepare('INSERT INTO man_stats (feature, sent, replied, updated_at) VALUES (?,?,?,0) ON CONFLICT(feature) DO UPDATE SET sent = excluded.sent, replied = excluded.replied');
+  seed.run('*', 1000, 100);
+  seed.run('c:usa', 300, 60);
+  seed.run('c:uk', 300, 6);
+  seed.run('a:50', 200, 40);
+  seed.run('m:localhost:online', 200, 50);
+  f = (await call('POST', `/api/bot/profiles/${p.id}/filter`, { candidates: men }, 'peony')).data;
+  assert.deepEqual(f.allowed.map((m) => m.id), ['810002', '810003', '810001'], 'best first');
+  assert.ok(f.allowed[0].why.includes('Онлайн'), JSON.stringify(f.allowed[0].why));
+  assert.equal(f.allowed[0].features, undefined, 'features stay on the server');
+
+  // sending teaches the platform; a positive reply too
+  const before = db.prepare("SELECT sent, replied FROM man_stats WHERE feature = 'c:usa'").get();
+  await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: f.allowed[0], ok: true, text: 'hi' }, 'peony');
+  assert.equal(db.prepare("SELECT sent FROM man_stats WHERE feature = 'c:usa'").get().sent, before.sent + 1);
+  assert.ok(db.prepare("SELECT 1 FROM man_stats WHERE feature = 'w:fishing'").get(), 'card words are learned');
+  assert.equal(db.prepare("SELECT 1 FROM man_stats WHERE feature = 'w:bill'").get(), undefined, 'his name is not');
+  await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '810002', text: 'Hello Olga!' }] }, 'peony');
+  assert.equal(db.prepare("SELECT replied FROM man_stats WHERE feature = 'c:usa'").get().replied, before.replied + 1);
+
+  // scanning ahead: several pages go to the pool, the best are handed out first, on their own pages
+  const many = Array.from({ length: 20 }, (_, i) => ({ id: String(820000 + i), name: `M${i}`, age: 40 + i, country: i % 4 === 0 ? 'USA' : 'UK', marks: i % 4 === 0 ? ['online'] : [] }));
+  const pool = (await call('POST', `/api/bot/profiles/${p.id}/pool`, { candidates: many }, 'peony')).data;
+  assert.equal(pool.added, 20);
+  assert.equal(pool.ranking.ready, true);
+  const next = (await call('GET', `/api/bot/profiles/${p.id}/pool/next?limit=10`, undefined, 'peony')).data;
+  assert.ok(next.men.length >= 1 && next.men.length <= 6, `top part only: ${next.men.length}`);
+  assert.ok(next.men.every((m) => m.country === 'USA'), 'only the promising ones');
+  assert.match(next.men[0].url, /profile\.html\?id=82/);
+  assert.equal(next.men[0].step, 1);
+  const again = (await call('GET', `/api/bot/profiles/${p.id}/pool/next?limit=10`, undefined, 'peony')).data;
+  assert.equal(again.men.length, 0, 'handed out once');
 });

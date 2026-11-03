@@ -259,7 +259,7 @@ async function checkInbox(site, profileId = state.profileId) {
     if (r.new > 0) {
       unseenReplies += r.new;
       await setState({ replies: state.replies + r.new });
-      const names = r.men.map((m) => m.name || m.id).join(', ');
+      const names = r.men.map((m) => `${m.name || m.id}${m.mood === 'negative' ? ' (не цікаво — більше не пишемо)' : ''}`).join(', ');
       await log(`💌 Нові відповіді (${r.new}): ${names}`, 'reply');
       chrome.notifications.create(`reply-${Date.now()}`, {
         type: 'basic', iconUrl: 'icon128.png', priority: 2,
@@ -499,7 +499,8 @@ async function processDue(ctx, force = false) {
     if (stopRequested) break;
     await waitWorkingHours(ctx);
     if (stopRequested) break;
-    await setState({ message: `↻ Спроба ${man.step}/${man.of}: ${man.name || man.id}` });
+    const reminder = man.kind === 'reengage';
+    await setState({ message: reminder ? `💬 Нагадування: ${man.name || man.id}` : `↻ Спроба ${man.step}/${man.of}: ${man.name || man.id}` });
     let res;
     try {
       await navigate(ctx.tabId, man.url);
@@ -507,14 +508,16 @@ async function processDue(ctx, force = false) {
     } catch (e) { res = { ok: false, messages: 0, error: e.message, warnings: [] }; }
     const text = man.actions.find((a) => a.do === 'message')?.text || '';
     const r = await api(`/api/bot/profiles/${ctx.profileId}/step`, {
-      method: 'POST', body: { man: { id: man.id }, step: man.step, ok: res.ok, messages: res.messages, text, error: res.error },
+      method: 'POST', body: { man: { id: man.id }, step: man.step, kind: man.kind, ok: res.ok, messages: res.messages, text, error: res.error },
     });
+    const who = man.name || man.id;
     if (res.ok) {
       await setState({ sent: state.sent + res.messages, followups: (state.followups || 0) + 1, remaining: r.remaining });
-      await log(`↻ ${man.name || man.id}: спроба ${man.step}/${man.of} ✓${res.attached ? ` 📎${res.attached}` : ''}${r.stage === 'done' ? ' — остання, далі без відповіді він зникне зі списку' : ''}`);
+      if (reminder) await log(`💬 ${who}: нагадування після відповіді ✓ (лишилось ${r.left ?? '—'})${r.stage === 'done' ? ' — останнє, далі без відповіді він зникне зі списку' : ''}`);
+      else await log(`↻ ${who}: спроба ${man.step}/${man.of} ✓${res.attached ? ` 📎${res.attached}` : ''}${r.stage === 'done' ? ' — остання, далі без відповіді він зникне зі списку' : ''}`);
     } else {
       await setState({ failed: state.failed + 1, remaining: r.remaining });
-      await log(`↻ ${man.name || man.id}: спроба ${man.step} не вдалась — ${res.error}`, 'warn');
+      await log(`${reminder ? '💬' : '↻'} ${who}: ${reminder ? 'нагадування' : `спроба ${man.step}`} не вдалось — ${res.error}`, 'warn');
     }
     for (const w of res.warnings || []) if (res.ok) await log(`  ⚠ ${w}`, 'warn');
     await heartbeat();

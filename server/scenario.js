@@ -4,6 +4,8 @@
  *   steps[0]            — runs when the bot finds a new man in the search list;
  *   steps[1..]          — run `wait` hours after the previous step, only if he still has not replied;
  *   after the last step — no reply → he is dropped from the bot's list ("вичерпано").
+ *   he replied           — a live person writes; if he goes quiet for `afterReply.silenceHours`, the bot sends
+ *                          a short reminder every `everyHours`, up to `afterReply.attempts` (+N per positive reply).
  *
  * A step is a list of actions:
  *   { do: 'message', text: 'invite' | 'followup' | 'custom', custom?: 'variant 1\n---\nvariant 2',
@@ -20,7 +22,8 @@ export const DEFAULT_SCENARIO = Object.freeze({
     { wait: 48, actions: [{ do: 'message', text: 'followup' }] },
   ],
   filters: { countries: '', excludeCountries: '', needMarks: [], skipMarks: [] },
-  human: { hoursFrom: 9, hoursTo: 23, perHour: 40, breakEvery: 20, breakMinutes: 10, typing: true },
+  human: { hoursFrom: 9, hoursTo: 23, days: [1, 2, 3, 4, 5, 6, 7], perHour: 40, breakEvery: 20, breakMinutes: 10, typing: true, spread: true },
+  afterReply: { attempts: 10, silenceHours: 48, everyHours: 48 },
 });
 
 const MAX_STEPS = 10;
@@ -66,7 +69,9 @@ export function sanitizeScenario(input) {
   })).filter((s) => s.actions.length);
   const f = src.filters || {};
   const hm = src.human || {};
+  const ar = src.afterReply || {};
   const d = DEFAULT_SCENARIO.human;
+  const da = DEFAULT_SCENARIO.afterReply;
   return {
     steps: steps.length ? steps : structuredClone(DEFAULT_SCENARIO.steps),
     filters: {
@@ -82,6 +87,18 @@ export function sanitizeScenario(input) {
       breakEvery: Math.round(num(hm.breakEvery, 0, 500, d.breakEvery)),
       breakMinutes: Math.round(num(hm.breakMinutes, 1, 180, d.breakMinutes)),
       typing: hm.typing === undefined ? d.typing : Boolean(hm.typing),
+      // working days, 1 = Monday … 7 = Sunday (agency time zone); none picked = every day
+      days: (() => {
+        const list = Array.isArray(hm.days) ? [...new Set(hm.days.map(Number).filter((x) => Number.isInteger(x) && x >= 1 && x <= 7))].sort() : [];
+        return list.length ? list : [...d.days];
+      })(),
+      // spread the daily limit evenly over the working hours instead of sending it all at once
+      spread: hm.spread === undefined ? d.spread : Boolean(hm.spread),
+    },
+    afterReply: {
+      attempts: Math.round(num(ar.attempts, 0, 50, da.attempts)),
+      silenceHours: Math.round(num(ar.silenceHours, 1, 720, da.silenceHours)),
+      everyHours: Math.round(num(ar.everyHours, 1, 720, da.everyHours)),
     },
   };
 }
