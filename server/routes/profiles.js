@@ -7,7 +7,9 @@ import {
   activeInvite, limitsFor, insertInvite, BOT_ONLINE_MS, followupTexts, saveFollowup,
 } from '../services.js';
 import { generateInvite, generateFollowup } from '../ai.js';
-import { siteScenario, followupSteps } from '../scenario.js';
+import express from 'express';
+import { profileScenario, followupSteps } from '../scenario.js';
+import { listMedia, saveMedia, removeMedia, mediaFile, readSteps } from '../media.js';
 import { personalize } from '../personalize.js';
 
 const DAY = 86400000;
@@ -37,12 +39,13 @@ function readProfileBody(body, { creating }) {
     tg_chat_id: b.tg_chat_id === undefined ? undefined : (str(b.tg_chat_id, { max: 64 }) || null),
     operator_id: int(b.operator_id, { min: 1, field: 'оператор' }),
     site_id: int(b.site_id, { min: 1, field: 'сайт' }),
+    scenario_id: int(b.scenario_id, { min: 1, field: 'сценарій' }),
   };
   if (out.name === '') throw bad('Заповніть: ім’я');
   return out;
 }
 
-export default function profileRoutes(db) {
+export default function profileRoutes(db, cfg) {
   const r = Router();
 
   const listQuery = (user, extraWhere = '', extraParams = []) => {
@@ -86,6 +89,9 @@ export default function profileRoutes(db) {
     if (body.site_id && !db.prepare('SELECT 1 FROM sites WHERE id = ? AND agency_id = ?').get(body.site_id, agencyId)) {
       throw bad('Сайт не знайдено');
     }
+    if (body.scenario_id && !db.prepare('SELECT 1 FROM scenario_templates WHERE id = ? AND agency_id = ?').get(body.scenario_id, agencyId)) {
+      throw bad('Шаблон сценарію не знайдено');
+    }
   };
 
   const assignLicense = (agencyId, profileId, licenseId) => {
@@ -115,14 +121,18 @@ export default function profileRoutes(db) {
     const p = rows[0];
     const invites = db.prepare('SELECT * FROM invites WHERE profile_id = ? ORDER BY id DESC LIMIT 50').all(p.id);
     const site = p.site_id ? db.prepare('SELECT * FROM sites WHERE id = ?').get(p.site_id) : null;
-    const scenario = siteScenario(site);
+    const scenario = profileScenario(db, p, site);
     const followups = db.prepare('SELECT * FROM followups WHERE profile_id = ? ORDER BY step').all(p.id);
     const funnel = db.prepare(`SELECT
         COALESCE(SUM(stage = 'active' AND next_at IS NOT NULL), 0) AS waiting,
         COALESCE(SUM(stage = 'done'), 0) AS done,
         COALESCE(SUM(stage = 'replied'), 0) AS replied
       FROM messages WHERE profile_id = ? AND status = 'sent'`).get(p.id);
-    res.json({ profile: decorate(db, req.user, p), invites, followups, followupSteps: followupSteps(scenario), steps: scenario.steps.length, funnel });
+    const scenarioName = p.scenario_id ? db.prepare('SELECT name FROM scenario_templates WHERE id = ?').get(p.scenario_id)?.name : null;
+    res.json({
+      profile: decorate(db, req.user, p), invites, followups, followupSteps: followupSteps(scenario), steps: scenario.steps.length, funnel,
+      media: listMedia(db, p.id), scenarioName,
+    });
   });
 
   r.post('/', requireRole('owner'), (req, res) => {
@@ -158,6 +168,7 @@ export default function profileRoutes(db) {
 
   r.delete('/:id', requireRole('owner'), (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
+    removeMedia(db, cfg, db.prepare('SELECT * FROM media WHERE profile_id = ?').all(p.id));
     db.prepare('DELETE FROM profiles WHERE id = ?').run(p.id);
     res.json({ ok: true });
   });
@@ -198,6 +209,47 @@ export default function profileRoutes(db) {
     const text = str(req.body?.text, { required: true, field: 'текст', max: 1000 });
     if (text.length < 10) throw bad('Текст занадто короткий');
     res.status(201).json({ invite: insertInvite(db, { profileId: p.id, text, source: 'manual', userId: req.user.id }) });
+  });
+
+  // ---------- files attached to messages ----------
+  const getMedia = (req) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const m = db.prepare('SELECT * FROM media WHERE id = ? AND profile_id = ?').get(Number(req.params.mediaId), p.id);
+    if (!m) throw notFound('Файл не знайдено');
+    return m;
+  };
+
+  r.get('/:id/media', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    res.json({ media: listMedia(db, p.id) });
+  });
+
+  /** Upload one file: body = the file itself, name in X-File-Name (URI-encoded), steps in ?steps=1,2 */
+  r.post('/:id/media', express.raw({ type: () => true, limit: '16mb' }), (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    let name = 'file';
+    try { name = decodeURIComponent(String(req.get('x-file-name') || 'file')); } catch { /* keep default */ }
+    const st = req.query.steps ? readSteps(String(req.query.steps).split(',')) : [1];
+    const media = saveMedia(db, cfg, { agencyId: p.agency_id, profileId: p.id, name, type: req.get('content-type'), buf: req.body, steps: st });
+    res.status(201).json({ media });
+  });
+
+  r.get('/:id/media/:mediaId/file', (req, res) => {
+    const m = getMedia(req);
+    res.set('Content-Type', m.type);
+    res.set('Cache-Control', 'private, max-age=86400');
+    res.sendFile(mediaFile(cfg, m));
+  });
+
+  r.patch('/:id/media/:mediaId', (req, res) => {
+    const m = getMedia(req);
+    db.prepare('UPDATE media SET steps = ? WHERE id = ?').run(JSON.stringify(readSteps(req.body?.steps)), m.id);
+    res.json({ ok: true });
+  });
+
+  r.delete('/:id/media/:mediaId', (req, res) => {
+    removeMedia(db, cfg, [getMedia(req)]);
+    res.json({ ok: true });
   });
 
   // ---------- follow-ups (2nd, 3rd… attempt) ----------

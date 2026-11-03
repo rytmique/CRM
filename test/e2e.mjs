@@ -248,6 +248,8 @@ try {
   await tpage.click('#chat-modal textarea');
   await pickBtn('Кнопка «Надіслати»').click();
   await tpage.click('#chat-modal .btn-send');
+  await pickBtn('Прикріпити файл').click();
+  await tpage.click('#chat-modal .btn-attach'); // intercepted: no file dialog
   await pickBtn('Закрити вікно').click();
   await tpage.click('#chat-modal .btn-close');
   if (!(await tpage.locator('#chat-modal').isVisible())) fail('picking "Close" must not close the chat');
@@ -279,15 +281,23 @@ try {
   for (const [k, v] of Object.entries(want)) if (tcfg[k] !== v) fail(`taught ${k} = ${tcfg[k]}, expected ${v}\n${JSON.stringify(tcfg, null, 1)}`);
   if (!tcfg.manUrl.endsWith('profile.html?id={id}')) fail(`taught manUrl ${tcfg.manUrl}`);
   if (tcfg.actions[0]?.sel !== '.btn-like' || tcfg.actions[0].where !== 'card' || tcfg.marks[0]?.sel !== '.online') fail(`taught lists ${JSON.stringify([tcfg.actions, tcfg.marks])}`);
-  if (!tcfg.messageInput || !(await tpage.locator(tcfg.messageInput).count())) fail(`taught messageInput ${tcfg.messageInput} does not match his page`);
+  for (const k of ['messageInput', 'attachButton']) if (!tcfg[k] || !(await tpage.locator(tcfg[k]).count())) fail(`taught ${k} ${tcfg[k]} does not match his page`);
   await tpage.close();
   log('teach by clicking ok:', Object.keys(tcfg).filter((k) => tcfg[k] && (!Array.isArray(tcfg[k]) || tcfg[k].length)).join(', '));
 
-  // Kate: only "online" men; like + invite, then a follow-up right away (wait 0) on his own page, typed letter by letter
+  // Kate's photos: one for the invite, one for the follow-up
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6364f8cf00000301010018dd8db40000000049454e44ae426082', 'hex');
+  for (const [name, steps] of [['kate-hello.png', '1'], ['kate-beach.png', '2']]) {
+    const up = await fetch(`${BASE}/api/profiles/${kate.id}/media?steps=${steps}`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-file-name': name, authorization: `Bearer ${owner}` }, body: png });
+    if (up.status !== 201) fail(`upload ${name}: ${up.status}`);
+  }
+
+  // Kate: only "online" men; like + invite with a photo, then a follow-up with another photo right away (wait 0)
+  // on his own page, typed letter by letter
   await api('PUT', `/api/sites/${taught.id}/scenario`, { scenario: {
     steps: [
-      { actions: [{ do: 'click', action: tcfg.actions[0].key }, { do: 'message', text: 'invite' }] },
-      { wait: 0, actions: [{ do: 'message', text: 'followup' }] },
+      { actions: [{ do: 'click', action: tcfg.actions[0].key }, { do: 'message', text: 'invite', files: 'all' }] },
+      { wait: 0, actions: [{ do: 'message', text: 'followup', files: 'all' }] },
     ],
     filters: { needMarks: [tcfg.marks[0].key] },
     human: { ...FAST, typing: true },
@@ -311,12 +321,14 @@ try {
     const got = afterKate[id].count - (before[id]?.count || (before[id] ? 1 : 0));
     if (got !== 2) fail(`man ${id} got ${got} messages from Kate, expected invite + follow-up`);
     if (afterKate[id].history.at(-1).includes('{name}')) fail('placeholder leaked into a follow-up');
+    const files = afterKate[id].files.slice(-2);
+    if (files.join() !== 'kate-hello.png,kate-beach.png') fail(`man ${id} got files ${JSON.stringify(afterKate[id].files)}, expected the invite photo then the follow-up photo`);
   }
   const kateRows = await api('GET', `/api/stats/messages?profile_id=${kate.id}`, null, owner);
   if (kateRows.messages.some((m) => m.step !== 2 || m.stage !== 'done')) fail(`Kate rows: ${JSON.stringify(kateRows.messages.map((m) => [m.man_id, m.step, m.stage]))}`);
   await popup.screenshot({ path: path.join(OUT, '18-popup-followups.png') });
   await popup.click('#stop');
-  log('follow-ups ok: online men only, like + invite, then a typed follow-up on his page; both men dropped after the last attempt');
+  log('follow-ups ok: online men only, like + invite 📎, then a typed follow-up 📎 on his page; both men dropped after the last attempt');
 
   // ---------- adapter on an infinite feed + IDs taken from links ----------
   const feed = await context.newPage();

@@ -228,26 +228,29 @@
     return { ok: true, clicked: true };
   }
 
-  /** Paste/type the text, send, confirm — on whatever page the message box is. */
-  async function compose({ site, man, dry, typing }) {
+  /** Paste/type the text into the message box (no sending yet). */
+  async function fill({ site, man, dry, typing }) {
     const input = await waitFor(() => qsa(document, site.messageInput).find(visible));
     if (!input) return { ok: false, error: 'поле вводу не з’явилось' };
     await sleep(rand(300, 800));
+    if (!man.text) return { ok: true, empty: true }; // a message with files only
     if (typing && !dry) await typeText(input, man.text);
     else setInputValue(input, man.text);
     await sleep(rand(300, 900));
     if (!valueOf(input).trim()) return { ok: false, error: 'не вдалося вставити текст' };
+    if (dry) { flash(input, '🧪 текст вставлено'); await sleep(1200); }
+    return { ok: true };
+  }
 
+  /** Press "Send" (or Enter) and wait for the site to confirm. Test mode: only shows the button and wipes the text. */
+  async function submit({ site, dry }) {
+    const input = qsa(document, site.messageInput).find(visible);
     if (dry) {
-      // Test mode: check that "Send" is there, show it, then wipe the text — nothing is sent.
       const btn = site.sendButton ? await waitFor(() => qsa(document, site.sendButton).find((b) => visible(b) && !b.disabled), 4000) : null;
-      if (site.sendButton && !btn) { setInputValue(input, ''); return { ok: false, error: 'кнопка «Надіслати» недоступна' }; }
-      flash(input, '🧪 текст вставлено');
-      await sleep(1200);
-      if (btn) flash(btn, '🧪 тут бот натиснув би «Надіслати»');
-      await sleep(1800);
-      setInputValue(input, '');
-      if (input.isContentEditable) input.textContent = '';
+      if (input) setInputValue(input, '');
+      if (input?.isContentEditable) input.textContent = '';
+      if (site.sendButton && !btn) return { ok: false, error: 'кнопка «Надіслати» недоступна' };
+      if (btn) { flash(btn, '🧪 тут бот натиснув би «Надіслати»'); await sleep(1800); }
       if (site.closeChat) qsa(document, site.closeChat).find(visible)?.click();
       await sleep(300);
       return { ok: true, dry: true };
@@ -255,11 +258,13 @@
 
     const prevConfirm = new Set(qsa(document, site.sentConfirm));
     if (site.sendButton) {
-      const btn = await waitFor(() => qsa(document, site.sendButton).find((b) => visible(b) && !b.disabled), 4000);
+      const btn = await waitFor(() => qsa(document, site.sendButton).find((b) => visible(b) && !b.disabled), 6000);
       if (!btn) return { ok: false, error: 'кнопка «Надіслати» недоступна' };
       await humanClick(btn);
-    } else {
+    } else if (input) {
       pressEnter(input);
+    } else {
+      return { ok: false, error: 'поле вводу зникло' };
     }
 
     let result;
@@ -284,6 +289,27 @@
     }
     await sleep(300);
     return result;
+  }
+
+  async function compose(p) {
+    const f = await fill(p);
+    return f.ok ? submit(p) : f;
+  }
+
+  // ---------- attachments (the file itself is put in by the page-world helper in background.js) ----------
+  const attachedCount = ({ site }) => qsa(document, site.attachDone).filter(visible).length;
+
+  async function waitAttached({ site, before = 0, timeout = 20000 }) {
+    const ok = await waitFor(() => attachedCount({ site }) > before, timeout, 250);
+    return { ok: Boolean(ok) };
+  }
+
+  /** Test mode: is there somewhere to attach a file? */
+  async function attachCheck({ site }) {
+    const btn = qsa(document, site.attachButton).find(visible);
+    if (btn) { flash(btn, '🧪 сюди бот прикріпив би файл'); await sleep(1500); return { ok: true }; }
+    if (qsa(document, site.fileInput || 'input[type=file]').length) return { ok: true };
+    return { ok: false, error: 'не знайшов кнопку «Прикріпити файл» — навчіть її (🎯 → Відправка)' };
   }
 
   async function send(p) {
@@ -381,7 +407,8 @@
   }
 
   window.__agencyBot = {
-    scan, open, openPage, compose, send, clickAction, view, next, more, inbox, probe,
+    scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe,
+    attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };
 })();

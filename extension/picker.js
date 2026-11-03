@@ -43,7 +43,10 @@
     if (goodId(el.id)) out.push(`#${esc(el.id)}`);
     for (const a of ATTRS) {
       const v = el.getAttribute(a);
-      if (v && v.length <= 40 && !/\d{4,}/.test(v) && !/["\\]/.test(v)) out.push(`${tag}[${a}="${v}"]`);
+      if (!v || v.length > 40 || /\d{4,}/.test(v) || /["\\]/.test(v)) continue;
+      // descriptive attributes work whatever the tag is (a <button> here, a <label> on another page)
+      if (!['type', 'role', 'name'].includes(a)) out.push(`[${a}="${v}"]`);
+      out.push(`${tag}[${a}="${v}"]`);
     }
     const cls = goodClasses(el);
     for (const c of cls) out.push(`.${esc(c)}`, `${tag}.${esc(c)}`);

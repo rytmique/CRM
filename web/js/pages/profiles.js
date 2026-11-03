@@ -1,5 +1,5 @@
 import { h, field, input, textarea, select, formData, busy, toast, modal, confirmDialog, badge, avatar, empty, fmtInt, fmtDate, safe } from '../ui.js';
-import { get, post, patch, put, del } from '../api.js';
+import { get, post, patch, put, del, upload, blobUrl } from '../api.js';
 import { botBadge } from './dashboard.js';
 import { promptEditor } from './prompt-editor.js';
 
@@ -18,14 +18,14 @@ export default async function profilesPage(main, { user }) {
   const page = h('div.page');
   main.replaceChildren(page);
   let all = [];
-  let refs = { operators: [], sites: [], licenses: [] };
+  let refs = { operators: [], sites: [], licenses: [], templates: [] };
   let q = '';
   let statusFilter = '';
 
   async function loadRefs() {
     if (!owner) return;
-    const [ops, sites, lic] = await Promise.all([get('/api/operators'), get('/api/sites'), get('/api/licenses')]);
-    refs = { operators: ops.operators, sites: sites.sites, licenses: lic.licenses };
+    const [ops, sites, lic, sc] = await Promise.all([get('/api/operators'), get('/api/sites'), get('/api/licenses'), get('/api/scenarios')]);
+    refs = { operators: ops.operators, sites: sites.sites, licenses: lic.licenses, templates: sc.templates };
   }
 
   async function load() {
@@ -84,6 +84,8 @@ export default async function profilesPage(main, { user }) {
       field('Сайт', select('site_id', p?.site_id, [['', '— вибрати —'], ...refs.sites.map((s) => [s.id, s.name])], { 'data-num': '' })),
       field('ID анкети на сайті', input('site_profile_id', p?.site_profile_id)),
       field('Оператор', select('operator_id', p?.operator_id, [['', '— не призначено —'], ...refs.operators.filter((o) => o.active).map((o) => [o.id, o.name])], { 'data-num': '' })),
+      field('Сценарій', select('scenario_id', p?.scenario_id, [['', 'Як у сайту (за замовчуванням)'], ...refs.templates.map((t) => [t.id, `Шаблон: ${t.name}`])], { 'data-num': '' }),
+        refs.templates.length ? 'Можна дати цій анкеті свій сценарій' : 'Шаблони створюються в «Сайти» → «Шаблони сценаріїв»'),
       field('Ліцензія', select('license_id', p?.license?.id, licOptions, { 'data-num': '' }), refs.licenses.length ? 'Термін іде з моменту першої прив’язки' : 'Ліцензій немає — зверніться до постачальника'),
       field('Фото (URL)', input('photo_url', p?.photo_url, { type: 'url', placeholder: 'https://…' }), null),
       field('Статус', select('status', p?.status || 'active', [['active', 'Активна'], ['paused', 'Пауза']])),
@@ -124,7 +126,7 @@ export default async function profilesPage(main, { user }) {
 
   // ---------- details + invites ----------
   async function openDetail(id) {
-    const { profile: p, invites, followups = [], followupSteps = [], funnel } = await get(`/api/profiles/${id}`);
+    const { profile: p, invites, followups = [], followupSteps = [], funnel, media = [], steps: stepCount = 1, scenarioName } = await get(`/api/profiles/${id}`);
     const body = h('div.detail');
     const m = modal({ title: `${p.name}${p.age ? `, ${p.age}` : ''}`, body, wide: true });
 
@@ -155,6 +157,41 @@ export default async function profilesPage(main, { user }) {
 
     const history = invites.filter((i) => !i.active);
     const reopen = () => { m.close(); openDetail(p.id); };
+    // ---------- files the bot attaches ----------
+    const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(b / 1024))} КБ`);
+    const mediaCard = (f) => {
+      const thumb = h('div.media-thumb', f.type.startsWith('image/') ? '🖼' : f.type.startsWith('video/') ? '🎬' : f.type.startsWith('audio/') ? '🎵' : '📄');
+      if (f.type.startsWith('image/')) blobUrl(`/api/profiles/${p.id}/media/${f.id}/file`).then((u) => thumb.replaceChildren(h('img', { src: u, alt: '' }))).catch(() => {});
+      const boxes = Array.from({ length: Math.max(stepCount, ...f.steps) }, (_, i) => i + 1).map((n) => h('label.check.small',
+        h('input', { type: 'checkbox', checked: f.steps.includes(n), onchange: safe(async (e) => {
+          const next = e.target.checked ? [...new Set([...f.steps, n])] : f.steps.filter((x) => x !== n);
+          await patch(`/api/profiles/${p.id}/media/${f.id}`, { steps: next });
+          f.steps = next;
+        }) }), `крок ${n}`));
+      return h('div.media-card', thumb,
+        h('div.media-info', h('b.clamp', { title: f.name }, f.name), h('span.small.muted', fmtSize(f.size)),
+          h('div.row-wrap', boxes),
+          h('button.btn.sm.ghost', { onclick: safe(async () => { await del(`/api/profiles/${p.id}/media/${f.id}`); toast('Файл видалено'); reopen(); }) }, '✕ Видалити')));
+    };
+    const picker = h('input', { type: 'file', multiple: true, accept: 'image/*,video/*,audio/*,application/pdf', hidden: true });
+    const addFiles = h('button.btn.sm.primary', '+ Додати файли з ПК');
+    addFiles.addEventListener('click', () => picker.click());
+    picker.addEventListener('change', () => busy(addFiles, async () => {
+      let n = 0;
+      for (const file of picker.files) {
+        if (file.size > 15 * 1024 * 1024) { toast(`«${file.name}» більше 15 МБ — пропущено`, 'warn'); continue; }
+        await upload(`/api/profiles/${p.id}/media`, file);
+        n++;
+      }
+      if (n) toast(`Додано файлів: ${n}`);
+      reopen();
+    }).catch(() => reopen()));
+    const filesSection = h('section',
+      h('h3', '📎 Файли до повідомлень'),
+      h('p.small.muted', 'Фото чи відео, які бот сам прикріплює до повідомлень. Позначте, на якому кроці сценарію надсилати файл. У сценарії можна вибрати «усі» або «один випадковий». До 15 МБ, до 30 файлів.'),
+      media.length ? h('div.media-grid', media.map(mediaCard)) : null,
+      h('div.row-wrap', addFiles, picker));
+
     const followupBox = (step) => {
       const f = followups.find((x) => x.step === step);
       const ta = textarea(`followup-${step}`, f?.text || '', { rows: 3, maxlength: 1000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨' });
@@ -194,8 +231,9 @@ export default async function profilesPage(main, { user }) {
         h('p.small.muted', 'Бот надсилає цей текст усім новим чоловікам. Відповіді веде жінка сама.'),
         inviteText, counter,
         h('div.row-wrap', genBtn, saveBtn)),
+      filesSection,
       followupSteps.length ? h('section',
-        h('h3', 'Повторні повідомлення'),
+        h('h3', 'Повторні повідомлення', scenarioName ? badge(`шаблон: ${scenarioName}`, 'accent') : null),
         h('p.small.muted', 'Бот надсилає їх тим, хто не відповів, за сценарієм сайту (Сайти → ⚙ Сценарій). {name} — ім’я чоловіка.'),
         followupSteps.map(followupBox)) : null,
       history.length ? h('section',

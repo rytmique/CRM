@@ -9,13 +9,14 @@ import { generateInvite, generateFollowup, templateFollowup } from '../ai.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
 import { SITE_FIELDS, sanitizeSiteConfig, fillUrl } from '../sites.js';
-import { siteScenario, followupSteps, filterReason, pickVariant, attempts } from '../scenario.js';
+import { profileScenario, followupSteps, filterReason, pickVariant, attempts } from '../scenario.js';
+import { filesForStep, mediaFile } from '../media.js';
 
 const HOUR = 3600000;
 const MAX_STEP_FAILS = 3;
 
 /** API used by the browser extension (the bot). */
-export default function botRoutes(db) {
+export default function botRoutes(db, cfg) {
   const r = Router();
 
   const readMan = (m) => {
@@ -42,7 +43,7 @@ export default function botRoutes(db) {
     const site = siteOf(p);
     const config = configOf(site);
     return {
-      p, site, config, scenario: siteScenario(site),
+      p, site, config, scenario: profileScenario(db, p, site),
       invite: activeInvite(db, p.id), followups: followupTexts(db, p.id),
     };
   };
@@ -61,10 +62,11 @@ export default function botRoutes(db) {
         else if (a.text === 'followup') t = ctx.followups.get(idx + 1) || ctx.invite?.text || '';
         else t = pickVariant(a.custom);
         t = personalize(fillHer(t, ctx.p), man);
-        if (t) out.push({ do: 'message', text: t });
+        const files = filesForStep(db, ctx.p.id, idx + 1, a.files);
+        if (t || files.length) out.push({ do: 'message', text: t, files });
       } else if (a.do === 'click') {
         const def = (ctx.config.actions || []).find((x) => x.key === a.action);
-        if (def) out.push({ do: 'click', key: def.key, name: def.name, sel: def.sel, where: def.where });
+        if (def) out.push({ do: 'click', key: def.key, name: def.name, sel: def.sel, where: def.where, chance: a.chance ?? 100 });
       } else {
         out.push({ ...a });
       }
@@ -127,7 +129,7 @@ export default function botRoutes(db) {
       const gen = await generateInvite({ profile: p, settings });
       invite = insertInvite(db, { profileId: p.id, text: gen.text, source: gen.source, model: gen.model, userId: req.user.id });
     }
-    const scenario = siteScenario(site);
+    const scenario = profileScenario(db, p, site);
     // Follow-up texts are written once per profile and step, like the invite.
     const have = followupTexts(db, p.id);
     const previous = [invite.text];
@@ -153,6 +155,16 @@ export default function botRoutes(db) {
       pending,
     });
   }));
+
+  /** A file to attach (her photo…): only files of profiles this user may run. */
+  r.get('/media/:id', (req, res) => {
+    const m = db.prepare('SELECT * FROM media WHERE id = ? AND agency_id = ?').get(Number(req.params.id), req.user.agencyId);
+    if (!m) throw notFound('Файл не знайдено');
+    getVisibleProfile(db, req.user, m.profile_id);
+    res.set('Content-Type', m.type);
+    res.set('X-File-Name', encodeURIComponent(m.name));
+    res.sendFile(mediaFile(cfg, m));
+  });
 
   /** Site adapter for the click-to-teach panel in the extension. */
   r.get('/profiles/:id/site', (req, res) => {
@@ -278,7 +290,7 @@ export default function botRoutes(db) {
     const day = dayKey(t, settings.timezone);
     const inviteId = int(req.body?.invite_id, { min: 1, field: 'invite_id' }) ?? null;
     const validInvite = inviteId && db.prepare('SELECT 1 FROM invites WHERE id = ? AND profile_id = ?').get(inviteId, p.id) ? inviteId : null;
-    const scenario = siteScenario(siteOf(p));
+    const scenario = profileScenario(db, p, siteOf(p));
     const next = ok ? after(scenario, 0, t) : { stage: 'active', next_at: null };
     db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
         step, stage, next_at, man_url, last_at)

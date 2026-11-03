@@ -1,11 +1,16 @@
 import { h, field, input, busy, toast, modal, confirmDialog } from '../ui.js';
-import { put } from '../api.js';
+import { get, post, put } from '../api.js';
 
 const ACTIONS = [
   ['message', '✉ Написати повідомлення'],
   ['click', '👆 Натиснути кнопку'],
   ['view', '👀 Переглянути його профіль'],
   ['pause', '⏸ Пауза'],
+];
+const FILES = [
+  ['all', '📎 файли анкети для цього кроку'],
+  ['one', '📎 один випадковий файл'],
+  ['none', 'без файлів'],
 ];
 const TEXTS = [
   ['invite', 'Інвайт анкети'],
@@ -32,16 +37,39 @@ const selectEl = (value, options, onchange) => h('select', { onchange: (e) => on
 
 const num = (value, attrs, onchange) => h('input', { type: 'number', value: value ?? '', ...attrs, oninput: (e) => onchange(e.target.value === '' ? null : Number(e.target.value)) });
 
-/** Scenario editor for a site: steps per man, filters, caution. */
+/** Taught buttons / marks of all sites, for templates that are not tied to one site. */
+export function unionLists(sites, kind) {
+  const map = new Map();
+  for (const s of sites) for (const a of s.config?.[kind] || []) if (!map.has(a.key)) map.set(a.key, a);
+  return [...map.values()];
+}
+
+/** Site scenario editor. */
 export function openScenario(site, onSaved) {
-  const sc = clone(site.scenario);
-  const taught = site.config.actions || [];
-  const marks = site.config.marks || [];
+  return openScenarioEditor({
+    title: `Сценарій: ${site.name}`,
+    scenario: site.scenario,
+    taught: site.config.actions || [],
+    marks: site.config.marks || [],
+    save: (sc) => put(`/api/sites/${site.id}/scenario`, { scenario: sc }),
+    reset: () => put(`/api/sites/${site.id}/scenario`, { reset: true }),
+    onSaved,
+  });
+}
+
+/**
+ * Scenario editor: steps per man, filters, caution, templates.
+ * opts: { title, scenario, taught, marks, save(sc), reset?(), onSaved?(), name? (template name → editable) }
+ */
+export async function openScenarioEditor(opts) {
+  let sc = clone(opts.scenario);
+  const { taught, marks } = opts;
   const stepsBox = h('div.steps');
+  const lib = await get('/api/scenarios').catch(() => ({ templates: [], presets: [] }));
 
   const defaultAction = (kind) => ({
-    message: { do: 'message', text: 'followup' },
-    click: { do: 'click', action: taught[0]?.key || '' },
+    message: { do: 'message', text: 'followup', files: 'all' },
+    click: { do: 'click', action: taught[0]?.key || '', chance: 100 },
     view: { do: 'view', chance: 30, seconds: 8 },
     pause: { do: 'pause', seconds: 5 },
   }[kind]);
@@ -50,10 +78,15 @@ export function openScenario(site, onSaved) {
     const parts = [selectEl(a.do, ACTIONS, (v) => { step.actions[i] = defaultAction(v); if (v === 'message' && step === sc.steps[0]) step.actions[i].text = 'invite'; renderSteps(); })];
     if (a.do === 'message') {
       parts.push(selectEl(a.text, TEXTS, (v) => { a.text = v; if (v === 'custom' && !a.custom) a.custom = ''; renderSteps(); }));
+      parts.push(selectEl(a.files || 'all', FILES, (v) => { a.files = v; }));
     } else if (a.do === 'click') {
-      parts.push(taught.length
-        ? selectEl(a.action, taught.map((t) => [t.key, t.name]), (v) => { a.action = v; })
-        : h('span.small.muted', 'Кнопок ще немає — навчіть у розширенні: 🎯 → «Кнопки й ознаки»'));
+      const known = taught.some((t) => t.key === a.action);
+      const opts2 = taught.map((t) => [t.key, t.name]);
+      if (a.action && !known) opts2.unshift([a.action, `${a.action} (не навчено на цьому сайті)`]);
+      parts.push(opts2.length
+        ? selectEl(a.action, opts2, (v) => { a.action = v; })
+        : h('span.small.muted', 'Кнопок ще немає — навчіть у розширенні: 🎯 → «Кнопки й ознаки»'),
+      h('label.inline', 'шанс', num(a.chance ?? 100, { min: 0, max: 100, step: 10 }, (v) => { a.chance = v ?? 100; }), '%'));
     } else if (a.do === 'view') {
       parts.push(h('label.inline', 'шанс', num(a.chance, { min: 0, max: 100, step: 10 }, (v) => { a.chance = v ?? 100; }), '%'),
         h('label.inline', num(a.seconds, { min: 2, max: 120 }, (v) => { a.seconds = v ?? 8; }), 'с'));
@@ -67,7 +100,7 @@ export function openScenario(site, onSaved) {
       ta.value = a.custom || '';
       return h('div', row, ta, h('small.hint', '{name} — його ім’я, {her_name} — її ім’я. Кілька варіантів розділяйте рядком ---'));
     }
-    if (a.do === 'message' && a.text === 'followup') return h('div', row, h('small.hint', 'ШІ один раз пише текст для кожної анкети. Побачити й змінити — в анкеті, розділ «Повторні повідомлення».'));
+    if (a.do === 'message' && a.text === 'followup') return h('div', row, h('small.hint', 'ШІ один раз пише текст для кожної анкети. Побачити й змінити — в анкеті, розділ «Повторні повідомлення». Файли вибираються в анкеті → «Файли».'));
     return row;
   }
 
@@ -98,9 +131,42 @@ export function openScenario(site, onSaved) {
     } }), mk.name)))
     : h('small.hint', 'Ознак ще немає — навчіть у розширенні: 🎯 → «Кнопки й ознаки» (напр. «Онлайн»)'));
 
+  const nameInput = opts.name !== undefined ? input('tplname', opts.name, { maxlength: 80, placeholder: 'Назва шаблону' }) : null;
+  const choices = [['', '— вибрати шаблон —'], ...lib.presets.map((p) => [p.id, `⭐ ${p.name}`]), ...lib.templates.map((t) => [`t:${t.id}`, t.name])];
+  let picked = '';
+  const tplBar = h('div.tpl-bar',
+    h('select', { 'aria-label': 'Шаблон', onchange: (e) => { picked = e.target.value; } }, choices.map(([v, l]) => h('option', { value: v }, l))),
+    h('button.btn.sm', { type: 'button', onclick: async () => {
+      const src = picked.startsWith('t:') ? lib.templates.find((t) => `t:${t.id}` === picked) : lib.presets.find((p) => p.id === picked);
+      if (!src) { toast('Спочатку виберіть шаблон', 'warn'); return; }
+      if (!(await confirmDialog(`Замінити кроки й налаштування на шаблон «${src.name}»? Збережеться після «Зберегти».`))) return;
+      sc = clone(src.scenario);
+      body.replaceWith(body = buildBody());
+      renderSteps();
+    } }, '⬇ Завантажити'),
+    h('button.btn.sm', { type: 'button', onclick: () => saveAsTemplate() }, '💾 Зберегти як шаблон'));
+
+  function saveAsTemplate() {
+    const nm = input('n', '', { maxlength: 80, placeholder: 'напр. Активний з фото', required: true });
+    const ok = h('button.btn.primary', 'Зберегти шаблон');
+    const mm = modal({ title: 'Новий шаблон сценарію', body: h('div', field('Назва', nm), h('p.small.muted', 'Шаблон можна застосувати до будь-якого сайту або вибрати для окремої анкети.')), actions: [h('button.btn', { onclick: () => mm.close() }, 'Скасувати'), ok] });
+    ok.addEventListener('click', () => busy(ok, async () => {
+      if (!nm.value.trim()) throw new Error('Вкажіть назву');
+      check();
+      const r = await post('/api/scenarios', { name: nm.value.trim(), scenario: sc });
+      lib.templates.push(r.template);
+      toast(`Шаблон «${r.template.name}» збережено`);
+      mm.close();
+    }).catch(() => {}));
+  }
+
+  let body = buildBody();
+  function buildBody() {
   const hm = sc.human;
-  const body = h('div.scenario',
+  return h('div.scenario',
+    nameInput ? field('Назва шаблону', nameInput) : null,
     h('p.muted.lead', 'Що бот робить з кожним чоловіком. Щойно він відповів — бот зупиняється, далі пише жива людина.'),
+    tplBar,
     h('h3', 'Кроки'),
     stepsBox,
     h('h3', 'Кому писати'),
@@ -117,30 +183,37 @@ export function openScenario(site, onSaved) {
       h('div.pair', field('Перерва кожні, повідомл.', num(hm.breakEvery, { min: 0, max: 500 }, (v) => { hm.breakEvery = v ?? 0; })), field('на, хв', num(hm.breakMinutes, { min: 1, max: 180 }, (v) => { hm.breakMinutes = v ?? 10; }))),
       h('label.check', h('input', { type: 'checkbox', checked: hm.typing, onchange: (e) => { hm.typing = e.target.checked; } }), 'Друкувати текст по літері, як людина'),
       h('small.hint.span-2', 'Час — за часовим поясом агенції. Звичайні паузи між повідомленнями задаються в анкеті або в Налаштуваннях. Числа трохи «гуляють» випадково, щоб не було рівного ритму.')));
+  }
 
-  renderSteps();
-  const save = h('button.btn.primary', 'Зберегти');
-  const m = modal({
-    title: `Сценарій: ${site.name}`, body, wide: true,
-    actions: [
-      h('button.btn.ghost.left', { onclick: async () => {
-        if (!(await confirmDialog('Повернути стандартний сценарій: інвайт + 2 повторні через 24 і 48 год?'))) return;
-        await put(`/api/sites/${site.id}/scenario`, { reset: true });
-        toast('Повернуто стандартний сценарій');
-        m.close();
-        onSaved?.();
-      } }, 'Скинути до стандарту'),
-      h('button.btn', { onclick: () => m.close() }, 'Скасувати'),
-      save,
-    ],
-  });
-  save.addEventListener('click', () => busy(save, async () => {
+  function check() {
     if (sc.steps.some((s, i) => i > 0 && !s.actions.length)) throw new Error('У кроці немає жодної дії — додайте дію або видаліть крок');
     if (sc.steps.some((s) => s.actions.some((a) => a.do === 'click' && !a.action))) throw new Error('Виберіть кнопку для дії «Натиснути кнопку» (або навчіть кнопки в розширенні)');
     if (sc.steps.some((s) => s.actions.some((a) => a.do === 'message' && a.text === 'custom' && !String(a.custom || '').trim()))) throw new Error('Заповніть «Свій текст» або виберіть інше джерело тексту');
-    await put(`/api/sites/${site.id}/scenario`, { scenario: sc });
-    toast('Сценарій збережено');
+  }
+
+  renderSteps();
+  const wrap = h('div', body);
+  const save = h('button.btn.primary', 'Зберегти');
+  const m = modal({
+    title: opts.title, body: wrap, wide: true,
+    actions: [
+      opts.reset ? h('button.btn.ghost.left', { onclick: async () => {
+        if (!(await confirmDialog('Повернути стандартний сценарій: інвайт + 2 повторні через 24 і 48 год?'))) return;
+        await opts.reset();
+        toast('Повернуто стандартний сценарій');
+        m.close();
+        opts.onSaved?.();
+      } }, 'Скинути до стандарту') : null,
+      h('button.btn', { onclick: () => m.close() }, 'Скасувати'),
+      save,
+    ].filter(Boolean),
+  });
+  save.addEventListener('click', () => busy(save, async () => {
+    check();
+    if (nameInput && !nameInput.value.trim()) throw new Error('Вкажіть назву шаблону');
+    await opts.save(sc, nameInput?.value.trim());
+    toast('Збережено');
     m.close();
-    onSaved?.();
+    opts.onSaved?.();
   }).catch(() => {}));
 }

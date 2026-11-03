@@ -283,6 +283,120 @@ async function navigate(tabId, url) {
   await sleep(rand(900, 1700));
 }
 
+// ---------------- attachments ----------------
+const fileCache = new Map(); // media id -> { name, type, b64 }
+
+async function loadFile(f) {
+  if (fileCache.has(f.id)) return fileCache.get(f.id);
+  const auth = await getAuth();
+  if (!auth) throw new Error('спочатку увійдіть у розширення');
+  const res = await fetch(`${auth.server}/api/bot/media/${f.id}`, { headers: { authorization: `Bearer ${auth.token}` } }).catch(() => null);
+  if (!res?.ok) throw new Error(`файл «${f.name}» не завантажився з панелі`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  const out = { name: f.name, type: f.type, b64: btoa(bin) };
+  if (fileCache.size >= 20) fileCache.clear();
+  fileCache.set(f.id, out);
+  return out;
+}
+
+/**
+ * Runs inside the page (MAIN world): puts our files into the site's file field.
+ * 1) the chat's <input type=file>; 2) press the paperclip and catch the file dialog it would open; 3) drop on the box.
+ * Script clicks never open the system file dialog (no user gesture), so nothing pops up on the operator's screen.
+ */
+async function mainAttach(files, sel) {
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  const bin = (b64) => { const s = atob(b64); const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; };
+  const list = files.map((f) => new File([bin(f.b64)], f.name, { type: f.type, lastModified: Date.now() }));
+  const all = new DataTransfer();
+  list.forEach((f) => all.items.add(f));
+  const shown = (el) => Boolean(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+  const q = (s) => { try { return s ? [...document.querySelectorAll(s)] : []; } catch { return []; } };
+  const put = (inp) => {
+    if (!inp.multiple && list.length > 1) { const one = new DataTransfer(); one.items.add(list[0]); inp.files = one.files; } else inp.files = all.files;
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const box = q(sel.messageInput).find(shown);
+  const nearest = (inputs) => {
+    if (!box || inputs.length < 2) return inputs[0];
+    let best = inputs[0];
+    let bestDist = Infinity;
+    for (const i of inputs) {
+      let a = box;
+      let d = 0;
+      while (a && !a.contains(i)) { a = a.parentElement; d++; }
+      if (a && d < bestDist) { best = i; bestDist = d; }
+    }
+    return best;
+  };
+  if (sel.fileInput || !sel.attachButton) {
+    const inputs = q(sel.fileInput || 'input[type=file]');
+    if (inputs.length) { put(nearest(inputs)); return { ok: true, how: 'input' }; }
+  }
+  const btn = q(sel.attachButton).find(shown);
+  if (btn) {
+    const lab = btn.tagName === 'LABEL' ? btn : btn.closest('label');
+    const viaLabel = lab && (lab.control || lab.querySelector('input[type=file]'));
+    if (viaLabel) { put(viaLabel); return { ok: true, how: 'label' }; }
+    const proto = HTMLInputElement.prototype;
+    const origClick = proto.click;
+    const origPicker = proto.showPicker;
+    let caught = null;
+    proto.click = function click() { if (this.type === 'file' && !caught) { caught = this; return undefined; } return origClick.call(this); };
+    if (origPicker) proto.showPicker = function showPicker() { if (this.type === 'file' && !caught) { caught = this; return undefined; } return origPicker.call(this); };
+    try {
+      btn.click();
+      for (let i = 0; i < 25 && !caught; i++) await sleepMs(100);
+    } finally {
+      proto.click = origClick;
+      if (origPicker) proto.showPicker = origPicker;
+    }
+    if (caught) { put(caught); return { ok: true, how: 'button' }; }
+  }
+  const inputs = q('input[type=file]');
+  if (inputs.length) { put(nearest(inputs)); return { ok: true, how: 'input' }; }
+  if (box) {
+    for (const type of ['dragenter', 'dragover', 'drop']) box.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: all }));
+    return { ok: true, how: 'drop' };
+  }
+  return { ok: false, error: 'не знайшов, куди прикріпити файл — навчіть «Кнопка Прикріпити файл»' };
+}
+
+async function attachFiles(tabId, site, files, dry) {
+  if (dry) return (await inTab(tabId, 'attachCheck', { site })) || { ok: false, error: 'сторінка не відповіла' };
+  const data = [];
+  for (const f of files) data.push(await loadFile(f));
+  const before = (await inTab(tabId, 'attachedCount', { site })) || 0;
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId }, world: 'MAIN', func: mainAttach,
+    args: [data, { messageInput: site.messageInput || '', attachButton: site.attachButton || '', fileInput: site.fileInput || '' }],
+  });
+  const r = res?.result;
+  if (!r?.ok) return r || { ok: false, error: 'не вдалося прикріпити' };
+  const mb = files.reduce((a, f) => a + (f.size || 0), 0) / 1048576;
+  if (site.attachDone) {
+    const w = await inTab(tabId, 'waitAttached', { site, before, timeout: 15000 + mb * 4000 });
+    if (!w?.ok) return { ok: false, error: 'файл не прикріпився (прев’ю не з’явилось)' };
+  } else {
+    await sleep(2500 + Math.min(30000, mb * 1500)); // time for the upload
+  }
+  return { ok: true, how: r.how };
+}
+
+/** In the open chat: text → files → Send. */
+async function writeHere(tabId, site, m, dry, typing) {
+  if (!m.files?.length) return inTab(tabId, 'compose', { site, man: m, dry, typing });
+  const f = await inTab(tabId, 'fill', { site, man: m, dry, typing });
+  if (!f?.ok) return f || { ok: false, error: 'немає відповіді від сторінки' };
+  const a = await attachFiles(tabId, site, m.files, dry).catch((e) => ({ ok: false, error: e.message }));
+  const r = await inTab(tabId, 'submit', { site, dry });
+  if (!r?.ok) return r || { ok: false, error: 'немає відповіді від сторінки' };
+  return { ...r, attached: a.ok ? m.files.length : 0, warning: a.ok ? '' : `файл не прикріплено: ${a.error}` };
+}
+
 /** Writes from the search list. Works whether "Write" opens a box on the list or goes to his profile/chat page. */
 async function sendOne(tabId, site, man, dry = false, typing = false) {
   const before = (await chrome.tabs.get(tabId)).url;
@@ -295,7 +409,7 @@ async function sendOne(tabId, site, man, dry = false, typing = false) {
   if (tab.status === 'loading') tab = await waitTabComplete(tabId);
   if (left) await sleep(800);
   let res;
-  try { res = await inTab(tabId, 'compose', { site, man, dry, typing }); } catch (e) { res = { ok: false, error: e.message }; }
+  try { res = await writeHere(tabId, site, man, dry, typing); } catch (e) { res = { ok: false, error: e.message }; }
   if (left) await navigate(tabId, before); // back to the list of men
   return res || { ok: false, error: 'немає відповіді від сторінки' };
 }
@@ -309,7 +423,7 @@ async function sendOnPage(tabId, site, man, dry = false, typing = false) {
     const tab = await chrome.tabs.get(tabId);
     if (tab.status === 'loading') { await waitTabComplete(tabId); await sleep(800); }
   }
-  try { return (await inTab(tabId, 'compose', { site, man, dry, typing })) || { ok: false, error: 'немає відповіді від сторінки' }; } catch (e) { return { ok: false, error: e.message }; }
+  try { return (await writeHere(tabId, site, man, dry, typing)) || { ok: false, error: 'немає відповіді від сторінки' }; } catch (e) { return { ok: false, error: e.message }; }
 }
 
 /**
@@ -323,6 +437,7 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
   let messages = 0;
   let msgError = '';
   let did = 0;
+  let attached = 0;
   const goToHim = async () => {
     if (!man.url) return false;
     await navigate(tabId, man.url);
@@ -341,6 +456,7 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
       continue;
     }
     if (a.do === 'click') {
+      if (!dry && Math.random() * 100 >= (a.chance ?? 100)) continue;
       let res = null;
       if (where === 'card' && a.where !== 'page') res = await inTab(tabId, 'clickAction', { site, man, sel: a.sel, name: a.name, ctx: 'card', dry }).catch((e) => ({ ok: false, error: e.message }));
       if (where === 'card' && (!res || res.missing)) {
@@ -352,16 +468,16 @@ async function runActions(tabId, site, man, actions, { where = 'card', dry = fal
       continue;
     }
     if (a.do === 'message') {
-      const m = { ...man, text: a.text };
+      const m = { ...man, text: a.text, files: a.files || [] };
       let res;
       try { res = where === 'card' ? await sendOne(tabId, site, m, dry, typing) : await sendOnPage(tabId, site, m, dry, typing); } catch (e) { res = { ok: false, error: e.message }; }
-      if (res?.ok) { messages++; did++; } else msgError = res?.error || 'помилка відправки';
+      if (res?.ok) { messages++; did++; attached += res.attached || 0; if (res.warning) warnings.push(res.warning); } else msgError = res?.error || 'помилка відправки';
     }
   }
   if (left && home) await navigate(tabId, home);
   const hasMessage = actions.some((a) => a.do === 'message');
   const ok = hasMessage ? !msgError && messages > 0 : did > 0;
-  return { ok, messages, error: msgError || (!ok ? warnings.join('; ') : ''), warnings };
+  return { ok, messages, attached, error: msgError || (!ok ? warnings.join('; ') : ''), warnings };
 }
 
 /** Follow-ups: men who have not replied and whose next step is due. */
@@ -395,7 +511,7 @@ async function processDue(ctx, force = false) {
     });
     if (res.ok) {
       await setState({ sent: state.sent + res.messages, followups: (state.followups || 0) + 1, remaining: r.remaining });
-      await log(`↻ ${man.name || man.id}: спроба ${man.step}/${man.of} ✓${r.stage === 'done' ? ' — остання, далі без відповіді він зникне зі списку' : ''}`);
+      await log(`↻ ${man.name || man.id}: спроба ${man.step}/${man.of} ✓${res.attached ? ` 📎${res.attached}` : ''}${r.stage === 'done' ? ' — остання, далі без відповіді він зникне зі списку' : ''}`);
     } else {
       await setState({ failed: state.failed + 1, remaining: r.remaining });
       await log(`↻ ${man.name || man.id}: спроба ${man.step} не вдалась — ${res.error}`, 'warn');
@@ -481,7 +597,7 @@ async function run(profileId, tabId) {
         if (res.ok) {
           failsInRow = 0;
           await setState({ sent: state.sent + res.messages, remaining: r.remaining });
-          await log(`✓ ${man.name || man.id}`);
+          await log(`✓ ${man.name || man.id}${res.attached ? ` 📎${res.attached}` : ''}`);
           for (const w of res.warnings) await log(`  ⚠ ${w}`, 'warn');
         } else {
           failsInRow++;
@@ -595,8 +711,11 @@ async function runTest(profileId, tabId) {
       try { res = await runActions(tabId, site, man, man.actions || [{ do: 'message', text: man.text }], { where: 'card', dry: true, home: listUrl }); } catch (e) { res = { ok: false, error: e.message, warnings: [] }; }
       if (res.ok) {
         await setState({ sent: state.sent + 1 });
-        await log(`✓ ${man.name || man.id}: крок 1 пройдено (${(man.actions || []).map((a) => ({ message: 'повідомлення', click: a.name, view: 'перегляд профілю', pause: 'пауза' }[a.do])).join(' → ')}) — НІЧОГО не надіслано`);
-        for (const w of res.warnings) await warn(w);
+        await log(`✓ ${man.name || man.id}: крок 1 пройдено (${(man.actions || []).map((a) => (a.do === 'message' ? `повідомлення${a.files?.length ? ` 📎${a.files.length}` : ''}` : { click: a.name, view: 'перегляд профілю', pause: 'пауза' }[a.do])).join(' → ')}) — НІЧОГО не надіслано`);
+        for (const w of res.warnings) {
+          if (w.startsWith('файл не прикріплено')) problems.push(`${man.name || man.id}: ${w}`);
+          else await warn(w);
+        }
       } else {
         await setState({ failed: state.failed + 1 });
         problems.push(`${man.name || man.id}: ${res.error}`);

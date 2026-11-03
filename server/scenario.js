@@ -6,8 +6,9 @@
  *   after the last step — no reply → he is dropped from the bot's list ("вичерпано").
  *
  * A step is a list of actions:
- *   { do: 'message', text: 'invite' | 'followup' | 'custom', custom?: 'variant 1\n---\nvariant 2' }
- *   { do: 'click', action: '<key of a taught button>' }   e.g. like, wink, add to favourites
+ *   { do: 'message', text: 'invite' | 'followup' | 'custom', custom?: 'variant 1\n---\nvariant 2',
+ *     files: 'all' | 'one' | 'none' }                     the profile's files marked for this step (all / one random)
+ *   { do: 'click', action: '<key of a taught button>', chance }   e.g. like, wink, add to favourites
  *   { do: 'view', chance: 0..100, seconds }               open his profile and look through it like a person would
  *   { do: 'pause', seconds }
  */
@@ -39,7 +40,7 @@ function sanitizeAction(a) {
   switch (a.do) {
     case 'message': {
       const src = ['invite', 'followup', 'custom'].includes(a.text) ? a.text : 'invite';
-      const out = { do: 'message', text: src };
+      const out = { do: 'message', text: src, files: ['all', 'one', 'none'].includes(a.files) ? a.files : 'all' };
       if (src === 'custom') {
         out.custom = text(a.custom, 6000);
         if (!out.custom) return null;
@@ -47,7 +48,7 @@ function sanitizeAction(a) {
       return out;
     }
     case 'click':
-      return KEY_RE.test(String(a.action || '')) ? { do: 'click', action: String(a.action) } : null;
+      return KEY_RE.test(String(a.action || '')) ? { do: 'click', action: String(a.action), chance: Math.round(num(a.chance, 0, 100, 100)) } : null;
     case 'view':
       return { do: 'view', chance: Math.round(num(a.chance, 0, 100, 100)), seconds: Math.round(num(a.seconds, 2, 120, 8)) };
     case 'pause':
@@ -85,10 +86,42 @@ export function sanitizeScenario(input) {
   };
 }
 
+/** Ready-made templates everyone has; agencies save their own on top. */
+export const PRESETS = [
+  { id: 'preset:standard', name: 'Стандарт: інвайт + 2 повторні', scenario: DEFAULT_SCENARIO },
+  { id: 'preset:soft', name: 'М’який: інвайт + 1 повторне через 2 дні', scenario: {
+    steps: [
+      { wait: 0, actions: [{ do: 'message', text: 'invite' }] },
+      { wait: 48, actions: [{ do: 'message', text: 'followup' }] },
+    ],
+    human: { hoursFrom: 10, hoursTo: 22, perHour: 25, breakEvery: 15, breakMinutes: 15, typing: true },
+  } },
+  { id: 'preset:active', name: 'Активний: лайк + перегляд + 3 спроби', scenario: {
+    steps: [
+      { wait: 0, actions: [{ do: 'view', chance: 40, seconds: 10 }, { do: 'click', action: 'like', chance: 100 }, { do: 'message', text: 'invite' }] },
+      { wait: 12, actions: [{ do: 'message', text: 'followup', files: 'one' }] },
+      { wait: 36, actions: [{ do: 'view', chance: 60, seconds: 8 }, { do: 'message', text: 'followup' }] },
+    ],
+    human: { hoursFrom: 8, hoursTo: 24, perHour: 45, breakEvery: 25, breakMinutes: 8, typing: true },
+  } },
+];
+
+const parse = (json) => { try { return sanitizeScenario(JSON.parse(json)); } catch { return null; } };
+
 /** Scenario stored for a site ('' = default). */
 export function siteScenario(site) {
   if (!site?.scenario) return sanitizeScenario(DEFAULT_SCENARIO);
-  try { return sanitizeScenario(JSON.parse(site.scenario)); } catch { return sanitizeScenario(DEFAULT_SCENARIO); }
+  return parse(site.scenario) || sanitizeScenario(DEFAULT_SCENARIO);
+}
+
+/** What a profile runs: its own template if one is chosen, else the site's scenario. */
+export function profileScenario(db, profile, site) {
+  if (profile?.scenario_id) {
+    const t = db.prepare('SELECT scenario FROM scenario_templates WHERE id = ? AND agency_id = ?').get(profile.scenario_id, profile.agency_id);
+    const sc = t && parse(t.scenario);
+    if (sc) return sc;
+  }
+  return siteScenario(site);
 }
 
 /** How many of the steps send a message ("спроби"). */

@@ -61,7 +61,7 @@ if (process.env.RESET_ADMIN_PASSWORD) {
 let seeded = null;
 if (TEST_MODE) seeded = seedTestData(db, cfg, { password: process.env.ADMIN_PASSWORD || 'test12345' });
 
-const app = createApp({ db, publicUrl: PUBLIC_URL, demoSite: DEMO_SITE, persistent: PERSISTENT });
+const app = createApp({ db, publicUrl: PUBLIC_URL, demoSite: DEMO_SITE, persistent: PERSISTENT, mediaDir: path.join(DATA_DIR, 'media') });
 const server = app.listen(PORT, HOST, () => {
   console.log(`  Панель: ${PUBLIC_URL}${TEST_MODE ? '   [ТЕСТОВИЙ СТЕНД — окрема база, реальні дані не зачіпаються]' : ''}`);
   if (TEST_MODE) {

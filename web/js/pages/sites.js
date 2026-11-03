@@ -1,13 +1,36 @@
 import { h, field, input, busy, toast, modal, confirmDialog, empty, safe } from '../ui.js';
 import { get, post, put, del } from '../api.js';
-import { openScenario, scenarioSummary } from './scenario.js';
+import { openScenario, openScenarioEditor, scenarioSummary, unionLists } from './scenario.js';
 
 export default async function sitesPage(main) {
   const page = h('div.page');
   main.replaceChildren(page);
 
   async function load() {
-    const { sites, fields, demoAvailable } = await get('/api/sites');
+    const [{ sites, fields, demoAvailable }, lib] = await Promise.all([get('/api/sites'), get('/api/scenarios')]);
+    const editTemplate = (t) => openScenarioEditor({
+      title: t ? `Шаблон: ${t.name}` : 'Новий шаблон сценарію',
+      name: t?.name || '',
+      scenario: t?.scenario || lib.presets[0].scenario,
+      taught: unionLists(sites, 'actions'),
+      marks: unionLists(sites, 'marks'),
+      save: (sc, name) => (t ? put(`/api/scenarios/${t.id}`, { name, scenario: sc }) : post('/api/scenarios', { name, scenario: sc })),
+      onSaved: load,
+    });
+    const templates = h('section.card.templates',
+      h('div.row-wrap', h('h3', 'Шаблони сценаріїв'), h('button.btn.sm.right-push', { onclick: () => editTemplate(null) }, '+ Новий шаблон')),
+      h('p.small.muted', 'Збережені сценарії: застосуйте до сайту (⚙ Сценарій → вибрати шаблон) або виберіть для окремої анкети (Анкета → Редагувати → Сценарій). ⭐ — готові шаблони.'),
+      lib.templates.length ? h('ul.tpl-list', lib.templates.map((t) => h('li',
+        h('div', h('b', t.name), h('div.small.muted', scenarioSummary(t.scenario), t.profiles ? ` · анкет: ${t.profiles}` : '')),
+        h('div.row-wrap',
+          h('button.btn.sm', { onclick: () => editTemplate(t) }, '✎ Змінити'),
+          h('button.btn.sm.ghost', { onclick: safe(async () => {
+            if (!(await confirmDialog(`Видалити шаблон «${t.name}»?${t.profiles ? ` ${t.profiles} анкет повернуться до сценарію сайту.` : ''}`, { ok: 'Видалити', danger: true }))) return;
+            await del(`/api/scenarios/${t.id}`);
+            toast('Шаблон видалено');
+            load();
+          }) }, '✕')))))
+        : h('p.small.muted', 'Своїх шаблонів ще немає. Відкрийте ⚙ Сценарій сайту → «💾 Зберегти як шаблон» або натисніть «+ Новий шаблон».'));
     page.replaceChildren(
       h('div.page-head', h('h1', 'Сайти'),
         h('div.row-wrap',
@@ -30,7 +53,8 @@ export default async function sitesPage(main) {
             h('button.btn.sm.primary', { onclick: () => openScenario(s, load) }, '⚙ Сценарій'),
             h('button.btn.sm', { onclick: () => openForm(s, fields) }, '✎ Налаштувати вручну')));
       }))
-        : empty('Сайтів ще немає', h('button.btn.primary', { onclick: () => openForm(null, fields) }, '+ Додати сайт')));
+        : empty('Сайтів ще немає', h('button.btn.primary', { onclick: () => openForm(null, fields) }, '+ Додати сайт')),
+      templates);
   }
 
   /** Editable list of taught buttons / marks: name + selector (+ where for buttons). */

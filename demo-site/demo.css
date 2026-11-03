@@ -25,3 +25,7 @@ button, .next-page { background:var(--accent); color:#fff; border:0; padding:8px
 .btn-like.liked { background:#ffe3ec; }
 .online { display:inline-block; background:#2b8a3e; color:#fff; font-size:11px; padding:1px 7px; border-radius:10px; margin-left:6px; vertical-align:middle; }
 .actions { display:flex; gap:8px; }
+.btn-attach { background:#fff; color:var(--ink); border:1px solid #e3d5da; padding:8px 12px; border-radius:8px; cursor:pointer; }
+.atts { display:flex; gap:8px; flex-wrap:wrap; } .atts:empty { display:none; }
+.att-preview { display:flex; align-items:center; gap:6px; background:#fff0f4; border:1px solid #f3c4d3; border-radius:8px; padding:4px 8px; font-size:12px; }
+.att-preview img { width:36px; height:36px; object-fit:cover; border-radius:6px; }

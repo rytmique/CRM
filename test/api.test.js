@@ -410,6 +410,79 @@ test('scenario: follow-ups until reply, three attempts, then dropped', async () 
   assert.equal(kept.config.marks[0].key, 'vip');
 });
 
+test('templates per profile and files attached to messages', async () => {
+  await login('admin3', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Iris', ownerName: 'I', ownerEmail: 'owner@iris', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'admin3');
+  await login('iris', 'owner@iris', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'iris')).data.sites[0];
+  const lib = await call('GET', '/api/scenarios', undefined, 'iris');
+  assert.ok(lib.data.presets.length >= 3, 'built-in presets');
+  assert.deepEqual(lib.data.templates, []);
+
+  // save a template: like + invite with one random file, then a follow-up with all files of step 2
+  const tpl = await call('POST', '/api/scenarios', { name: 'Фото-атака', scenario: {
+    steps: [
+      { actions: [{ do: 'click', action: 'like', chance: 50 }, { do: 'message', text: 'invite', files: 'one' }] },
+      { wait: 12, actions: [{ do: 'message', text: 'custom', custom: 'Hi {name}! Look :)', files: 'all' }] },
+    ],
+    human: { hoursFrom: 0, hoursTo: 0 },
+  } }, 'iris');
+  assert.equal(tpl.status, 201, JSON.stringify(tpl.data));
+  assert.equal(tpl.data.template.scenario.steps[0].actions[0].chance, 50);
+  assert.equal((await call('PUT', `/api/scenarios/${tpl.data.template.id}`, { name: 'Фото' }, 'iris')).data.template.name, 'Фото');
+
+  const lic = (await call('GET', '/api/licenses', undefined, 'iris')).data.licenses;
+  const p = (await call('POST', '/api/profiles', { name: 'Lena', site_id: site.id, license_id: lic[0].id, scenario_id: tpl.data.template.id }, 'iris')).data;
+  assert.equal((await call('POST', '/api/profiles', { name: 'X', scenario_id: 999999 }, 'iris')).status, 400);
+
+  // files: upload raw bodies, mark steps
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6364f8cf00000301010018dd8db40000000049454e44ae426082', 'hex');
+  const up = async (name, steps) => {
+    const res = await fetch(`${base}/api/profiles/${p.id}/media?steps=${steps}`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-file-name': encodeURIComponent(name), authorization: `Bearer ${tokens.iris}` }, body: png });
+    return { status: res.status, data: await res.json() };
+  };
+  const a = await up('фото 1.png', '1');
+  assert.equal(a.status, 201, JSON.stringify(a.data));
+  const b = await up('photo2.png', '1,2');
+  assert.deepEqual(b.data.media.steps, [1, 2]);
+  const bad = await fetch(`${base}/api/profiles/${p.id}/media`, { method: 'POST', headers: { 'content-type': 'application/x-msdownload', authorization: `Bearer ${tokens.iris}` }, body: Buffer.from('MZ') });
+  assert.equal(bad.status, 400, 'executables are refused');
+  const detail = (await call('GET', `/api/profiles/${p.id}`, undefined, 'iris')).data;
+  assert.equal(detail.media.length, 2);
+  assert.equal(detail.media[0].name, 'фото 1.png');
+  assert.equal(detail.scenarioName, 'Фото');
+  assert.equal(detail.steps, 2);
+
+  // the bot runs the profile's template, not the site scenario
+  const cfg = await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'iris');
+  assert.equal(cfg.data.scenario.steps, 2);
+  const f = await call('POST', `/api/bot/profiles/${p.id}/filter`, { candidates: [{ id: '880001', name: 'Tom' }] }, 'iris');
+  const msg = f.data.allowed[0].actions.find((x) => x.do === 'message');
+  assert.equal(msg.files.length, 1, 'one random file of step 1');
+  assert.ok(['фото 1.png', 'photo2.png'].includes(msg.files[0].name));
+  const file = await fetch(`${base}/api/bot/media/${msg.files[0].id}`, { headers: { authorization: `Bearer ${tokens.iris}` } });
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await file.arrayBuffer()), png);
+  assert.equal((await fetch(`${base}/api/bot/media/${msg.files[0].id}`, { headers: { authorization: `Bearer ${tokens.lily}` } })).status, 404, 'other agency cannot read it');
+
+  await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: f.data.allowed[0], ok: true, text: msg.text }, 'iris');
+  db.prepare('UPDATE messages SET next_at = 1 WHERE profile_id = ?').run(p.id);
+  const due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'iris')).data;
+  assert.deepEqual(due.men[0].actions[0].files.map((x) => x.name), ['photo2.png'], 'step 2 gets the files marked for step 2');
+  assert.equal(due.men[0].actions[0].text, 'Hi Tom! Look :)');
+
+  // un-mark step 2 → follow-up goes without files; delete a file
+  await call('PATCH', `/api/profiles/${p.id}/media/${b.data.media.id}`, { steps: [1] }, 'iris');
+  assert.deepEqual((await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'iris')).data.men[0].actions[0].files, []);
+  assert.equal((await call('DELETE', `/api/profiles/${p.id}/media/${a.data.media.id}`, undefined, 'iris')).status, 200);
+  assert.equal((await call('GET', `/api/profiles/${p.id}/media`, undefined, 'iris')).data.media.length, 1);
+
+  // deleting a template sends its profiles back to the site scenario
+  await call('DELETE', `/api/scenarios/${tpl.data.template.id}`, undefined, 'iris');
+  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'iris')).data.scenario.steps, 3);
+});
+
 test('extension zip is served with server url baked in', async () => {
   const res = await fetch(`${base}/download/extension.zip`);
   assert.equal(res.status, 200);

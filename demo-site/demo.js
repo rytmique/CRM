@@ -67,12 +67,41 @@ function card(m) {
       el('button', { class: 'btn-write', type: 'button', onclick: () => openChat(m) }, 'Write')));
 }
 
-/** Keeps every message: the inbox and the tests look at the first time and the count. */
-function recordSent(id, text) {
+/** Keeps every message: the inbox and the tests look at the first time, the count and the attached files. */
+function recordSent(id, text, files = []) {
   const sent = store.get('demo_sent', {});
   const prev = sent[id];
-  sent[id] = { text, at: Date.now(), first: prev?.first || prev?.at || Date.now(), count: (prev?.count || 0) + 1, history: [...(prev?.history || []), text] };
+  sent[id] = {
+    text, at: Date.now(), first: prev?.first || prev?.at || Date.now(), count: (prev?.count || 0) + 1,
+    history: [...(prev?.history || []), text], files: [...(prev?.files || []), ...files],
+  };
   store.set('demo_sent', sent);
+}
+
+// Attachments: the chat keeps picked files until "Send".
+const attached = new WeakMap();
+function showFiles(box, files) {
+  const list = [...(attached.get(box) || []), ...files];
+  attached.set(box, list);
+  const atts = box.querySelector('.atts');
+  atts.replaceChildren(...list.map((f) => {
+    const chip = el('span', { class: 'att-preview' });
+    if (f.type.startsWith('image/')) chip.append(el('img', { src: URL.createObjectURL(f), alt: '' }));
+    chip.append(f.name);
+    return chip;
+  }));
+}
+const takeFiles = (box) => { const l = (attached.get(box) || []).map((f) => f.name); attached.set(box, []); box.querySelector('.atts').replaceChildren(); return l; };
+
+/** Search page chat: the paperclip creates a file input on the fly and clicks it (like many real sites). */
+function initAttachDynamic(box) {
+  box.querySelector('.btn-attach')?.addEventListener('click', () => {
+    const i = document.createElement('input');
+    i.type = 'file';
+    i.accept = 'image/*,video/*';
+    i.onchange = () => showFiles(box, [...i.files]);
+    i.click();
+  });
 }
 
 // Infinite feed variant (search.html?feed=1): no pager, more men load when you scroll to the end.
@@ -104,6 +133,7 @@ function openChat(m) {
   const modal = document.getElementById('chat-modal');
   modal.querySelector('.to').textContent = m.name;
   modal.querySelector('textarea').value = '';
+  takeFiles(modal.querySelector('.box'));
   modal.querySelector('.status').innerHTML = '';
   modal.dataset.manId = m.id;
   modal.hidden = false;
@@ -113,12 +143,15 @@ function openChat(m) {
 function initModal() {
   const modal = document.getElementById('chat-modal');
   modal.querySelector('.btn-close').addEventListener('click', () => { modal.hidden = true; });
+  const box = modal.querySelector('.box');
+  initAttachDynamic(box);
   modal.querySelector('.btn-send').addEventListener('click', () => {
     const text = modal.querySelector('textarea').value.trim();
     const status = modal.querySelector('.status');
-    if (!text) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    if (!text && !(attached.get(box) || []).length) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    const files = takeFiles(box);
     setTimeout(() => {
-      recordSent(modal.dataset.manId, text);
+      recordSent(modal.dataset.manId, text, files);
       status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
     }, 300 + Math.random() * 500);
   });
@@ -161,12 +194,16 @@ function renderProfile() {
   about.textContent = 'About me: I like hiking, old movies and good coffee. Looking for a kind woman to share my life with.';
   document.getElementById('profile').append(about);
   const box = document.getElementById('profile-chat');
+  // Profile page chat: a <label> with a hidden file input inside (the other common pattern).
+  const fileIn = box.querySelector('input[type=file]');
+  fileIn.addEventListener('change', () => { showFiles(box, [...fileIn.files]); fileIn.value = ''; });
   box.querySelector('.btn-send').addEventListener('click', () => {
     const text = box.querySelector('textarea').value.trim();
     const status = box.querySelector('.status');
-    if (!text) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    if (!text && !(attached.get(box) || []).length) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
+    const files = takeFiles(box);
     setTimeout(() => {
-      recordSent(m.id, text);
+      recordSent(m.id, text, files);
       box.querySelector('textarea').value = '';
       status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
       setTimeout(() => { status.innerHTML = ''; }, 2500);

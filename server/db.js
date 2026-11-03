@@ -146,6 +146,28 @@ CREATE TABLE IF NOT EXISTS followups (
   UNIQUE (profile_id, step)
 );
 
+CREATE TABLE IF NOT EXISTS scenario_templates (
+  id INTEGER PRIMARY KEY,
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  scenario TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS media (
+  id INTEGER PRIMARY KEY,
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  file TEXT NOT NULL,
+  steps TEXT NOT NULL DEFAULT '[1]',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_profile ON media(profile_id);
 CREATE INDEX IF NOT EXISTS idx_touches_profile_day ON touches(profile_id, day);
 CREATE INDEX IF NOT EXISTS idx_messages_agency_day ON messages(agency_id, day);
 CREATE INDEX IF NOT EXISTS idx_messages_profile_day ON messages(profile_id, day);
@@ -167,6 +189,7 @@ const MIGRATIONS = [
   ['messages', 'man_url', "TEXT NOT NULL DEFAULT ''"],
   ['messages', 'fails', 'INTEGER NOT NULL DEFAULT 0'],
   ['messages', 'last_at', 'INTEGER'],
+  ['profiles', 'scenario_id', 'INTEGER'],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

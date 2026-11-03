@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { HttpError } from './util.js';
@@ -16,11 +17,15 @@ import siteRoutes from './routes/sites.js';
 import settingsRoutes from './routes/settings.js';
 import statsRoutes from './routes/stats.js';
 import botRoutes from './routes/bot.js';
+import scenarioRoutes from './routes/scenarios.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = true, persistent = true, log = console }) {
-  const cfg = { publicUrl: publicUrl.replace(/\/$/, ''), demoSite, persistent };
+export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = true, persistent = true, mediaDir, log = console }) {
+  const cfg = {
+    publicUrl: publicUrl.replace(/\/$/, ''), demoSite, persistent,
+    mediaDir: mediaDir || fs.mkdtempSync(path.join(os.tmpdir(), 'agency-media-')),
+  };
   const app = express();
   app.disable('x-powered-by');
   // Behind Caddy/nginx in another container: TRUST_PROXY=1 so the login limiter sees real client IPs.
@@ -49,11 +54,12 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   api.use(authenticate(db));
   api.use('/admin', adminRoutes(db, cfg));
   api.use((req, _res, next) => (req.user.role === 'admin' ? next(new HttpError(403, 'Цей розділ доступний лише обліковим записам агенції')) : next()));
-  api.use('/bot', botRoutes(db));
+  api.use('/bot', botRoutes(db, cfg));
   api.use('/operators', operatorRoutes(db));
-  api.use('/profiles', profileRoutes(db));
+  api.use('/profiles', profileRoutes(db, cfg));
   api.use('/licenses', licenseRoutes(db));
   api.use('/sites', siteRoutes(db, cfg));
+  api.use('/scenarios', scenarioRoutes(db));
   api.use('/settings', settingsRoutes(db));
   api.use('/stats', statsRoutes(db));
   app.use('/api', api);
