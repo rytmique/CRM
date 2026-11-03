@@ -143,7 +143,7 @@ export default async function setupPage(main, { navigate }) {
       h('ol.steps',
         h('li', h('a.btn.primary', { href: '/download/extension.zip', download: 'agency-bot.zip' }, '⬇ Завантажити розширення'), h('div.small.muted', 'Адреса панелі вже вписана всередині')),
         h('li', 'Розпакуйте архів у постійну папку (не видаляйте її потім).'),
-        h('li', 'Відкрийте ', h('code', 'chrome://extensions'), ' → увімкніть «Режим розробника» (праворуч угорі).'),
+        h('li', 'Відкрийте ', h('code', 'chrome://extensions'), ' (в Опері — ', h('code', 'opera://extensions'), ') → увімкніть «Режим розробника».'),
         h('li', '«Завантажити розпаковане» → виберіть папку ', h('code', 'agency-bot'), '.'),
         h('li', 'Натисніть значок ❤ на панелі браузера → увійдіть своїм email і паролем.')),
       st.done ? null : h('p.small.muted.waiting', '⏳ Чекаю, поки ви увійдете в розширення — ця сторінка оновиться сама.'),
