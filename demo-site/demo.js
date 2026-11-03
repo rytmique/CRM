@@ -28,6 +28,16 @@ const store = {
   set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
 };
 
+// Desk with several women (desk.html?women=1): each woman has her own chats, hints and counters.
+// The IDs are made up for the demo.
+const WOMEN = [
+  { id: '5000000001', name: 'Kate', age: 29 },
+  { id: '5000000002', name: 'Maria', age: 27 },
+  { id: '5000000003', name: 'Olha', age: 35 },
+];
+let herSuffix = ''; // '' on ordinary pages; '@<her id>' on the women desk
+const K = (k) => k + herSuffix;
+
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -72,21 +82,21 @@ const LETTERS_PER_MAN = 3;
 
 /** Keeps every message: the inbox and the tests look at the first time, the count and the attached files. */
 function recordSent(id, text, files = [], translated = false) {
-  const sent = store.get('demo_sent', {});
+  const sent = store.get(K('demo_sent'), {});
   const prev = sent[id];
   sent[id] = {
     text, at: Date.now(), first: prev?.first || prev?.at || Date.now(), count: (prev?.count || 0) + 1,
     history: [...(prev?.history || []), text], files: [...(prev?.files || []), ...files], translated: translated || prev?.translated || false,
   };
-  store.set('demo_sent', sent);
+  store.set(K('demo_sent'), sent);
 }
 
 /** Letters (the site's mail) are kept apart from chat messages. */
 function recordLetter(id, subject, text, files = [], translated = false) {
-  const all = store.get('demo_letters', {});
+  const all = store.get(K('demo_letters'), {});
   const prev = all[id];
   all[id] = { count: (prev?.count || 0) + 1, at: Date.now(), history: [...(prev?.history || []), { subject, text, files, translated }] };
-  store.set('demo_letters', all);
+  store.set(K('demo_letters'), all);
 }
 
 // Attachments: the chat keeps picked files until "Send".
@@ -261,9 +271,16 @@ function captcha() {
 const allMen = () => Array.from({ length: PER_PAGE * PAGES }, (_, i) => man(i));
 const label = (m) => `${m.name}, ${m.age}`;
 
-/** Hints the "site" gives: 5 men from the last pages; the 2nd is a glitch that opens another man's chat. */
+/** Hints the "site" gives: 5 men from the last pages; the 2nd is a glitch that opens another man's chat.
+ *  On the women desk: each woman gets her own men (beyond the search pages), no glitch. */
+const WOMEN_MEN = { '5000000001': [40, 42], '5000000002': [45, 47], '5000000003': [49] };
 function deskTasks() {
-  let t = store.get('demo_tasks', null);
+  let t = store.get(K('demo_tasks'), null);
+  if (!t && herSuffix) {
+    const her = herSuffix.slice(1);
+    t = (WOMEN_MEN[her] || []).map((i, n) => ({ id: man(i).id, via: 'chat', opens: man(i).id, at: Date.now() - (3 - n) * 600000 }));
+    store.set(K('demo_tasks'), t);
+  }
   if (!t) {
     const men = allMen();
     const pick = [20, 22, 25, 27, 29].map((i) => men[i]);
@@ -276,14 +293,48 @@ function deskTasks() {
 }
 
 function renderDesk() {
-  const men = allMen();
+  const men = Array.from({ length: 64 }, (_, i) => man(i));
   const byId = (id) => men.find((m) => m.id === id) || { id, name: id, age: '' };
   const box = document.querySelector('.chat');
   let current = null;
   const left = (id) => ({
-    msgs: Math.max(0, MSGS_PER_MAN - (store.get('demo_sent', {})[id]?.count || 0)),
-    letters: Math.max(0, LETTERS_PER_MAN - (store.get('demo_letters', {})[id]?.count || 0)),
+    msgs: Math.max(0, MSGS_PER_MAN - (store.get(K('demo_sent'), {})[id]?.count || 0)),
+    letters: Math.max(0, LETTERS_PER_MAN - (store.get(K('demo_letters'), {})[id]?.count || 0)),
   });
+  // ---- several women: who works now, a switcher, her name in the chat header ----
+  const women = new URLSearchParams(location.search).has('women');
+  const herNow = () => WOMEN.find((w) => w.id === store.get('demo_her', WOMEN[0].id)) || WOMEN[0];
+  function showHer() {
+    if (!women) return;
+    const w = herNow();
+    herSuffix = `@${w.id}`;
+    document.querySelector('.her-now').textContent = `${w.name}, ${w.age} · ID ${w.id}`;
+    box.querySelector('.ch-her').textContent = current ? `від ${w.name} · ID ${w.id}` : '';
+  }
+  if (women) {
+    const list = el('div', { class: 'her-list', hidden: '' }, ...WOMEN.map((w) => {
+      const row = el('div', { class: 'her-item' }, el('b', { class: 'her-name' }, `${w.name}, ${w.age}`), el('span', { class: 'her-id' }, w.id));
+      row.addEventListener('click', () => {
+        list.hidden = true;
+        setTimeout(() => { // like an SPA: the desk reloads its data for the other woman
+          store.set('demo_her', w.id);
+          current = null;
+          box.querySelector('.ch-name').textContent = '—';
+          box.querySelector('.ch-id').textContent = '';
+          box.querySelector('.msgs').replaceChildren();
+          showHer();
+          renderTasks();
+          renderList();
+          showMode();
+        }, 500);
+      });
+      return row;
+    }));
+    const sw = el('button', { class: 'her-switch', type: 'button' }, 'Анкети ▾');
+    sw.addEventListener('click', () => { list.hidden = !list.hidden; });
+    document.querySelector('header .who').replaceChildren(el('span', { class: 'her-now' }), sw, list);
+  }
+  showHer();
 
   function showMode() {
     const letter = box.dataset.mode === 'letter';
@@ -300,20 +351,21 @@ function renderDesk() {
     box.dataset.mode = 'chat';
     box.querySelector('.ch-name').textContent = label(current);
     box.querySelector('.ch-id').textContent = `ID ${current.id}`;
-    const sent = store.get('demo_sent', {})[id];
+    const sent = store.get(K('demo_sent'), {})[id];
     box.querySelector('.msgs').replaceChildren(...(sent?.history || []).map((t) => el('div', { class: 'msg' }, t)));
     box.querySelector('.status').innerHTML = '';
-    const read = store.get('demo_read', {});
+    const read = store.get(K('demo_read'), {});
     read[id] = true;
-    store.set('demo_read', read);
+    store.set(K('demo_read'), read);
+    showHer();
     showMode();
     renderList();
   }
 
   function renderList() {
-    const sent = store.get('demo_sent', {});
-    const letters = store.get('demo_letters', {});
-    const read = store.get('demo_read', {});
+    const sent = store.get(K('demo_sent'), {});
+    const letters = store.get(K('demo_letters'), {});
+    const read = store.get(K('demo_read'), {});
     const q = document.querySelector('.find-id').value.trim();
     const ids = [...new Set([...deskTasks().map((t) => t.opens), ...deskTasks().map((t) => t.id), ...Object.keys(sent), ...Object.keys(letters)])]
       .filter((id) => !q || id.includes(q));
@@ -349,9 +401,9 @@ function renderDesk() {
   box.querySelector('.btn-chat-mode').addEventListener('click', () => { box.dataset.mode = 'chat'; showMode(); });
   box.querySelector('.btn-like').addEventListener('click', () => {
     if (!current) return;
-    const l = store.get('demo_likes', {});
+    const l = store.get(K('demo_likes'), {});
     l[current.id] = (l[current.id] || 0) + 1;
-    store.set('demo_likes', l);
+    store.set(K('demo_likes'), l);
   });
   box.querySelector('.btn-translate').addEventListener('click', () => {
     const src = box.querySelector('.tr-src').value.trim();
@@ -371,7 +423,7 @@ function renderDesk() {
     setTimeout(() => {
       if (letter) recordLetter(id, box.querySelector('.letter-subject').value.trim(), text, [], translated);
       else recordSent(id, text, [], translated);
-      store.set('demo_tasks', deskTasks().filter((x) => x.id !== id)); // the hint is done
+      store.set(K('demo_tasks'), deskTasks().filter((x) => x.id !== id)); // the hint is done
       box.querySelector('.tr-dst').value = '';
       box.querySelector('.tr-src').value = '';
       box.querySelector('.letter-subject').value = '';
@@ -393,5 +445,8 @@ window.addEventListener('DOMContentLoaded', () => {
   if (document.getElementById('results')) { renderSearch(); initModal(); }
   if (document.getElementById('dialogs')) renderInbox();
   const reset = document.getElementById('reset');
-  reset?.addEventListener('click', () => { for (const k of ['demo_sent', 'demo_read', 'demo_likes', 'demo_letters', 'demo_tasks']) localStorage.removeItem(k); location.reload(); });
+  reset?.addEventListener('click', () => {
+    for (const k of Object.keys(localStorage)) if (/^demo_(sent|read|likes|letters|tasks|her)(@|$)/.test(k)) localStorage.removeItem(k);
+    location.reload();
+  });
 });

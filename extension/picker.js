@@ -7,13 +7,14 @@
   const { qs, qsa, extract, normId, visible } = U;
 
   // ---------- field kinds ----------
-  const CONTAINER = { card: 'list', inboxItem: 'inbox', taskItem: 'tasks' };
+  const CONTAINER = { card: 'list', inboxItem: 'inbox', taskItem: 'tasks', herItem: 'her' };
   const IN_CARD = ['cardId', 'cardName', 'cardAge', 'cardCountry', 'openChat'];
   const IN_ITEM = ['inboxUnread', 'inboxId', 'inboxName', 'inboxText'];
   const IN_TASK = ['taskName', 'taskText', 'taskId', 'taskOpen'];
-  const ATTR_FIELDS = ['cardId', 'inboxId', 'taskId'];
+  const IN_HER = ['herItemId', 'herItemName'];
+  const ATTR_FIELDS = ['cardId', 'inboxId', 'taskId', 'herItemId'];
   const SELF_OK = ['openChat', 'taskOpen']; // clicking the card itself = "@self"
-  const URL_FIELDS = ['searchUrl', 'inboxUrl', 'manUrl', 'chatUrl'];
+  const URL_FIELDS = ['searchUrl', 'inboxUrl', 'manUrl', 'chatUrl', 'herUrl'];
   const TABS = [
     ['list', 'Список', 'Пошук'],
     ['send', 'Відправка', 'Відправка'],
@@ -21,6 +22,7 @@
     ['letter', 'Листи', 'Листи'],
     ['inbox', 'Вхідні', 'Вхідні'],
     ['tasks', 'Підказки', 'Підказки сайту'],
+    ['her', 'Анкети', 'Анкети'],
     ['extra', 'Кнопки й ознаки', null],
   ];
   const TIPS = {
@@ -29,6 +31,7 @@
     man: 'Відкрийте сторінку будь-якого чоловіка і натисніть «📍 Ця сторінка». Якщо поле вводу тут інше — виберіть його у вкладці «Відправка» прямо на цій сторінці, бот додасть варіант.',
     inbox: 'Відкрийте вхідні. Почніть з «Діалог у вхідних»: клікніть на порожнє місце в будь-якому діалозі.',
     tasks: 'Якщо сайт сам підкидає «Please write him message / letter» — виберіть «Підказка»: клікніть на порожнє місце в будь-якій підказці. Ім’я й текст бот знайде сам. ID зазвичай береться з шапки чату (вкладка «Відправка»).',
+    her: 'Лише якщо оператор працює за кількох жінок. Виберіть, де видно поточну анкету (ім’я / ID), і перемикач. Потім відкрийте на сайті список жінок (режим вибору вимкнений) і виберіть один рядок. Ще — її ім’я в шапці чату. Тоді бот сам перемикає анкети й не пише від імені не тієї жінки.',
     letter: 'Відкрийте чат чоловіка і натисніть на сайті конверт «Лист» (режим вибору вимкнений). Потім виберіть кнопку «Лист», поле тексту й «Надіслати». Тему й лічильник «Залишилося N листів» — якщо є.',
     extra: 'Кнопки — що бот може натискати у сценарії (лайк, підморгнути, в обране). Ознаки — що бот бачить у картці (онлайн, преміум, вже писали) для фільтрів.',
   };
@@ -175,7 +178,8 @@
   let tip;
   const last = {}; // key -> element picked last (for "ширше")
 
-  const containerKey = (key) => (IN_ITEM.includes(key) || key === 'inboxItem' ? 'inboxItem' : IN_TASK.includes(key) || key === 'taskItem' ? 'taskItem' : 'card');
+  const containerKey = (key) => (IN_ITEM.includes(key) || key === 'inboxItem' ? 'inboxItem' : IN_TASK.includes(key) || key === 'taskItem' ? 'taskItem'
+    : IN_HER.includes(key) || key === 'herItem' ? 'herItem' : 'card');
   const containersFor = (key) => qsa(document, ctx.config[containerKey(key)]);
   const others = (card) => containersFor('card').filter((c) => c !== card).slice(0, 12);
   const othersOf = (key, box) => containersFor(key).filter((c) => c !== box).slice(0, 12);
@@ -189,11 +193,11 @@
     if (!v) return { text: '', ok: false };
     try {
       if (URL_FIELDS.includes(key)) return { text: key === 'manUrl' && !v.includes('{id}') ? 'немає {id} в адресі' : '', ok: true, warn: key === 'manUrl' && !v.includes('{id}') };
-      if (key === 'card' || key === 'inboxItem' || key === 'taskItem') {
+      if (key === 'card' || key === 'inboxItem' || key === 'taskItem' || key === 'herItem') {
         const n = qsa(document, v).length;
         return n ? { text: `знайдено ${n} на цій сторінці`, ok: true } : { text: 'на цій сторінці немає', ok: true, warn: true };
       }
-      if (IN_CARD.includes(key) || IN_ITEM.includes(key) || IN_TASK.includes(key)) {
+      if (IN_CARD.includes(key) || IN_ITEM.includes(key) || IN_TASK.includes(key) || IN_HER.includes(key)) {
         const boxes = containersFor(key);
         if (!boxes.length) return { text: 'відкрийте сторінку, де є ці картки', ok: true, warn: true };
         if (v === '@self') return { text: 'клік по самій картці', ok: true };
@@ -201,6 +205,7 @@
         if (key === 'inboxUnread') { const n = boxes.filter((b) => qs(b, v) || b.matches?.(v)).length; return { text: `непрочитаних ${n} з ${boxes.length}`, ok: true }; }
         const vals = boxes.map((b) => (ATTR_FIELDS.includes(key) ? normId(extract(b, v)) : extract(b, v))).filter(Boolean);
         if (!vals.length) return { text: 'нічого не знайшов', ok: true, warn: true };
+        if (key === 'herItemId' && new Set(vals).size < vals.length) return { text: `${vals.join(', ')} — ID повторюються!`, ok: true, warn: true };
         let text = `${vals.slice(0, 3).join(', ')}${vals.length > 3 ? '…' : ''} (${vals.length} з ${boxes.length})`;
         let warn = vals.length < boxes.length * 0.6;
         if (ATTR_FIELDS.includes(key) && new Set(vals).size < vals.length) { text += ' — ID повторюються!'; warn = true; }
@@ -277,7 +282,7 @@
   function pickField(key, el) {
     const c = ctx.config;
     last[key] = el;
-    if (key === 'card' || key === 'inboxItem' || key === 'taskItem') {
+    if (key === 'card' || key === 'inboxItem' || key === 'taskItem' || key === 'herItem') {
       const box = containerFor(el);
       if (!box) throw new Error('не бачу, що картки повторюються. Клікніть на порожнє місце в картці');
       c[key] = box.sel;
@@ -288,13 +293,14 @@
       if (key === 'card') autoCard(box.el);
       if (key === 'inboxItem') autoInbox(box.el);
       if (key === 'taskItem') autoTask(box.el);
+      if (key === 'herItem') autoHer(box.el);
       status(`✓ Знайдено ${box.count}. Перевірте нижче, що бот сам знайшов ID та ім’я`);
       return;
     }
-    if (IN_CARD.includes(key) || IN_ITEM.includes(key) || IN_TASK.includes(key)) {
+    if (IN_CARD.includes(key) || IN_ITEM.includes(key) || IN_TASK.includes(key) || IN_HER.includes(key)) {
       const ck = containerKey(key);
       const sel = c[ck];
-      if (!sel) throw new Error({ inboxItem: 'спочатку виберіть «Діалог у вхідних»', taskItem: 'спочатку виберіть «Підказка»' }[ck] || 'спочатку виберіть «Картка чоловіка»');
+      if (!sel) throw new Error({ inboxItem: 'спочатку виберіть «Діалог у вхідних»', taskItem: 'спочатку виберіть «Підказка»', herItem: 'спочатку відкрийте на сайті список жінок і виберіть «Жінка в списку»' }[ck] || 'спочатку виберіть «Картка чоловіка»');
       const box = qsa(document, sel).find((b) => b.contains(el));
       if (!box) throw new Error('цей елемент не всередині картки');
       if (SELF_OK.includes(key) && (el === box || !relSelector(box, el, othersOf(key, box)))) {
@@ -357,12 +363,27 @@
     if (!c.taskOpen) c.taskOpen = '@self';
   }
 
+  function autoHer(item) {
+    const c = ctx.config;
+    const oth = othersOf('herItem', item);
+    if (!c.herItemId) {
+      const spec = idSpec(item);
+      const n = spec ? null : [...item.querySelectorAll('*')].find((x) => !x.children.length && DIGITS.test(ownText(x)));
+      c.herItemId = spec || (n ? relSelector(item, n, oth) : '');
+    }
+    if (!c.herItemName) {
+      const n = [...item.querySelectorAll('*')].find((x) => goodClasses(x).some((k) => /name|nick|title/i.test(k)) && ownText(x));
+      if (n) c.herItemName = relSelector(item, n, oth);
+    }
+  }
+
   function setUrl(key) {
     const href = location.href;
-    if (key === 'manUrl' || key === 'chatUrl') {
+    if (key === 'manUrl' || key === 'chatUrl' || key === 'herUrl') {
       const m = href.match(DIGITS);
-      ctx.config[key] = m ? href.replace(m[0], '{id}') : href;
-      status(m ? `✓ ID ${m[0]} у адресі замінено на {id}` : '⚠ В адресі немає ID з 5+ цифр — бот піде за посиланням з картки', !m);
+      ctx.config[key] = m ? href.replace(m[0], key === 'herUrl' ? '{pid}' : '{id}') : href;
+      const ph = key === 'herUrl' ? '{pid}' : '{id}';
+      status(m ? `✓ ID ${m[0]} у адресі замінено на ${ph}` : key === 'herUrl' ? '⚠ В адресі немає ID жінки (5+ цифр) — краще навчіть перемикач і список жінок' : '⚠ В адресі немає ID з 5+ цифр — бот піде за посиланням з картки', !m);
     } else {
       ctx.config[key] = href;
       status('✓ Адресу записано');

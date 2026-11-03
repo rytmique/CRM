@@ -45,6 +45,7 @@ function render(s) {
   $('profile').disabled = active;
   $('test-mode').disabled = active;
   $('test-full').disabled = active;
+  $('rotate').disabled = active;
   $('teach').disabled = active;
   $('invite-box').hidden = !s.inviteText;
   $('invite').textContent = s.inviteText || '';
@@ -210,7 +211,7 @@ chrome.storage.local.get(['testMode', 'testFull']).then(({ testMode, testFull })
 $('start').addEventListener('click', async () => {
   $('main-error').textContent = '';
   try {
-    await send('start', { profileId: Number($('profile').value), tabId: await activeTabId(), test: $('test-mode').checked, full: $('test-mode').checked && $('test-full').checked });
+    await send('start', { profileId: Number($('profile').value), tabId: await activeTabId(), test: $('test-mode').checked, full: $('test-mode').checked && $('test-full').checked, rotate: $('rotate').checked });
   } catch (e) { $('main-error').textContent = e.message; }
 });
 $('stop').addEventListener('click', () => send('stop').catch((e) => { $('main-error').textContent = e.message; }));
@@ -222,6 +223,8 @@ $('speed').addEventListener('input', () => {
   showSpeed(v);
   chrome.storage.local.set({ speed: v }); // the running bot picks it up at once
 });
+chrome.storage.local.get('rotate').then(({ rotate }) => { $('rotate').checked = Boolean(rotate); });
+$('rotate').addEventListener('change', () => chrome.storage.local.set({ rotate: $('rotate').checked }));
 $('autopilot').addEventListener('change', async () => {
   $('main-error').textContent = '';
   const on = $('autopilot').checked;

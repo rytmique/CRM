@@ -579,6 +579,59 @@ try {
   if (/\d{5,}/.test(repText) || /localhost|127\.0\.0\.1/.test(repText) || /(William|Richard|Edward|Michael|Paul)\b/.test(repText)) fail(`report leaks data:\n${repText}`);
   log('report ok: taught fields + what the bot sees, no names / IDs / addresses');
 
+  // ---------- 🔁 changing profiles: one desk, several women; no work for her → the next one (the site switches too) ----------
+  const womenUrl = `${BASE}/demo-site/desk.html?women=1`;
+  const womenSite = await api('POST', '/api/sites', { name: 'Демо: кілька анкет', config: {
+    searchUrl: womenUrl,
+    taskItem: '.task', taskName: '.t-name', taskText: '.t-text', taskOpen: '@self',
+    messageInput: '.tr-dst', sendButton: '.btn-send', sentConfirm: '.chat .sent-ok', sendError: '.chat .send-error',
+    chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs',
+    findInput: '.find-id', inboxUrl: womenUrl, inboxItem: '.chat-item', inboxUnread: '.ci-unread', inboxName: '.ci-name',
+    herCurrent: '.her-now', herSwitch: '.her-switch', herItem: '.her-item', herItemId: '.her-id', herItemName: '.her-name', chatHer: '.ch-her',
+  } }, owner);
+  await api('PUT', `/api/sites/${womenSite.id}/scenario`, { scenario: {
+    steps: [{ actions: [{ do: 'message', text: 'invite' }] }],
+    human: { ...FAST, reactFrom: 0, reactTo: 1, idleChance: 0 },
+  } }, owner);
+  await api('PATCH', `/api/profiles/${kate.id}`, { site_id: womenSite.id, site_profile_id: '5000000001', daily_limit: 30 }, owner);
+  await api('PATCH', `/api/profiles/${maria.id}`, { site_id: womenSite.id, site_profile_id: '5000000002', daily_limit: 30 }, owner);
+  await sitePage.goto(womenUrl);
+  await sitePage.evaluate(() => localStorage.setItem('demo_her', JSON.stringify('5000000002'))); // the site shows Maria, the bot starts as Kate
+  await sitePage.reload();
+  await popup.bringToFront();
+  await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${kate.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(kate.id));
+  if (!(await popup.isChecked('#rotate'))) await popup.click('#rotate');
+  await popup.click('#start');
+  const tRot = Date.now();
+  const rotDone = () => st.startedAt >= tRot - 5000 && ((st.status === 'watching' && /ні в кого/.test(st.message || '')) || ['error', 'stopped', 'limit'].includes(st.status));
+  do { await sleep(1000); st = await readState(); } while (!rotDone() && Date.now() - tRot < 300000);
+  const rotLog = st.log.map((l) => l.text).join('\n');
+  const wSent = await sitePage.evaluate(() => Object.fromEntries(['5000000001', '5000000002', '5000000003']
+    .map((w) => [w, JSON.parse(localStorage.getItem(`demo_sent@${w}`) || '{}')])));
+  const kateW = Object.values(wSent['5000000001']);
+  const mariaW = Object.values(wSent['5000000002']);
+  if (kateW.length !== 2 || !kateW.every((x) => x.count === 1 && x.history[0].includes('Kate'))) fail(`Kate's hints: ${JSON.stringify(wSent['5000000001'])}\n${rotLog}`);
+  if (mariaW.length !== 2 || !mariaW.every((x) => x.count === 1 && x.history[0].includes('Maria'))) fail(`Maria's hints: ${JSON.stringify(wSent['5000000002'])}\n${rotLog}`);
+  if (Object.keys(wSent['5000000003']).length) fail(`wrote as Olha, who is not in the panel: ${JSON.stringify(wSent['5000000003'])}`);
+  if (!/переходжу на Maria/.test(rotLog)) fail(`no switch to Maria in the log:\n${rotLog}`);
+  if (!/👩 На сайті анкета Kate/.test(rotLog)) fail(`Kate was not checked on the site first:\n${rotLog}`);
+  if ((await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_her')))) !== '5000000002') fail('the site was not switched to Maria');
+  const mariaServer = (await api('GET', `/api/stats/messages?profile_id=${maria.id}&limit=200`, null, owner)).messages;
+  for (const id of Object.keys(wSent['5000000002'])) if (!mariaServer.some((m) => m.man_id === id && m.status === 'sent')) fail(`server: ${id} not under Maria`);
+  await popup.screenshot({ path: path.join(OUT, '30-popup-rotate.png') });
+  await sitePage.bringToFront();
+  await sitePage.click('.her-switch');
+  await sleep(300);
+  await sitePage.screenshot({ path: path.join(OUT, '31-desk-women.png') });
+  await sitePage.click('.her-switch');
+  await popup.bringToFront();
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  await popup.click('#rotate'); // back to one profile
+  log('profile rotation ok: started as Kate (site switched from Maria), her hints done → switched the site to Maria → hers; never wrote as another woman');
+
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();
   await page.click('a[href="#/dashboard"]');

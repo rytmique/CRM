@@ -87,7 +87,7 @@ export default async function profilesPage(main, { user }) {
       field('Місто', input('city', p?.city)),
       field('Країна', input('country', p?.country)),
       field('Сайт', select('site_id', p?.site_id, [['', '— вибрати —'], ...refs.sites.map((s) => [s.id, s.name])], { 'data-num': '' })),
-      field('ID анкети на сайті', input('site_profile_id', p?.site_profile_id)),
+      field('ID анкети на сайті', input('site_profile_id', p?.site_profile_id, { maxlength: 120 }), 'Її ID на сайті. Потрібно для 🔁 «Міняти анкети»: бот перемикає жінку на сайті й перевіряє, що пише саме від неї'),
       owner ? field('Оператор', select('operator_id', p?.operator_id, [['', '— не призначено —'], ...refs.operators.filter((o) => o.active).map((o) => [o.id, o.name])], { 'data-num': '' })) : null,
       field('Сценарій', select('scenario_id', p?.scenario_id, [['', 'Як у сайту (за замовчуванням)'], ...refs.templates.map((t) => [t.id, `Шаблон: ${t.name}`])], { 'data-num': '' }),
         refs.templates.length ? 'Можна дати цій анкеті свій сценарій' : 'Шаблони створюються в «Сайти» → «Шаблони сценаріїв»'),

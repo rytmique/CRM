@@ -425,6 +425,50 @@
     return { ok: true };
   }
 
+  // ---------- several women on one desk: which one is working now, switch to another ----------
+  const textOf = (sel) => (sel ? (qsa(document, sel).find(visible)?.textContent || '') : '').replace(/\s+/g, ' ').trim();
+  /** Does this text name her? An ID on the page must be hers; with no ID there, her first name must be. */
+  function namesHer(text, id, name) {
+    const t = norm(text);
+    if (!t) return false;
+    const ids = t.match(/\d{5,}/g) || [];
+    if (id && ids.length) return ids.includes(String(id));
+    return Boolean(name && t.includes(firstName(name)));
+  }
+  /** Is the site working as her right now (the taught "which profile" element)? */
+  function herIs({ site, id, name }) {
+    const now = textOf(site.herCurrent);
+    return { ok: namesHer(now, id, name), now };
+  }
+  /** The open chat is written as her (the woman's side of the chat header)? */
+  function chatHerIs({ site, id, name }) {
+    const now = textOf(site.chatHer);
+    return { ok: !site.chatHer || namesHer(now, id, name), now };
+  }
+  /** Switches the site to her: opens the list of women if needed, clicks her row, waits until the site shows her. */
+  async function herPick({ site, id, name }) {
+    if (site.herCurrent && herIs({ site, id, name }).ok) return { ok: true, already: true };
+    let rows = qsa(document, site.herItem).filter(visible);
+    if (!rows.length && site.herSwitch) {
+      const sw = qsa(document, site.herSwitch).find(visible);
+      if (!sw) return { ok: false, error: 'перемикач анкет не знайдено' };
+      await humanClick(sw);
+      rows = (await waitFor(() => { const l = qsa(document, site.herItem).filter(visible); return l.length ? l : null; }, 6000, 200)) || [];
+    }
+    if (!rows.length) return { ok: false, error: 'список анкет на сайті не знайдено' };
+    const row = rows.find((el) => {
+      const rid = site.herItemId ? normId(extract(el, site.herItemId)) : ((el.textContent || '').match(/\d{5,}/) || [''])[0];
+      if (id && rid) return rid === String(id);
+      return namesHer(site.herItemName ? extract(el, site.herItemName) : el.textContent, '', name);
+    });
+    if (!row) return { ok: false, error: `анкети ${name || id} немає в списку сайту` };
+    await sleep(rand(400, 900));
+    await humanClick(row);
+    if (!site.herCurrent) { await sleep(rand(1500, 2500)); return { ok: true }; }
+    const done = await waitFor(() => herIs({ site, id, name }).ok, 10000, 250);
+    return done ? { ok: true } : { ok: false, error: `сайт не перемкнув на ${name || id} (зараз: ${textOf(site.herCurrent) || '—'})` };
+  }
+
   /** Between men: scroll the list a bit and look around, like a person (opens nothing, so unread stays unread). */
   async function idle({ site, seconds = 8 }) {
     const list = qsa(document, site.inboxItem || site.card || site.taskItem).filter(visible);
@@ -544,7 +588,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
-    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

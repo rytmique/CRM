@@ -25,6 +25,8 @@ let unseenReplies = 0;
 /** The operator's pauses for the current run (seconds, [from, to]) and typing speed. */
 const DEFAULT_PACE = { think: [2, 6], actionGap: [2, 6], pageGap: [3, 8], react: [20, 90], idleChance: 30, cpm: 600 };
 let pace = { ...DEFAULT_PACE };
+/** The woman (profile) the bot writes for right now: her ID on the site and her name — checked on the site before writing. */
+let her = null;
 /** The popup's tempo slider: 1 🐢🐢 … 3 normal … 5 ⚡⚡ — multiplies every pause, divides typing time. */
 const SPEED = { 1: 2, 2: 1.5, 3: 1, 4: 0.6, 5: 0.35 };
 let speedMul = 1;
@@ -548,6 +550,11 @@ const letterSite = (site) => ({
 /** In the open chat: (letter form) → the site's counter → text → files → translate → Send. */
 async function writeHere(tabId, site, m, dry, typing) {
   const letter = m.via === 'letter';
+  // Several women on one desk: the chat must be written as HER, else nothing is typed.
+  if (site.chatHer && her && (her.id || her.name)) {
+    const ch = await inTab(tabId, 'chatHerIs', { site, id: her.id, name: her.name }).catch(() => null);
+    if (!ch?.ok) return { ok: false, wrongChat: true, error: `чат від імені іншої анкети (${ch?.now || 'не видно'}), а бот працює за ${her.name} — не пишу` };
+  }
   // Safety on chat-list sites: the open chat must be his (header name / ID), else nothing is typed.
   if (site.chatName || site.chatId) {
     const c = await inTab(tabId, 'waitChat', { site, name: m.name, id: m.id }).catch(() => null);
@@ -856,6 +863,7 @@ async function loadRun(profileId, test) {
   const human = cfg.scenario?.human || { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, breakMinutes: 10, typing: false };
   const ap = await getAutopilot();
   if (ap?.profileId === profileId) await setAutopilot({ ...ap, human, timezone: cfg.timezone, profileName: cfg.profile.name });
+  her = { id: cfg.profile.site_profile_id || '', name: cfg.profile.name || '' };
   const range = (a, b, d) => (Number.isFinite(a) && Number.isFinite(b) ? [a, Math.max(a, b)] : d);
   pace = {
     think: range(human.thinkFrom, human.thinkTo, DEFAULT_PACE.think),
@@ -871,7 +879,28 @@ async function loadRun(profileId, test) {
   };
 }
 
-async function run(profileId, tabId) {
+/** Makes the site work as her: checks the taught "which profile" element and switches if it shows another woman. */
+async function ensureHer(tabId, site, who = her) {
+  if (!who || (!site.herCurrent && !site.herItem && !site.herUrl)) return { ok: true, unknown: true };
+  if (site.herCurrent) {
+    const now = await inTab(tabId, 'herIs', { site, id: who.id, name: who.name }).catch(() => null);
+    if (now?.ok) return { ok: true };
+  }
+  if (site.herUrl && who.id) {
+    await navigate(tabId, site.herUrl.replaceAll('{pid}', encodeURIComponent(who.id)).replaceAll('{id}', encodeURIComponent(who.id)));
+  } else if (site.herItem) {
+    const r = await inTab(tabId, 'herPick', { site, id: who.id, name: who.name }).catch((e) => ({ ok: false, error: e.message, gone: PAGE_GONE.test(e.message) }));
+    if (r?.gone) { await waitTabComplete(tabId); await nap(rand(1, 2) * 1000); } // the site reloaded the page to switch: check below
+    else if (!r?.ok) return { ok: false, error: r?.error || 'не вдалося перемкнути анкету' };
+  } else {
+    return { ok: false, error: 'на сайті відкрита інша анкета, а перемикач не навчено (🎯 → вкладка «Анкети»)' };
+  }
+  if (!site.herCurrent) return { ok: true };
+  const after = await inTab(tabId, 'herIs', { site, id: who.id, name: who.name }).catch(() => null);
+  return after?.ok ? { ok: true } : { ok: false, error: `сайт не перемкнув на ${who.name} (зараз: ${after?.now || '—'})` };
+}
+
+async function run(profileId, tabId, { rotate = false } = {}) {
   const ctx = await loadRun(profileId, false);
   const { cfg, site } = ctx;
   await setState({
@@ -889,6 +918,10 @@ async function run(profileId, tabId) {
     ctx.tabId = tabId;
     await setState({ tabId });
     await chrome.storage.session.set({ active: { profileId, tabId } });
+    // Several women on one site: work only as her
+    const hs = await ensureHer(tabId, site);
+    if (!hs.ok) throw new Error(`Анкета «${cfg.profile.name}»: ${hs.error}`);
+    if (!hs.unknown) await log(`👩 На сайті анкета ${cfg.profile.name} — працюю за неї`);
     let sinceInbox = 0;
     let failsInRow = 0;
     let emptyPages = 0;
@@ -903,6 +936,7 @@ async function run(profileId, tabId) {
         if (ctx.limitReached || stopRequested) break;
         const did = await processTasks(ctx);
         if (ctx.limitReached || stopRequested) break;
+        if (!did && rotate) { ctx.idle = true; break; } // nothing for her now: another profile may have work
         if (!did) {
           await setState({ message: '💡 Нових підказок сайту немає — чекаю й стежу за відповідями' });
           await waitUntil(Date.now() + rand(60, 150) * 1000, ctx, 'watching');
@@ -999,7 +1033,8 @@ async function run(profileId, tabId) {
 
   if (ctx.limitReached) await log('Денний ліміт вичерпано 👍');
   await checkInbox(site, profileId);
-  if (stopRequested) return;
+  if (stopRequested) return 'stopped';
+  if (rotate) return ctx.limitReached ? 'limit' : 'idle'; // the next profile takes over
 
   // Keep watching the inbox so replies reach a live person quickly; keep doing follow-ups as they come due.
   await setState({ status: ctx.limitReached ? 'limit' : 'watching', message: 'Нових чоловіків немає. Стежу за відповідями і роблю повторні спроби…' });
@@ -1298,13 +1333,58 @@ async function autopilotTick() {
   if (ap.errorAt && Date.now() - ap.errorAt < 15 * 60000) return; // don't hammer a broken site
   await setAutopilot({ ...ap, runDay: t.day, errorAt: null });
   await log(`⏰ Автопілот: робочий час (${scheduleText(ap.human)}) — вмикаюсь сам`);
-  start(ap.profileId, null, false, { auto: true });
+  const { rotate } = await chrome.storage.local.get('rotate');
+  start(ap.profileId, null, false, { auto: true, rotate: Boolean(rotate) });
 }
 
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'autopilot') autopilotTick().catch(() => {}); });
 chrome.alarms.get('autopilot').then((a) => { if (!a) chrome.alarms.create('autopilot', { periodInMinutes: 1 }); });
 
-async function start(profileId, tabId, test = false, { auto = false, full = false } = {}) {
+/**
+ * 🔁 Changing profiles: when her limit is used up or there is no work for her, the bot looks at the operator's other
+ * profiles on the same site, switches the site to the next woman (taught switcher) and works as her.
+ * Nobody has work → it waits a few minutes and looks again.
+ */
+const ROTATE_IDLE_MS = 10 * 60000;
+async function rotateProfiles(firstId, tabId) {
+  const rest = new Map(); // profile id → not before (no work there for now / limit used up)
+  let pid = firstId;
+  for (let round = 0; !stopRequested; round++) {
+    const reason = await run(pid, tabId, { rotate: true });
+    tabId = state.tabId || tabId;
+    if (stopRequested || reason === 'stopped') return;
+    rest.set(pid, Date.now() + (reason === 'limit' ? 24 * 3600000 : ROTATE_IDLE_MS));
+    const site = (await api(`/api/bot/profiles/${pid}/config`).catch(() => null))?.site;
+    const list = ((await api('/api/bot/profiles').catch(() => null))?.profiles || [])
+      .filter((p) => p.license?.valid && p.status === 'active' && p.site_id === site?.id && p.dailyLimit - p.sentToday > 0)
+      .sort((a, b) => a.id - b.id);
+    const after = [...list.filter((p) => p.id > pid), ...list.filter((p) => p.id <= pid)];
+    let next = after.find((p) => (rest.get(p.id) || 0) <= Date.now());
+    if (!next) {
+      // everyone is resting: wait a little, then the one whose rest ends first (limits wait for tomorrow)
+      const soon = after.filter((p) => (rest.get(p.id) || 0) - Date.now() < 3600000).sort((a, b) => (rest.get(a.id) || 0) - (rest.get(b.id) || 0))[0];
+      await setState({ status: 'watching', message: `🔁 Зараз ні в кого з анкет немає роботи — перевірю знову за кілька хвилин` });
+      await waitUntil(Date.now() + rand(3, 6) * 60000, null, 'watching');
+      if (stopRequested) return;
+      if (!soon) continue;
+      rest.delete(soon.id);
+      next = soon;
+    }
+    if (next.id !== pid) {
+      await log(`🔁 Анкета ${state.profileName}: ${reason === 'limit' ? 'ліміт вичерпано' : 'роботи зараз немає'} → переходжу на ${next.name}`);
+      const sw = await ensureHer(tabId, site.config, { id: next.site_profile_id || '', name: next.name });
+      if (!sw.ok) {
+        await log(`🔁 Не вдалося перемкнути на ${next.name}: ${sw.error}`, 'warn');
+        rest.set(next.id, Date.now() + 30 * 60000);
+        continue;
+      }
+      await chrome.storage.local.set({ lastProfile: next.id });
+    }
+    pid = next.id;
+  }
+}
+
+async function start(profileId, tabId, test = false, { auto = false, full = false, rotate = false } = {}) {
   if (running) return;
   running = true;
   stopRequested = false;
@@ -1315,7 +1395,8 @@ async function start(profileId, tabId, test = false, { auto = false, full = fals
       await setState({ status: 'stopped' });
       return;
     }
-    await run(profileId, tabId);
+    if (rotate) await rotateProfiles(profileId, tabId);
+    else await run(profileId, tabId);
     await setState({ status: 'stopped', message: 'Зупинено' });
     await heartbeat(true, 'idle');
   } catch (e) {
@@ -1346,7 +1427,7 @@ const maskText = (t) => String(t || '')
 
 const REPORT_FIELDS = ['searchUrl', 'card', 'cardId', 'cardName', 'openChat', 'nextPage', 'taskItem', 'taskName', 'taskText', 'messageInput', 'sendButton',
   'sentConfirm', 'sendError', 'chatName', 'chatId', 'chatLeft', 'translateButton', 'attachButton', 'letterOpen', 'letterSubject', 'letterLeft',
-  'findInput', 'manUrl', 'inboxUrl', 'inboxItem', 'inboxUnread', 'inboxName', 'inboxText'];
+  'findInput', 'manUrl', 'inboxUrl', 'inboxItem', 'inboxUnread', 'inboxName', 'inboxText', 'herCurrent', 'herItem', 'herUrl', 'chatHer'];
 
 async function buildReport(profileId, tabId) {
   const lines = [];
@@ -1433,12 +1514,12 @@ const handlers = {
   async profiles() {
     return api('/api/bot/profiles');
   },
-  async start({ profileId, tabId, test, full }) {
+  async start({ profileId, tabId, test, full, rotate }) {
     if (running) throw new Error('Бот уже працює');
     unseenReplies = 0;
     const ap = await getAutopilot();
     if (ap?.heldDay) await setAutopilot({ ...ap, heldDay: null });
-    start(Number(profileId), tabId, Boolean(test), { full: Boolean(full) });
+    start(Number(profileId), tabId, Boolean(test), { full: Boolean(full), rotate: Boolean(rotate) && !test });
     return {};
   },
   async stop() {
