@@ -1,5 +1,5 @@
 import { h, field, input, textarea, select, formData, busy, toast, modal, confirmDialog, badge, avatar, empty, fmtInt, fmtDate, safe } from '../ui.js';
-import { get, post, patch, del } from '../api.js';
+import { get, post, patch, put, del } from '../api.js';
 import { botBadge } from './dashboard.js';
 import { promptEditor } from './prompt-editor.js';
 
@@ -124,7 +124,7 @@ export default async function profilesPage(main, { user }) {
 
   // ---------- details + invites ----------
   async function openDetail(id) {
-    const { profile: p, invites } = await get(`/api/profiles/${id}`);
+    const { profile: p, invites, followups = [], followupSteps = [], funnel } = await get(`/api/profiles/${id}`);
     const body = h('div.detail');
     const m = modal({ title: `${p.name}${p.age ? `, ${p.age}` : ''}`, body, wide: true });
 
@@ -154,6 +154,23 @@ export default async function profilesPage(main, { user }) {
     }).catch(() => {}));
 
     const history = invites.filter((i) => !i.active);
+    const reopen = () => { m.close(); openDetail(p.id); };
+    const followupBox = (step) => {
+      const f = followups.find((x) => x.step === step);
+      const ta = textarea(`followup-${step}`, f?.text || '', { rows: 3, maxlength: 1000, placeholder: 'Ще не написано — з’явиться при першому запуску бота або натисніть ✨' });
+      const gen = h('button.btn.sm', '✨ ШІ');
+      gen.addEventListener('click', () => busy(gen, async () => {
+        const r = await post(`/api/profiles/${p.id}/followups/${step}/generate`);
+        toast(r.followup.source === 'template' ? 'Шаблон (ключ Claude не налаштовано)' : 'Згенеровано', r.followup.source === 'template' ? 'warn' : 'ok');
+        reopen();
+      }).catch(() => {}));
+      const save = h('button.btn.sm', 'Зберегти');
+      save.addEventListener('click', () => busy(save, async () => {
+        await put(`/api/profiles/${p.id}/followups/${step}`, { text: ta.value });
+        toast('Збережено');
+      }).catch(() => {}));
+      return h('div.followup-box', h('b.small', `Спроба ${step}`, f ? h('span.muted', ` · ${SOURCE[f.source] || f.source}`) : null), ta, h('div.row-wrap', gen, save));
+    };
     body.append(...[
       h('div.detail-head',
         avatar(p.name, p.photo_url),
@@ -168,11 +185,19 @@ export default async function profilesPage(main, { user }) {
         h('div', h('b', fmtInt(p.replies_today)), h('span', 'відповідей сьогодні')),
         h('div', h('b', fmtInt(p.sent_total)), h('span', 'інвайтів усього')),
         h('div', h('b', p.sent_total ? `${Math.round((p.replies_total / p.sent_total) * 1000) / 10}%` : '—'), h('span', 'конверсія'))),
+      funnel ? h('div.funnel',
+        h('span', `↻ чекають повторної спроби: ${fmtInt(funnel.waiting)}`),
+        h('span', `🚫 не відповіли на всі спроби: ${fmtInt(funnel.done)}`),
+        h('span', `💌 відповіли: ${fmtInt(funnel.replied)}`)) : null,
       h('section',
         h('h3', 'Інвайт-повідомлення', active ? badge(SOURCE[active.source] || active.source, 'muted') : null),
         h('p.small.muted', 'Бот надсилає цей текст усім новим чоловікам. Відповіді веде жінка сама.'),
         inviteText, counter,
         h('div.row-wrap', genBtn, saveBtn)),
+      followupSteps.length ? h('section',
+        h('h3', 'Повторні повідомлення'),
+        h('p.small.muted', 'Бот надсилає їх тим, хто не відповів, за сценарієм сайту (Сайти → ⚙ Сценарій). {name} — ім’я чоловіка.'),
+        followupSteps.map(followupBox)) : null,
       history.length ? h('section',
         h('h3', 'Попередні варіанти'),
         h('ul.invite-history', history.map((i) => h('li',

@@ -39,13 +39,40 @@ function el(tag, attrs = {}, ...kids) {
   return e;
 }
 
+// Every third man is "online" — a mark the bot can be taught to look for.
+const isOnline = (m) => hash('online' + m.id) % 3 === 0;
+
+function likeButton(m) {
+  const likes = store.get('demo_likes', {});
+  const b = el('button', { class: `btn-like${likes[m.id] ? ' liked' : ''}`, type: 'button' }, likes[m.id] ? '♥ Liked' : '♡ Like');
+  b.addEventListener('click', () => {
+    const l = store.get('demo_likes', {});
+    l[m.id] = (l[m.id] || 0) + 1;
+    store.set('demo_likes', l);
+    b.classList.add('liked');
+    b.textContent = '♥ Liked';
+  });
+  return b;
+}
+
 function card(m) {
   return el('div', { class: 'man-card', 'data-man-id': m.id },
     el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
     el('div', { class: 'info' },
       el('a', { class: 'man-name', href: `profile.html?id=${m.id}` }, m.name),
+      isOnline(m) ? el('span', { class: 'online' }, 'online') : '',
       el('div', { class: 'meta' }, el('span', { class: 'man-age' }, `${m.age} y.o.`), ' · ', el('span', { class: 'man-country' }, m.country))),
-    el('button', { class: 'btn-write', type: 'button', onclick: () => openChat(m) }, 'Write'));
+    el('div', { class: 'actions' },
+      likeButton(m),
+      el('button', { class: 'btn-write', type: 'button', onclick: () => openChat(m) }, 'Write')));
+}
+
+/** Keeps every message: the inbox and the tests look at the first time and the count. */
+function recordSent(id, text) {
+  const sent = store.get('demo_sent', {});
+  const prev = sent[id];
+  sent[id] = { text, at: Date.now(), first: prev?.first || prev?.at || Date.now(), count: (prev?.count || 0) + 1, history: [...(prev?.history || []), text] };
+  store.set('demo_sent', sent);
 }
 
 // Infinite feed variant (search.html?feed=1): no pager, more men load when you scroll to the end.
@@ -91,9 +118,7 @@ function initModal() {
     const status = modal.querySelector('.status');
     if (!text) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
     setTimeout(() => {
-      const sent = store.get('demo_sent', {});
-      sent[modal.dataset.manId] = { text, at: Date.now() };
-      store.set('demo_sent', sent);
+      recordSent(modal.dataset.manId, text);
       status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
     }, 300 + Math.random() * 500);
   });
@@ -111,7 +136,7 @@ function renderInbox() {
   for (const id of ids) {
     const m = all.find((x) => x.id === id) || { id, name: id };
     const h = hash('reply' + id);
-    const replies = h % 10 < 4 && Date.now() - sent[id].at > 4000 + (h % 8000);
+    const replies = h % 10 < 4 && Date.now() - (sent[id].first || sent[id].at) > 4000 + (h % 8000);
     const unread = replies && !read[id];
     const item = el('div', { class: 'dialog', 'data-man-id': id, id: `man-${id}` },
       el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
@@ -127,19 +152,24 @@ function renderInbox() {
 function renderProfile() {
   const id = new URLSearchParams(location.search).get('id');
   const m = Array.from({ length: PER_PAGE * PAGES }, (_, i) => man(i)).find((x) => x.id === id) || { id, name: 'Unknown', age: '', country: '' };
-  document.getElementById('profile').append(el('div', { class: 'man-card' },
+  document.getElementById('profile').append(el('div', { class: 'man-card profile-head' },
     el('div', { class: 'avatar' }, m.name[0].toUpperCase()),
-    el('div', { class: 'info' }, el('div', { class: 'man-name' }, m.name), el('div', { class: 'meta' }, `${m.age} y.o. · ${m.country}`))));
+    el('div', { class: 'info' }, el('div', { class: 'man-name' }, m.name), el('div', { class: 'meta' }, `${m.age} y.o. · ${m.country}`)),
+    m.age ? likeButton(m) : ''));
+  const about = el('div', { class: 'about' });
+  about.style.cssText = 'background:#fff;border-radius:12px;padding:14px 16px;margin-top:12px;min-height:700px;color:#5b4b60';
+  about.textContent = 'About me: I like hiking, old movies and good coffee. Looking for a kind woman to share my life with.';
+  document.getElementById('profile').append(about);
   const box = document.getElementById('profile-chat');
   box.querySelector('.btn-send').addEventListener('click', () => {
     const text = box.querySelector('textarea').value.trim();
     const status = box.querySelector('.status');
     if (!text) { status.innerHTML = '<span class="send-error">Message is empty</span>'; return; }
     setTimeout(() => {
-      const sent = store.get('demo_sent', {});
-      sent[m.id] = { text, at: Date.now() };
-      store.set('demo_sent', sent);
+      recordSent(m.id, text);
+      box.querySelector('textarea').value = '';
       status.innerHTML = '<span class="sent-ok">✓ Sent</span>';
+      setTimeout(() => { status.innerHTML = ''; }, 2500);
     }, 400);
   });
 }
@@ -149,5 +179,5 @@ window.addEventListener('DOMContentLoaded', () => {
   if (document.getElementById('results')) { renderSearch(); initModal(); }
   if (document.getElementById('dialogs')) renderInbox();
   const reset = document.getElementById('reset');
-  reset?.addEventListener('click', () => { localStorage.removeItem('demo_sent'); localStorage.removeItem('demo_read'); location.reload(); });
+  reset?.addEventListener('click', () => { for (const k of ['demo_sent', 'demo_read', 'demo_likes']) localStorage.removeItem(k); location.reload(); });
 });

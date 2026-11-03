@@ -128,6 +128,8 @@ export default function statsRoutes(db) {
     if (req.query.profile_id) { where.push('m.profile_id = ?'); params.push(Number(req.query.profile_id)); }
     if (req.query.status === 'replied') where.push('m.replied_at IS NOT NULL');
     else if (req.query.status === 'sent') where.push("m.status = 'sent' AND m.replied_at IS NULL");
+    else if (req.query.status === 'waiting') where.push("m.status = 'sent' AND m.stage = 'active' AND m.next_at IS NOT NULL");
+    else if (req.query.status === 'done') where.push("m.status = 'sent' AND m.stage = 'done'");
     else if (req.query.status === 'failed') where.push("m.status = 'failed'");
     if (req.query.q) {
       where.push('(m.man_name LIKE ? OR m.man_id LIKE ?)');

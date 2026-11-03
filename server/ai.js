@@ -103,14 +103,14 @@ export function resolvePrompt({ profile, settings, override }) {
   return { text: DEFAULT_PROMPT, source: 'default' };
 }
 
-async function callClaude({ apiKey, model, system, language, instructions, profile, previous }) {
+async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel }) {
   const client = clientFactory(apiKey);
   const userParts = [
     `Her profile:\n${profileBrief(profile)}`,
     `Write the message in ${language}.`,
     instructions ? `Extra guidance from the agency: ${instructions}` : '',
     profile.notes ? `Notes about her: ${profile.notes}` : '',
-    previous ? `Her current message is below. Write a fresh one with a different opening and a different question:\n${previous}` : '',
+    previous ? (previousLabel ? `${previousLabel}\n${previous}` : `Her current message is below. Write a fresh one with a different opening and a different question:\n${previous}`) : '',
   ].filter(Boolean);
 
   let response;
@@ -160,6 +160,51 @@ export async function generateInvite({ profile, settings, previous = '', promptO
     if (inviteProblems(out.text).length) throw new HttpError(422, 'ШІ двічі згенерував текст із контактами/посиланнями або занадто короткий. Спробуйте ще раз або змініть промт.');
   }
   return { text: out.text, source: 'ai', model: out.model, promptSource: prompt.source };
+}
+
+// ---------- follow-ups (2nd, 3rd… attempt when he has not replied) ----------
+const FOLLOWUP_PROMPT = `You write a short follow-up message a woman sends from her own profile on an international dating site to a man who has not answered her earlier message yet. She reads and answers every reply herself, so it must sound like her, in the first person.
+
+Write one message that:
+- is light, friendly and confident: no guilt, no pressure, never asks why he did not answer;
+- brings a new angle: a small detail from her day or her interests and one easy question;
+- does not repeat the wording of her earlier messages;
+- is 120-300 characters, 1-3 sentences, plain text, with at most one emoji;
+- may use the placeholder {name} once (it is replaced with his first name before sending).
+
+Never include contact details, links, other apps or messengers, requests for money or gifts, sexual content, promises to meet, or claims that she already knows him.
+
+Reply with the message text only: no quotes, no preface, no explanation.`;
+
+const FOLLOWUP_TEMPLATES = [
+  'Hi {name}, just me again :) I made the best coffee this morning and thought of saying hello. How is your week going?',
+  'Hello again, {name}! I am curious what makes you laugh the most. Maybe you will tell me?',
+  '{name}, I hope your day is going well. I just came back from a long walk. What do you like to do to relax?',
+  'Hi {name} :) I will not give up so easily. Tell me one thing that made you smile today?',
+];
+
+export const templateFollowup = (profile, step) => ({ text: FOLLOWUP_TEMPLATES[(step + (profile.id || 0)) % FOLLOWUP_TEMPLATES.length], source: 'template', model: null });
+
+/** One follow-up text for the given scenario step (2, 3…). */
+export async function generateFollowup({ profile, settings, step, previous = [] }) {
+  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const language = profile.language || settings.ai.language || 'English';
+  if (!apiKey) return templateFollowup(profile, step);
+  const model = settings.ai.model || 'claude-opus-5-5';
+  const prev = previous.filter(Boolean).map((t, i) => `Message ${i + 1}: ${t}`).join('\n');
+  const ask = (extra = '') => callClaude({
+    apiKey, model, system: FOLLOWUP_PROMPT, language, profile,
+    instructions: [settings.ai.instructions, `This is attempt number ${step}.`, extra].filter(Boolean).join('\n'),
+    previous: prev ? `${prev}\n(These were sent before and got no answer. Write the next one, different from them.)` : '',
+    previousLabel: 'Her earlier messages:',
+  });
+  const hasContacts = (t) => FORBIDDEN.some((re) => re.test(t));
+  let out = await ask();
+  if (hasContacts(out.text)) {
+    out = await ask('The previous draft was rejected: it contained contact details, links or messenger names. Never include any of them.');
+  }
+  if (hasContacts(out.text)) throw new HttpError(422, 'ШІ згенерував повторне повідомлення з контактами/посиланнями. Спробуйте ще раз.');
+  return { text: out.text, source: 'ai', model: out.model };
 }
 
 // ---------- local template fallback (no API key) ----------

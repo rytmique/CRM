@@ -58,6 +58,11 @@ try {
   const maria = await api('POST', '/api/profiles', { name: 'Maria', age: 27, interests: 'dancing, books', city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id, license_id: lic[1].id }, owner);
   await api('POST', '/api/profiles', { name: 'Olha', age: 35, city: 'Odesa', country: 'Ukraine', site_id: site.id, status: 'paused' }, owner);
   await api('PUT', '/api/settings', { settings: { inboxCheckEvery: 2 } }, owner);
+  const FAST = { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: false };
+  await api('PUT', `/api/sites/${site.id}/scenario`, { scenario: {
+    steps: [{ actions: [{ do: 'click', action: 'like' }, { do: 'message', text: 'invite' }] }, { wait: 24, actions: [{ do: 'message', text: 'followup' }] }],
+    human: FAST,
+  } }, owner);
   log('data ready');
 
   // ---------- browser with the extension ----------
@@ -133,6 +138,9 @@ try {
   const testTab = context.pages().find((p) => p.url().includes('/demo-site/'));
   const sentInTest = await testTab.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('demo_sent') || '{}')).length);
   if (sentInTest) fail(`test mode actually sent ${sentInTest} messages`);
+  const likedInTest = await testTab.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('demo_likes') || '{}')).length);
+  if (likedInTest) fail(`test mode actually pressed Like ${likedInTest} times`);
+  if (!ts.log.some((l) => l.text.includes('Сторінка чоловіка: поле'))) fail(`test mode did not check his page:\n${ts.log.map((l) => l.text).join('\n')}`);
   if ((await api('GET', '/api/stats/overview?days=1', null, owner)).today.sent) fail('test mode recorded sends on the server');
   await testTab.close();
   await popup.uncheck('#test-mode');
@@ -180,6 +188,11 @@ try {
   if (Object.keys(sent).length !== 4) fail(`demo site received ${Object.keys(sent).length} messages`);
   if (Object.values(sent).some((m) => m.text.includes('{name}'))) fail('placeholder leaked into a sent message');
   log('demo site received 4 personalised messages, e.g.:', Object.values(sent)[0].text);
+  const likes = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_likes') || '{}'));
+  if (Object.keys(likes).length !== 4) fail(`scenario step 1 should like 4 men, liked ${Object.keys(likes).length}`);
+  const anaMsgs = await api('GET', `/api/stats/messages?profile_id=${anna.id}&status=waiting`, null, owner);
+  if (anaMsgs.total !== 4 - expectedReplies) fail(`expected ${4 - expectedReplies} men waiting for a follow-up, got ${anaMsgs.total}`);
+  log('scenario step 1: liked + wrote 4 men; follow-ups scheduled for those who did not reply');
 
   // ---------- second run: a site where you write from the man's profile page ----------
   await popup.bringToFront();
@@ -189,6 +202,7 @@ try {
     searchUrl: `${BASE}/demo-site/search.html`, card: '.man-card', cardId: 'a.man-name@href', cardName: '.man-name', cardAge: '.man-age',
     openChat: 'a.man-name', messageInput: '#profile-chat textarea', sendButton: '#profile-chat .btn-send', sentConfirm: '#profile-chat .sent-ok',
   } }, owner);
+  await api('PUT', `/api/sites/${profileSite.id}/scenario`, { scenario: { steps: [{ actions: [{ do: 'message', text: 'invite' }] }], human: FAST } }, owner);
   await api('PATCH', `/api/profiles/${maria.id}`, { site_id: profileSite.id, daily_limit: 2, min_delay: 5, max_delay: 6 }, owner);
   await popup.selectOption('#profile', String(maria.id));
   await popup.click('#start');
@@ -202,6 +216,107 @@ try {
   const back = context.pages().find((p) => p !== sitePage && p.url().includes('/demo-site/search.html'));
   if (!back) fail('bot did not return to the search list after writing from a profile page');
   log('profile-page flow ok: 2 sent, bot returned to the list');
+
+  // ---------- 🎯 teach a new site by clicking, then a run with follow-ups ----------
+  await popup.bringToFront();
+  await popup.click('#stop');
+  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  const taught = await api('POST', '/api/sites', { name: 'Навчений кліками' }, owner);
+  const kate = await api('POST', '/api/profiles', { name: 'Kate', age: 29, interests: 'tennis, jazz', site_id: taught.id, operator_id: op.id, license_id: lic[2].id, daily_limit: 4, min_delay: 5, max_delay: 6 }, owner);
+  const tpage = await context.newPage();
+  await tpage.goto(`${BASE}/demo-site/search.html?teach=1`);
+  const teachTab = await popup.evaluate(async () => (await chrome.tabs.query({})).find((t) => t.url.includes('teach=1')).id);
+  const teachRes = await popup.evaluate(({ pid, tid }) => new Promise((r) => chrome.runtime.sendMessage({ type: 'teach', profileId: pid, tabId: tid }, r)), { pid: kate.id, tid: teachTab });
+  if (!teachRes?.ok) fail(`teach failed: ${teachRes?.error}`);
+  await tpage.bringToFront();
+  const panel = tpage.locator('#__agency_teach');
+  await panel.locator('.panel').waitFor();
+  const row = (label) => panel.locator('.row').filter({ hasText: label });
+  const pickBtn = (label) => row(label).getByRole('button', { name: '🎯 Вибрати' });
+  await row('URL сторінки пошуку').getByRole('button', { name: '📍 Ця сторінка' }).click();
+  await pickBtn('Картка чоловіка').click();
+  await tpage.click('.man-card:nth-of-type(3) .avatar');
+  await row('ID чоловіка').locator('.val').waitFor();
+  await pickBtn('Наступна сторінка').click();
+  await tpage.click('a.next-page'); // intercepted while picking: the page stays
+  if (!tpage.url().includes('teach=1')) fail('picking "Next" navigated away');
+  await panel.locator('button[title="Згорнути"]').click();
+  await tpage.click('.man-card:nth-of-type(1) .btn-write'); // operator opens the chat as usual
+  await panel.locator('button[title="Згорнути"]').click();
+  await panel.getByRole('button', { name: /^Відправка/ }).click();
+  await pickBtn('Поле вводу').click();
+  await tpage.click('#chat-modal textarea');
+  await pickBtn('Кнопка «Надіслати»').click();
+  await tpage.click('#chat-modal .btn-send');
+  await pickBtn('Закрити вікно').click();
+  await tpage.click('#chat-modal .btn-close');
+  if (!(await tpage.locator('#chat-modal').isVisible())) fail('picking "Close" must not close the chat');
+  if (await tpage.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('demo_sent') || '{}')).length) !== Object.keys(sentAfter).length) fail('picking "Send" sent a message');
+  await tpage.click('#chat-modal .btn-close');
+  await panel.getByRole('button', { name: /^Кнопки/ }).click();
+  await panel.locator('input.n').nth(0).fill('Лайк');
+  await panel.getByRole('button', { name: '+ 🎯 Додати' }).nth(0).click();
+  await tpage.click('.man-card:nth-of-type(2) .btn-like');
+  await panel.locator('input.n').nth(1).fill('Онлайн');
+  await panel.getByRole('button', { name: '+ 🎯 Додати' }).nth(1).click();
+  await tpage.locator('.man-card .online').first().click();
+  await panel.getByRole('button', { name: /^Список/ }).click();
+  await sleep(300);
+  await tpage.screenshot({ path: path.join(OUT, '16-teach-panel.png') });
+  await panel.getByRole('button', { name: '💾 Зберегти' }).click();
+  await panel.locator('.msg', { hasText: 'Збережено' }).waitFor();
+  // the panel follows the operator to his profile page
+  await tpage.goto(`${BASE}/demo-site/profile.html?id=100037`);
+  await panel.locator('.panel').waitFor({ timeout: 10000 });
+  await panel.getByRole('button', { name: /^Його сторінка/ }).click();
+  await row('URL профілю чоловіка').getByRole('button', { name: '📍 Ця сторінка' }).click();
+  await panel.getByRole('button', { name: '💾 Зберегти' }).click();
+  await panel.locator('.msg', { hasText: 'Збережено' }).waitFor();
+  await tpage.screenshot({ path: path.join(OUT, '17-teach-man-page.png') });
+  await panel.locator('button[title="Закрити"]').click();
+  const tcfg = (await api('GET', '/api/sites', null, owner)).sites.find((x) => x.id === taught.id).config;
+  const want = { card: '.man-card', cardId: '@data-man-id', cardName: '.man-name', nextPage: '.next-page', openChat: '.btn-write', sendButton: '.btn-send', closeChat: '.btn-close' };
+  for (const [k, v] of Object.entries(want)) if (tcfg[k] !== v) fail(`taught ${k} = ${tcfg[k]}, expected ${v}\n${JSON.stringify(tcfg, null, 1)}`);
+  if (!tcfg.manUrl.endsWith('profile.html?id={id}')) fail(`taught manUrl ${tcfg.manUrl}`);
+  if (tcfg.actions[0]?.sel !== '.btn-like' || tcfg.actions[0].where !== 'card' || tcfg.marks[0]?.sel !== '.online') fail(`taught lists ${JSON.stringify([tcfg.actions, tcfg.marks])}`);
+  if (!tcfg.messageInput || !(await tpage.locator(tcfg.messageInput).count())) fail(`taught messageInput ${tcfg.messageInput} does not match his page`);
+  await tpage.close();
+  log('teach by clicking ok:', Object.keys(tcfg).filter((k) => tcfg[k] && (!Array.isArray(tcfg[k]) || tcfg[k].length)).join(', '));
+
+  // Kate: only "online" men; like + invite, then a follow-up right away (wait 0) on his own page, typed letter by letter
+  await api('PUT', `/api/sites/${taught.id}/scenario`, { scenario: {
+    steps: [
+      { actions: [{ do: 'click', action: tcfg.actions[0].key }, { do: 'message', text: 'invite' }] },
+      { wait: 0, actions: [{ do: 'message', text: 'followup' }] },
+    ],
+    filters: { needMarks: [tcfg.marks[0].key] },
+    human: { ...FAST, typing: true },
+  } }, owner);
+  const before = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_sent') || '{}'));
+  await popup.bringToFront();
+  await popup.reload();
+  await popup.waitForSelector(`#profile option[value="${kate.id}"]`, { state: 'attached' });
+  await popup.selectOption('#profile', String(kate.id));
+  await popup.click('#start');
+  const t2 = Date.now();
+  const kateDone = () => st?.profileId === kate.id && st.startedAt >= t2 - 5000 && ['limit', 'watching', 'error', 'stopped'].includes(st.status);
+  do { await sleep(1000); st = await readState(); } while (!kateDone() && Date.now() - t2 < 300000);
+  if (st.status !== 'limit') fail(`follow-up run: ${st.status} ${st.message}\n${st.log.map((l) => l.text).join('\n')}`);
+  if (st.sent !== 4 || st.followups !== 2) fail(`follow-up run sent ${st.sent}, follow-ups ${st.followups}\n${st.log.map((l) => l.text).join('\n')}`);
+  const afterKate = await sitePage.evaluate(() => JSON.parse(localStorage.getItem('demo_sent') || '{}'));
+  const touched = Object.keys(afterKate).filter((id) => (afterKate[id].count || 1) - (before[id]?.count || (before[id] ? 1 : 0)) > 0);
+  if (touched.length !== 2) fail(`Kate wrote to ${touched.length} men: ${touched}`);
+  for (const id of touched) {
+    if (hash('online' + id) % 3 !== 0) fail(`Kate wrote to ${id}, who is not online`);
+    const got = afterKate[id].count - (before[id]?.count || (before[id] ? 1 : 0));
+    if (got !== 2) fail(`man ${id} got ${got} messages from Kate, expected invite + follow-up`);
+    if (afterKate[id].history.at(-1).includes('{name}')) fail('placeholder leaked into a follow-up');
+  }
+  const kateRows = await api('GET', `/api/stats/messages?profile_id=${kate.id}`, null, owner);
+  if (kateRows.messages.some((m) => m.step !== 2 || m.stage !== 'done')) fail(`Kate rows: ${JSON.stringify(kateRows.messages.map((m) => [m.man_id, m.step, m.stage]))}`);
+  await popup.screenshot({ path: path.join(OUT, '18-popup-followups.png') });
+  await popup.click('#stop');
+  log('follow-ups ok: online men only, like + invite, then a typed follow-up on his page; both men dropped after the last attempt');
 
   // ---------- adapter on an infinite feed + IDs taken from links ----------
   const feed = await context.newPage();
@@ -238,8 +353,24 @@ try {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflow) fail('horizontal scroll on mobile dashboard');
 
-  // admin panel
   await page.setViewportSize({ width: 1360, height: 900 });
+  await page.click('a[href="#/sites"]');
+  await page.waitForSelector('.site-card');
+  await page.screenshot({ path: path.join(OUT, '19-sites.png'), fullPage: true });
+  await page.locator('.site-card', { hasText: 'Навчений кліками' }).getByText('⚙ Сценарій').click();
+  await page.waitForSelector('.modal .step-card');
+  await sleep(300);
+  await page.screenshot({ path: path.join(OUT, '20-scenario.png') });
+  await page.keyboard.press('Escape');
+  await page.click('a[href="#/profiles"]');
+  await page.waitForSelector('table.table.hover');
+  await page.click('text=Kate');
+  await page.waitForSelector('.modal .followup-box');
+  await sleep(300);
+  await page.screenshot({ path: path.join(OUT, '21-profile-followups.png') });
+  await page.keyboard.press('Escape');
+
+  // admin panel
   await page.click('.nav-foot button:has-text("Вийти")');
   await page.fill('#l-email', 'admin@e2e');
   await page.fill('#l-pass', 'admin12345');

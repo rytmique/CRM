@@ -10,12 +10,13 @@ const STATUS = {
   idle: ['Не запущено', ''],
   running: ['Працює', 'on'],
   waiting: ['Пауза між повідомленнями', 'on'],
+  sleeping: ['Неробочий час · стежить за відповідями', 'warn'],
   watching: ['Стежить за відповідями', 'on'],
   limit: ['Ліміт вичерпано · стежить за відповідями', 'warn'],
   stopped: ['Зупинено', ''],
   error: ['Помилка', 'err'],
 };
-const ACTIVE = ['running', 'waiting', 'watching', 'limit'];
+const ACTIVE = ['running', 'waiting', 'sleeping', 'watching', 'limit'];
 let profiles = [];
 let current = null;
 
@@ -35,11 +36,14 @@ function render(s) {
   $('s-sent').textContent = s.sent ?? 0;
   $('s-replies').textContent = s.replies ?? 0;
   $('s-remaining').textContent = s.remaining ?? '—';
+  $('pending').hidden = !s.pending && !s.followups;
+  $('pending').textContent = `↻ Повторні спроби: зроблено ${s.followups || 0}, чекають ${s.pending || 0}`;
   const active = ACTIVE.includes(s.status);
   $('start').hidden = active;
   $('stop').hidden = !active;
   $('profile').disabled = active;
   $('test-mode').disabled = active;
+  $('teach').disabled = active;
   $('invite-box').hidden = !s.inviteText;
   $('invite').textContent = s.inviteText || '';
   if (active && s.profileId) $('profile').value = String(s.profileId);
@@ -166,6 +170,13 @@ $('inbox').addEventListener('click', async () => {
     const r = await send('checkInbox');
     $('main-info').textContent = r.new ? `Нових відповідей: ${r.new}` : 'Нових відповідей немає';
   } catch (e) { $('main-info').textContent = ''; $('main-error').textContent = e.message; }
+});
+$('teach').addEventListener('click', async () => {
+  $('main-error').textContent = '';
+  try {
+    await send('teach', { profileId: Number($('profile').value), tabId: await activeTabId() });
+    window.close();
+  } catch (e) { $('main-error').textContent = e.message; }
 });
 $('probe').addEventListener('click', async () => {
   $('main-error').textContent = '';

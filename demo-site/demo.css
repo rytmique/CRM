@@ -21,3 +21,7 @@ button, .next-page { background:var(--accent); color:#fff; border:0; padding:8px
 #chat-modal .row { display:flex; gap:8px; justify-content:flex-end; align-items:center; } .btn-close { background:#eee; color:var(--ink); }
 .sent-ok { color:#2b8a3e; font-weight:600; } .send-error { color:#c92a2a; } .status { margin-right:auto; }
 .empty { color:var(--muted); }
+.btn-like { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+.btn-like.liked { background:#ffe3ec; }
+.online { display:inline-block; background:#2b8a3e; color:#fff; font-size:11px; padding:1px 7px; border-radius:10px; margin-left:6px; vertical-align:middle; }
+.actions { display:flex; gap:8px; }

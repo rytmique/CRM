@@ -120,7 +120,8 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   const cfg = await call('GET', `/api/bot/profiles/${p1.data.id}/config`, undefined, 'op');
   assert.equal(cfg.status, 200, JSON.stringify(cfg.data));
   assert.equal(cfg.data.limits.remaining, 3);
-  assert.equal(cfg.data.site.config.messageInput, '#chat-modal textarea');
+  assert.match(cfg.data.site.config.messageInput, /#chat-modal textarea/);
+  assert.equal(cfg.data.scenario.attempts, 3);
 
   // filter: age + dedupe + limit
   const candidates = [
@@ -301,6 +302,112 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   await call('PATCH', `/api/admin/agencies/${agencies.data.agencies[0].id}`, { active: false }, 'admin');
   assert.equal((await call('GET', '/api/profiles', undefined, 'owner')).status, 401);
   assert.equal((await call('POST', '/api/auth/login', { email: 'owner@rose', password: reset.data.password })).status, 403);
+});
+
+test('scenario: follow-ups until reply, three attempts, then dropped', async () => {
+  await login('admin2', 'root@test', 'rootpass123');
+  const ag = await call('POST', '/api/admin/agencies', { name: 'Lily', ownerName: 'L', ownerEmail: 'owner@lily', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'admin2');
+  assert.equal(ag.status, 201);
+  await login('lily', 'owner@lily', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'lily')).data.sites[0];
+  assert.equal(site.scenario.steps.length, 3, 'default scenario has 3 attempts');
+  assert.equal(site.config.actions[0].key, 'like');
+
+  // custom scenario: like + invite, then 2 follow-ups; only online men from the USA/Canada
+  const sc = await call('PUT', `/api/sites/${site.id}/scenario`, { scenario: {
+    steps: [
+      { actions: [{ do: 'click', action: 'like' }, { do: 'message', text: 'invite' }] },
+      { wait: 24, actions: [{ do: 'message', text: 'followup' }] },
+      { wait: 48, actions: [{ do: 'view', chance: 50 }, { do: 'message', text: 'custom', custom: 'Hey {name}, me again!\n---\nHi {name}, still here :)' }] },
+      { wait: 1, actions: [{ do: 'bogus' }] },
+    ],
+    filters: { countries: 'USA, Canada', needMarks: ['online'] },
+    human: { perHour: 2, hoursFrom: 8, hoursTo: 22 },
+  } }, 'lily');
+  assert.equal(sc.status, 200, JSON.stringify(sc.data));
+  assert.equal(sc.data.scenario.steps.length, 3, 'empty step dropped');
+
+  const lic = (await call('GET', '/api/licenses', undefined, 'lily')).data.licenses;
+  const p = (await call('POST', '/api/profiles', { name: 'Kate', age: 30, site_id: site.id, license_id: lic[0].id, daily_limit: 10 }, 'lily')).data;
+  const cfg = await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'lily');
+  assert.equal(cfg.status, 200, JSON.stringify(cfg.data));
+  assert.equal(cfg.data.scenario.attempts, 3);
+  assert.equal(cfg.data.scenario.human.perHour, 2);
+  const detail = (await call('GET', `/api/profiles/${p.id}`, undefined, 'lily')).data;
+  assert.deepEqual(detail.followupSteps, [2]);
+  assert.equal(detail.followups.length, 1, 'follow-up text written once at start');
+
+  const f = await call('POST', `/api/bot/profiles/${p.id}/filter`, { candidates: [
+    { id: '700001', name: 'Mike', country: 'USA', marks: ['online'] },
+    { id: '700002', name: 'Tom', country: 'UK', marks: ['online'] },
+    { id: '700003', name: 'Bob', country: 'Canada', marks: [] },
+    { id: '700004', name: 'Sam', country: 'Canada', marks: ['online'] },
+  ] }, 'lily');
+  assert.deepEqual(f.data.allowed.map((m) => m.id), ['700001', '700004']);
+  assert.equal(f.data.skipped.filter, 2);
+  const mike = f.data.allowed[0];
+  assert.deepEqual(mike.actions.map((a) => a.do), ['click', 'message']);
+  assert.equal(mike.actions[0].sel, '.btn-like');
+  assert.match(mike.url, /profile\.html\?id=700001$/);
+  assert.match(mike.text, /Mike/);
+
+  for (const m of f.data.allowed) {
+    const r = await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: m, ok: true, text: m.text, invite_id: m.invite_id }, 'lily');
+    assert.equal(r.status, 200);
+  }
+  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data.men.length, 0, 'nothing due yet');
+
+  // fast-forward: step 2 is due for both
+  db.prepare('UPDATE messages SET next_at = 1 WHERE profile_id = ?').run(p.id);
+  let due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data;
+  assert.equal(due.men.length, 2);
+  assert.equal(due.hourLeft, 0, 'per-hour cap reached after 2 messages');
+  assert.equal(due.men[0].step, 2);
+  assert.equal(due.men[0].actions[0].do, 'message');
+  assert.doesNotMatch(due.men[0].actions[0].text, /\{name\}/);
+
+  // Sam replies → his scenario stops
+  await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '700004' }] }, 'lily');
+  due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data;
+  assert.deepEqual(due.men.map((m) => m.id), ['700001']);
+
+  // Mike: step 2 ok, step 3 ok → done
+  let st = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '700001' }, step: 2, ok: true, messages: 1, text: 'x' }, 'lily');
+  assert.equal(st.data.stage, 'active');
+  const dup = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '700001' }, step: 2, ok: true, messages: 1 }, 'lily');
+  assert.equal(dup.status, 200, 'repeat report is ignored');
+  db.prepare("UPDATE messages SET next_at = 1 WHERE profile_id = ? AND man_id = '700001'").run(p.id);
+  due = (await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data;
+  assert.equal(due.men[0].step, 3);
+  assert.deepEqual(due.men[0].actions.map((a) => a.do), ['view', 'message']);
+  assert.match(due.men[0].actions[1].text, /^(Hey Mike, me again!|Hi Mike, still here :\))$/);
+  st = await call('POST', `/api/bot/profiles/${p.id}/step`, { man: { id: '700001' }, step: 3, ok: true, messages: 1 }, 'lily');
+  assert.equal(st.data.stage, 'done', 'three attempts used → dropped');
+  db.prepare('UPDATE messages SET next_at = 1 WHERE profile_id = ?').run(p.id);
+  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/due`, undefined, 'lily')).data.men.length, 0);
+
+  // daily counter includes follow-ups: 2 first + 2 follow-ups
+  assert.equal(st.data.remaining, 10 - 4);
+  const j = await call('GET', '/api/stats/messages?status=done', undefined, 'lily');
+  assert.deepEqual(j.data.messages.map((m) => m.man_id), ['700001']);
+
+  // operator teaching: may save only sites of own profiles
+  const op = await call('POST', '/api/operators', { name: 'Op', email: 'op@lily', password: 'oppass1' }, 'lily');
+  await login('lilyop', 'op@lily', 'oppass1', 'bot');
+  assert.equal((await call('PUT', `/api/bot/sites/${site.id}`, { config: { card: '.x' } }, 'lilyop')).status, 403);
+  await call('PATCH', `/api/profiles/${p.id}`, { operator_id: op.data.id }, 'lily');
+  const teach = await call('GET', `/api/bot/profiles/${p.id}/site`, undefined, 'lilyop');
+  assert.equal(teach.status, 200);
+  const newCfg = { ...teach.data.site.config, card: '.card-x', marks: [{ key: 'vip', name: 'VIP', sel: '.vip' }] };
+  assert.equal((await call('PUT', `/api/bot/sites/${site.id}`, { config: newCfg }, 'lilyop')).status, 200);
+  const after = (await call('GET', '/api/sites', undefined, 'lily')).data.sites[0];
+  assert.equal(after.config.card, '.card-x');
+  assert.deepEqual(after.config.marks.map((m) => m.key), ['vip']);
+  // panel form save keeps taught lists
+  await call('PUT', `/api/sites/${site.id}`, { name: after.name, config: { card: '.card-y', cardId: '@id', openChat: '.w', messageInput: 'textarea' } }, 'lily');
+  const kept = (await call('GET', '/api/sites', undefined, 'lily')).data.sites[0];
+  assert.equal(kept.config.actions[0].key, 'like');
+  assert.equal(kept.config.marks[0].key, 'vip');
 });
 
 test('extension zip is served with server url baked in', async () => {

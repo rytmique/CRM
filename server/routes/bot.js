@@ -1,13 +1,18 @@
 import { Router } from 'express';
-import { now } from '../db.js';
-import { HttpError, bad, str, int, oneOf, ah, dayKey } from '../util.js';
+import { now, tx } from '../db.js';
+import { HttpError, bad, forbidden, notFound, str, int, oneOf, ah, dayKey } from '../util.js';
 import {
   getSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
-  limitsFor, sentToday, insertInvite,
+  limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup,
 } from '../services.js';
-import { generateInvite } from '../ai.js';
+import { generateInvite, generateFollowup, templateFollowup } from '../ai.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
+import { SITE_FIELDS, sanitizeSiteConfig, fillUrl } from '../sites.js';
+import { siteScenario, followupSteps, filterReason, pickVariant, attempts } from '../scenario.js';
+
+const HOUR = 3600000;
+const MAX_STEP_FAILS = 3;
 
 /** API used by the browser extension (the bot). */
 export default function botRoutes(db) {
@@ -18,12 +23,63 @@ export default function botRoutes(db) {
     const id = String(m.id ?? '').trim().slice(0, 120);
     if (!id) return null;
     const age = Number.parseInt(m.age, 10);
+    const url = String(m.url ?? '').trim();
     return {
       id,
       name: String(m.name ?? '').trim().slice(0, 80),
       age: Number.isInteger(age) && age >= 18 && age < 100 ? age : null,
       country: String(m.country ?? '').trim().slice(0, 80),
+      url: /^https?:\/\//i.test(url) ? url.slice(0, 500) : '',
+      marks: Array.isArray(m.marks) ? m.marks.map(String).slice(0, 20) : [],
     };
+  };
+
+  const siteOf = (p) => (p.site_id ? db.prepare('SELECT * FROM sites WHERE id = ?').get(p.site_id) : null);
+  const configOf = (site) => { try { return JSON.parse(site?.config || '{}'); } catch { return {}; } };
+
+  /** Everything needed to turn a scenario step into concrete actions for one man. */
+  const stepContext = (p) => {
+    const site = siteOf(p);
+    const config = configOf(site);
+    return {
+      p, site, config, scenario: siteScenario(site),
+      invite: activeInvite(db, p.id), followups: followupTexts(db, p.id),
+    };
+  };
+
+  const fillHer = (t, p) => String(t || '').replaceAll('{her_name}', p.name || '').replaceAll('{her_age}', p.age ? String(p.age) : '');
+
+  /** Step index (0-based) → [{do:'message', text} | {do:'click', sel…} | {do:'view'…} | {do:'pause'…}] */
+  const resolveStep = (ctx, idx, man) => {
+    const step = ctx.scenario.steps[idx];
+    const out = [];
+    let inviteId = null;
+    for (const a of step?.actions || []) {
+      if (a.do === 'message') {
+        let t = '';
+        if (a.text === 'invite') { t = ctx.invite?.text || ''; inviteId = ctx.invite?.id ?? null; }
+        else if (a.text === 'followup') t = ctx.followups.get(idx + 1) || ctx.invite?.text || '';
+        else t = pickVariant(a.custom);
+        t = personalize(fillHer(t, ctx.p), man);
+        if (t) out.push({ do: 'message', text: t });
+      } else if (a.do === 'click') {
+        const def = (ctx.config.actions || []).find((x) => x.key === a.action);
+        if (def) out.push({ do: 'click', key: def.key, name: def.name, sel: def.sel, where: def.where });
+      } else {
+        out.push({ ...a });
+      }
+    }
+    return { actions: out, inviteId, messages: out.filter((a) => a.do === 'message').length };
+  };
+
+  const manUrl = (ctx, id, stored) => fillUrl(ctx.config.manUrl, id) || stored || '';
+
+  /** Next step time or "done" after the step with index `done` (0-based) has been completed at time t. */
+  const dueNow = (pid, t = now()) => db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND replied_at IS NULL AND next_at IS NOT NULL AND next_at <= ?").get(pid, t).n;
+
+  const after = (scenario, done, t) => {
+    const next = scenario.steps[done + 1];
+    return next ? { stage: 'active', next_at: t + Math.round(next.wait * HOUR) } : { stage: 'done', next_at: null };
   };
 
   /** Loads a profile and verifies it may run right now. */
@@ -71,6 +127,20 @@ export default function botRoutes(db) {
       const gen = await generateInvite({ profile: p, settings });
       invite = insertInvite(db, { profileId: p.id, text: gen.text, source: gen.source, model: gen.model, userId: req.user.id });
     }
+    const scenario = siteScenario(site);
+    // Follow-up texts are written once per profile and step, like the invite.
+    const have = followupTexts(db, p.id);
+    const previous = [invite.text];
+    for (const step of followupSteps(scenario)) {
+      if (!have.has(step)) {
+        let gen;
+        try { gen = await generateFollowup({ profile: p, settings, step, previous }); } catch { gen = templateFollowup(p, step); } // AI down must not stop the bot
+        saveFollowup(db, { profileId: p.id, step, text: gen.text, source: gen.source, model: gen.model });
+        have.set(step, gen.text);
+      }
+      previous.push(have.get(step));
+    }
+    const pending = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND next_at IS NOT NULL").get(p.id).n;
     res.json({
       profile: { id: p.id, name: p.name, age: p.age, site_profile_id: p.site_profile_id },
       site: { id: site.id, name: site.name, base_url: site.base_url, config: JSON.parse(site.config || '{}') },
@@ -78,8 +148,31 @@ export default function botRoutes(db) {
       limits: { ...limits, remaining },
       license: lic,
       inboxCheckEvery: settings.inboxCheckEvery,
+      timezone: settings.timezone,
+      scenario: { steps: scenario.steps.length, attempts: attempts(scenario), human: scenario.human, followups: scenario.steps.length > 1 },
+      pending,
     });
   }));
+
+  /** Site adapter for the click-to-teach panel in the extension. */
+  r.get('/profiles/:id/site', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const site = siteOf(p);
+    if (!site) throw bad('Для анкети не вибрано сайт. Виберіть сайт у панелі (Анкети → Редагувати).');
+    res.json({ site: { id: site.id, name: site.name, config: configOf(site) }, fields: SITE_FIELDS });
+  });
+
+  /** Saves what the operator taught by clicking. Owner: any site of the agency; operator: sites of own profiles. */
+  r.put('/sites/:id', (req, res) => {
+    const site = db.prepare('SELECT * FROM sites WHERE id = ? AND agency_id = ?').get(Number(req.params.id), req.user.agencyId);
+    if (!site) throw notFound('Сайт не знайдено');
+    if (req.user.role === 'operator' && !db.prepare('SELECT 1 FROM profiles WHERE site_id = ? AND operator_id = ?').get(site.id, req.user.id)) {
+      throw forbidden('Цей сайт не прив’язаний до ваших анкет');
+    }
+    const config = sanitizeSiteConfig(req.body?.config || {});
+    db.prepare('UPDATE sites SET config = ? WHERE id = ?').run(JSON.stringify(config), site.id);
+    res.json({ ok: true, config });
+  });
 
   r.post('/profiles/:id/filter', (req, res) => {
     const { p, settings, remaining } = runnable(req);
@@ -90,21 +183,89 @@ export default function botRoutes(db) {
       const m = readMan(raw);
       if (m && !seen.has(m.id)) { seen.add(m.id); men.push(m); }
     }
-    const invite = activeInvite(db, p.id);
-    if (!invite) throw new HttpError(409, 'У анкети немає активного інвайту');
+    const ctx = stepContext(p);
+    if (!ctx.invite) throw new HttpError(409, 'У анкети немає активного інвайту');
     const contacted = db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'");
     const contactedByAgency = db.prepare("SELECT 1 FROM messages WHERE agency_id = ? AND site_id IS ? AND man_id = ? AND status = 'sent' LIMIT 1");
-    const skipped = { contacted: 0, age: 0, limit: 0 };
+    const skipped = { contacted: 0, age: 0, filter: 0, limit: 0 };
     const allowed = [];
+    const hour = hourWindow(db, p.id, ctx.scenario.human.perHour);
     // Test mode in the extension never sends, so it is not bound by the daily limit.
     const cap = req.body?.test ? 5 : remaining;
     for (const m of men) {
       if (contacted.get(p.id, m.id) || (settings.dedupeAcrossAgency && contactedByAgency.get(p.agency_id, p.site_id, m.id))) { skipped.contacted++; continue; }
       if (m.age && ((p.target_age_min && m.age < p.target_age_min) || (p.target_age_max && m.age > p.target_age_max))) { skipped.age++; continue; }
+      if (filterReason(m, ctx.scenario.filters)) { skipped.filter++; continue; }
       if (allowed.length >= cap) { skipped.limit++; continue; }
-      allowed.push({ ...m, text: personalize(invite.text, m), invite_id: invite.id });
+      const step = resolveStep(ctx, 0, m);
+      const first = step.actions.find((a) => a.do === 'message');
+      allowed.push({ ...m, url: manUrl(ctx, m.id, m.url), step: 1, actions: step.actions, text: first?.text || '', invite_id: step.inviteId });
     }
-    res.json({ allowed, remaining, skipped });
+    res.json({ allowed, remaining, skipped, hourLeft: hour.left, hourResetAt: hour.resetAt });
+  });
+
+  /** Men whose next scenario step is due (he has not replied yet). */
+  r.get('/profiles/:id/due', (req, res) => {
+    const { p, remaining } = runnable(req);
+    const ctx = stepContext(p);
+    const limit = int(req.query.limit, { min: 1, max: 20, field: 'limit' }) || 5;
+    const t = now();
+    const hour = hourWindow(db, p.id, ctx.scenario.human.perHour, t);
+    const out = [];
+    if (remaining > 0) {
+      const rows = db.prepare(`SELECT * FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND replied_at IS NULL
+        AND next_at IS NOT NULL AND next_at <= ? ORDER BY next_at LIMIT ?`).all(p.id, t, limit * 2);
+      const finish = db.prepare("UPDATE messages SET stage = 'done', next_at = NULL WHERE id = ?");
+      const later = db.prepare('UPDATE messages SET next_at = ? WHERE id = ?');
+      for (const m of rows) {
+        if (out.length >= limit) break;
+        if (m.step >= ctx.scenario.steps.length) { finish.run(m.id); continue; } // the scenario got shorter
+        const man = { id: m.man_id, name: m.man_name, age: m.man_age, country: m.man_country };
+        const url = manUrl(ctx, m.man_id, m.man_url);
+        if (!url) { later.run(t + 6 * HOUR, m.id); continue; } // nowhere to go until "URL профілю чоловіка" is set
+        const step = resolveStep(ctx, m.step, man);
+        out.push({ ...man, url, step: m.step + 1, of: ctx.scenario.steps.length, actions: step.actions });
+      }
+    }
+    const pending = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND next_at IS NOT NULL").get(p.id).n;
+    const nextAt = db.prepare("SELECT MIN(next_at) AS t FROM messages WHERE profile_id = ? AND status = 'sent' AND stage = 'active' AND next_at IS NOT NULL").get(p.id).t;
+    res.json({ men: out, remaining, pending, nextAt, hourLeft: hour.left, hourResetAt: hour.resetAt, noManUrl: !ctx.config.manUrl });
+  });
+
+  /** Result of a follow-up step (2, 3…) for one man. */
+  r.post('/profiles/:id/step', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = getSettings(db, req.user.agencyId);
+    const ctx = stepContext(p);
+    const manId = String(req.body?.man?.id ?? req.body?.man_id ?? '').trim();
+    const stepNo = int(req.body?.step, { min: 2, max: 50, field: 'step' });
+    if (!manId || !stepNo) throw bad('Немає даних кроку');
+    const m = db.prepare("SELECT * FROM messages WHERE profile_id = ? AND man_id = ? AND status = 'sent'").get(p.id, manId);
+    if (!m) throw notFound('Цьому чоловіку анкета ще не писала');
+    const ok = Boolean(req.body?.ok);
+    const t = now();
+    const day = dayKey(t, settings.timezone);
+    const messages = ok ? Math.min(10, int(req.body?.messages, { min: 0, max: 10, field: 'messages' }) ?? 0) : 0;
+    let state = { stage: m.stage, next_at: m.next_at };
+    if (m.step === stepNo - 1 && m.stage === 'active') {
+      tx(db, () => {
+        db.prepare('INSERT INTO touches (agency_id, profile_id, operator_id, man_id, step, ok, messages, text, error, day, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+          .run(p.agency_id, p.id, req.user.id, manId, stepNo, ok ? 1 : 0, messages, str(req.body?.text, { max: 2000 }) || '', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t);
+        if (ok) {
+          state = after(ctx.scenario, stepNo - 1, t);
+          db.prepare('UPDATE messages SET step = ?, stage = ?, next_at = ?, last_at = ?, fails = 0 WHERE id = ?').run(stepNo, state.stage, state.next_at, t, m.id);
+        } else {
+          const fails = m.fails + 1;
+          state = fails >= MAX_STEP_FAILS ? { stage: 'done', next_at: null } : { stage: 'active', next_at: t + HOUR };
+          db.prepare('UPDATE messages SET stage = ?, next_at = ?, fails = ?, error = ? WHERE id = ?')
+            .run(state.stage, state.next_at, fails, str(req.body?.error, { max: 300 }) || 'помилка', m.id);
+        }
+      });
+    }
+    const limits = limitsFor(p, settings);
+    const remaining = Math.max(0, limits.dailyLimit - sentToday(db, p.id, day));
+    const hour = hourWindow(db, p.id, ctx.scenario.human.perHour, t);
+    res.json({ ok: true, stage: state.stage, remaining, stop: remaining === 0, hourLeft: hour.left, hourResetAt: hour.resetAt, due: dueNow(p.id, t) });
   });
 
   r.post('/profiles/:id/sent', (req, res) => {
@@ -117,18 +278,24 @@ export default function botRoutes(db) {
     const day = dayKey(t, settings.timezone);
     const inviteId = int(req.body?.invite_id, { min: 1, field: 'invite_id' }) ?? null;
     const validInvite = inviteId && db.prepare('SELECT 1 FROM invites WHERE id = ? AND profile_id = ?').get(inviteId, p.id) ? inviteId : null;
-    db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    const scenario = siteScenario(siteOf(p));
+    const next = ok ? after(scenario, 0, t) : { stage: 'active', next_at: null };
+    db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
+        step, stage, next_at, man_url, last_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)
       ON CONFLICT(profile_id, man_id) DO UPDATE SET
         status = excluded.status, error = excluded.error, day = excluded.day, sent_at = excluded.sent_at,
         text = excluded.text, invite_id = excluded.invite_id, operator_id = excluded.operator_id,
-        man_name = excluded.man_name, man_age = excluded.man_age, man_country = excluded.man_country
+        man_name = excluded.man_name, man_age = excluded.man_age, man_country = excluded.man_country,
+        step = 1, stage = excluded.stage, next_at = excluded.next_at, man_url = excluded.man_url, last_at = excluded.last_at
       WHERE messages.status = 'failed'`)
       .run(p.agency_id, p.id, req.user.id, p.site_id, man.id, man.name, man.age, man.country, validInvite,
-        str(req.body?.text, { max: 2000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t);
+        str(req.body?.text, { max: 2000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t,
+        next.stage, next.next_at, man.url, t);
     const limits = limitsFor(p, settings);
     const remaining = Math.max(0, limits.dailyLimit - sentToday(db, p.id, day));
-    res.json({ ok: true, remaining, stop: remaining === 0 });
+    const hour = hourWindow(db, p.id, scenario.human.perHour, t);
+    res.json({ ok: true, remaining, stop: remaining === 0, hourLeft: hour.left, hourResetAt: hour.resetAt, due: dueNow(p.id, t) });
   });
 
   r.post('/profiles/:id/replies', (req, res) => {
@@ -137,7 +304,8 @@ export default function botRoutes(db) {
     const list = Array.isArray(req.body?.men) ? req.body.men.slice(0, 300) : [];
     const t = now();
     const day = dayKey(t, settings.timezone);
-    const mark = db.prepare("UPDATE messages SET replied_at = ?, reply_day = ? WHERE profile_id = ? AND man_id = ? AND status = 'sent' AND replied_at IS NULL");
+    // A reply stops his scenario: from here on a live person writes to him.
+    const mark = db.prepare("UPDATE messages SET replied_at = ?, reply_day = ?, stage = 'replied', next_at = NULL WHERE profile_id = ? AND man_id = ? AND status = 'sent' AND replied_at IS NULL");
     const fresh = [];
     for (const raw of list) {
       const m = readMan(raw);

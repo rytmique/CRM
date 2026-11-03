@@ -51,8 +51,36 @@ export function limitsFor(profile, settings) {
   return { dailyLimit: profile.daily_limit ?? d.dailyLimit, minDelay, maxDelay };
 }
 
+/** Messages sent today: first contacts + follow-up messages. */
 export function sentToday(db, profileId, day) {
-  return db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND day = ? AND status = 'sent'").get(profileId, day).n;
+  const first = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND day = ? AND status = 'sent'").get(profileId, day).n;
+  const more = db.prepare('SELECT COALESCE(SUM(messages), 0) AS n FROM touches WHERE profile_id = ? AND day = ? AND ok = 1').get(profileId, day).n;
+  return first + more;
+}
+
+const HOUR = 3600000;
+
+/** Per-hour cap: how many more messages fit into the last 60 minutes, and when the window frees up. */
+export function hourWindow(db, profileId, perHour, t = now()) {
+  if (!perHour) return { left: null, resetAt: null };
+  const from = t - HOUR;
+  const times = [
+    ...db.prepare("SELECT sent_at AS at FROM messages WHERE profile_id = ? AND status = 'sent' AND sent_at > ?").all(profileId, from),
+    ...db.prepare('SELECT at FROM touches WHERE profile_id = ? AND ok = 1 AND messages > 0 AND at > ?').all(profileId, from),
+  ].map((r) => r.at).sort((a, b) => a - b);
+  const left = Math.max(0, perHour - times.length);
+  return { left, resetAt: left > 0 ? null : times[times.length - perHour] + HOUR };
+}
+
+export function followupTexts(db, profileId) {
+  return new Map(db.prepare('SELECT step, text FROM followups WHERE profile_id = ?').all(profileId).map((r) => [r.step, r.text]));
+}
+
+export function saveFollowup(db, { profileId, step, text, source, model }) {
+  db.prepare(`INSERT INTO followups (profile_id, step, text, source, model, created_at) VALUES (?,?,?,?,?,?)
+    ON CONFLICT(profile_id, step) DO UPDATE SET text = excluded.text, source = excluded.source, model = excluded.model, created_at = excluded.created_at`)
+    .run(profileId, step, text, source, model ?? null, now());
+  return db.prepare('SELECT * FROM followups WHERE profile_id = ? AND step = ?').get(profileId, step);
 }
 
 export function insertInvite(db, { profileId, text, source, model, userId }) {

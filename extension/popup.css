@@ -36,3 +36,4 @@ a { color: var(--accent); }
 .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .check .muted { font-weight: 400; }
 body.testing .card { border-color: var(--accent); border-style: dashed; }
+button.teach { width: 100%; background: var(--bg); border-style: dashed; border-color: var(--accent); color: var(--accent); font-weight: 600; }

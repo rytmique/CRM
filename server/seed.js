@@ -4,6 +4,7 @@ import { createAgency, issueLicenses } from './routes/admin.js';
 import { insertInvite, getSettings } from './services.js';
 import { templateInvite } from './ai.js';
 import { dayKey } from './util.js';
+import { sanitizeScenario } from './scenario.js';
 
 const DAY = 86400000;
 
@@ -67,5 +68,18 @@ export function seedTestData(db, cfg, { password = 'test12345' } = {}) {
       }
     });
   });
+  db.prepare("UPDATE messages SET stage = 'replied' WHERE agency_id = ? AND replied_at IS NOT NULL").run(agencyId);
+  db.prepare("UPDATE messages SET stage = 'done', step = 3 WHERE agency_id = ? AND replied_at IS NULL AND status = 'sent' AND sent_at < ?").run(agencyId, t0 - 3 * DAY);
+  // Test stand: works around the clock and makes follow-ups within minutes, so everything can be seen at once.
+  if (site) {
+    db.prepare('UPDATE sites SET scenario = ? WHERE id = ?').run(JSON.stringify(sanitizeScenario({
+      steps: [
+        { actions: [{ do: 'click', action: 'like' }, { do: 'message', text: 'invite' }] },
+        { wait: 0.05, actions: [{ do: 'message', text: 'followup' }] },
+        { wait: 0.1, actions: [{ do: 'view', chance: 100, seconds: 6 }, { do: 'message', text: 'followup' }] },
+      ],
+      human: { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: true },
+    })), site.id);
+  }
   return { owner: 'owner@test', operator: 'operator@test', password };
 }
