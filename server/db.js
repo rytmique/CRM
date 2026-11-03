@@ -190,6 +190,9 @@ const MIGRATIONS = [
   ['messages', 'fails', 'INTEGER NOT NULL DEFAULT 0'],
   ['messages', 'last_at', 'INTEGER'],
   ['profiles', 'scenario_id', 'INTEGER'],
+  // operators create their own sites/templates; the owner controls everything
+  ['sites', 'created_by', 'INTEGER'],
+  ['scenario_templates', 'created_by', 'INTEGER'],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

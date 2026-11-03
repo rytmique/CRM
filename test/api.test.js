@@ -102,8 +102,12 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   const opProfiles = await call('GET', '/api/profiles', undefined, 'op');
   assert.deepEqual(opProfiles.data.profiles.map((p) => p.name), ['Anna']);
   assert.equal((await call('GET', `/api/profiles/${p2.data.id}`, undefined, 'op')).status, 404);
-  assert.equal((await call('PATCH', `/api/profiles/${p1.data.id}`, { name: 'Hacked' }, 'op')).status, 200);
-  assert.equal((await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'op')).data.profile.name, 'Anna', 'operator cannot rename');
+  // operator edits own profile fully, but can't hand it to someone else
+  assert.equal((await call('PATCH', `/api/profiles/${p1.data.id}`, { name: 'Anya', operator_id: 1 }, 'op')).status, 200);
+  const renamed = (await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'op')).data.profile;
+  assert.equal(renamed.name, 'Anya');
+  assert.equal(renamed.operator_id, op.data.id, 'operator cannot reassign');
+  await call('PATCH', `/api/profiles/${p1.data.id}`, { name: 'Anna' }, 'op');
   assert.equal((await call('GET', '/api/operators', undefined, 'op')).status, 403);
 
   // invites: template generation (no API key)
@@ -235,14 +239,15 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal(putDef.data.settings.ai.masterPrompt, '');
   await call('PUT', '/api/settings', { settings: { ai: { masterPrompt: master } } }, 'owner');
 
-  // Profile's own prompt beats the master prompt; operators cannot set it
+  // Profile's own prompt beats the master prompt; the operator of the profile may set it too
   await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: 'Own prompt for {her_name} only.' }, 'owner');
   await call('POST', `/api/profiles/${p1.data.id}/invites/generate`, {}, 'owner');
   assert.equal(seen.system, 'Own prompt for Anna only.');
-  await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: 'hacked' }, 'op');
-  assert.equal((await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'owner')).data.profile.prompt, 'Own prompt for {her_name} only.');
+  await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: 'Operator prompt' }, 'op');
+  assert.equal((await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'owner')).data.profile.prompt, 'Operator prompt');
+  await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: 'Own prompt for {her_name} only.' }, 'owner');
 
-  // Preview: tries a prompt (with unsaved fields), saves nothing, owner only
+  // Preview: tries a prompt (with unsaved fields), saves nothing
   const before = (await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner')).data.invites.length;
   const pv = await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, { prompt: 'Test prompt for {her_name}, {her_city}.', fields: { city: 'Lviv' } }, 'owner');
   assert.equal(pv.status, 200, JSON.stringify(pv.data));
@@ -252,7 +257,7 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal((await call('GET', `/api/profiles/${p1.data.id}/invites`, undefined, 'owner')).data.invites.length, before, 'preview saves nothing');
   const pvAgency = await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, {}, 'owner');
   assert.equal(pvAgency.data.promptSource, 'agency', 'empty preview prompt → agency master prompt, not the profile one');
-  assert.equal((await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, { prompt: 'x' }, 'op')).status, 403);
+  assert.equal((await call('POST', `/api/profiles/${p1.data.id}/invites/preview`, { prompt: 'x' }, 'op')).status, 200);
   await call('PATCH', `/api/profiles/${p1.data.id}`, { prompt: '' }, 'owner');
   await call('PUT', '/api/settings', { settings: { ai: { masterPrompt: '' } } }, 'owner');
 
@@ -489,4 +494,53 @@ test('extension zip is served with server url baked in', async () => {
   const buf = Buffer.from(await res.arrayBuffer());
   assert.ok(buf.includes(Buffer.from('agency-bot/manifest.json')));
   assert.ok(buf.includes(Buffer.from('self.AGENCY_DEFAULT_SERVER = "http://localhost:9"')));
+});
+
+test('roles: operator creates own profiles, sites and templates; owner controls', async () => {
+  await login('admin4', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Tulip', ownerName: 'T', ownerEmail: 'owner@tulip', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'admin4');
+  await login('tulip', 'owner@tulip', 'ownerpass1');
+  const demo = (await call('GET', '/api/sites', undefined, 'tulip')).data.sites[0];
+  const o1 = (await call('POST', '/api/operators', { name: 'Op1', email: 'op1@tulip', password: 'op1pass' }, 'tulip')).data;
+  await call('POST', '/api/operators', { name: 'Op2', email: 'op2@tulip', password: 'op2pass' }, 'tulip');
+  await login('op1', 'op1@tulip', 'op1pass');
+  await login('op2', 'op2@tulip', 'op2pass');
+
+  // sites: an operator adds and teaches their own; someone else's only once their profile uses it
+  const opSite = await call('POST', '/api/sites', { name: 'Мій сайт', base_url: 'https://dating.example/' }, 'op1');
+  assert.equal(opSite.status, 201, JSON.stringify(opSite.data));
+  const listed = (await call('GET', '/api/sites', undefined, 'op1')).data.sites;
+  assert.equal(listed.find((s) => s.id === opSite.data.id).can_edit, true);
+  assert.equal(listed.find((s) => s.id === demo.id).can_edit, false);
+  assert.equal((await call('PUT', `/api/sites/${demo.id}/scenario`, { reset: true }, 'op1')).status, 403);
+  assert.equal((await call('PUT', `/api/sites/${opSite.data.id}`, { name: 'Мій сайт 2' }, 'op2')).status, 403);
+  assert.equal((await call('DELETE', `/api/sites/${opSite.data.id}`, undefined, 'op1')).status, 403, 'only the owner deletes sites');
+
+  // profiles: an operator creates their own and gets a free license automatically
+  const a = await call('POST', '/api/profiles', { name: 'Kate', site_id: demo.id, operator_id: 999 }, 'op1');
+  assert.equal(a.status, 201, JSON.stringify(a.data));
+  assert.equal(a.data.licensed, true);
+  const kate = (await call('GET', `/api/profiles/${a.data.id}`, undefined, 'op1')).data.profile;
+  assert.equal(kate.operator_id, o1.id);
+  assert.equal(kate.license.state, 'active');
+  assert.equal((await call('PUT', `/api/sites/${demo.id}/scenario`, { reset: true }, 'op1')).status, 200, 'her site is now editable');
+  assert.equal((await call('POST', '/api/profiles', { name: 'Lisa', site_id: opSite.data.id }, 'op1')).data.licensed, true);
+  const c = await call('POST', '/api/profiles', { name: 'Nina' }, 'op2');
+  assert.equal(c.data.licensed, false, 'pool is empty');
+  assert.equal((await call('POST', `/api/profiles/${c.data.id}/license/auto`, {}, 'op2')).status, 400);
+  assert.equal((await call('GET', `/api/profiles/${c.data.id}`, undefined, 'op1')).status, 404, 'operators see only their own');
+  assert.equal((await call('DELETE', `/api/profiles/${a.data.id}`, undefined, 'op1')).status, 403, 'only the owner deletes profiles');
+  assert.equal((await call('GET', '/api/profiles', undefined, 'tulip')).data.profiles.length, 3, 'owner sees everything');
+  assert.equal((await call('POST', `/api/profiles/${a.data.id}/invites/preview`, { prompt: 'Write about {her_name}' }, 'op1')).status, 200);
+
+  // templates: own ones editable; the owner can edit all
+  const t = await call('POST', '/api/scenarios', { name: 'Op1 plan', scenario: {} }, 'op1');
+  assert.equal(t.status, 201);
+  assert.equal(t.data.template.can_edit, true);
+  assert.equal((await call('PUT', `/api/scenarios/${t.data.template.id}`, { name: 'x' }, 'op2')).status, 403);
+  assert.equal((await call('PUT', `/api/scenarios/${t.data.template.id}`, { name: 'Owner edit' }, 'tulip')).status, 200);
+
+  // settings stay with the owner; the prompt editor info is open to operators
+  assert.equal((await call('GET', '/api/settings', undefined, 'op1')).status, 403);
+  assert.ok((await call('GET', '/api/settings/prompt-info', undefined, 'op1')).data.defaultPrompt);
 });

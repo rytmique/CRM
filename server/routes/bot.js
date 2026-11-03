@@ -3,7 +3,7 @@ import { now, tx } from '../db.js';
 import { HttpError, bad, forbidden, notFound, str, int, oneOf, ah, dayKey } from '../util.js';
 import {
   getSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
-  limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup,
+  limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
 import { generateInvite, generateFollowup, templateFollowup } from '../ai.js';
 import { personalize } from '../personalize.js';
@@ -178,9 +178,7 @@ export default function botRoutes(db, cfg) {
   r.put('/sites/:id', (req, res) => {
     const site = db.prepare('SELECT * FROM sites WHERE id = ? AND agency_id = ?').get(Number(req.params.id), req.user.agencyId);
     if (!site) throw notFound('Сайт не знайдено');
-    if (req.user.role === 'operator' && !db.prepare('SELECT 1 FROM profiles WHERE site_id = ? AND operator_id = ?').get(site.id, req.user.id)) {
-      throw forbidden('Цей сайт не прив’язаний до ваших анкет');
-    }
+    if (!canEditSite(db, req.user, site)) throw forbidden('Цей сайт не прив’язаний до ваших анкет');
     const config = sanitizeSiteConfig(req.body?.config || {});
     db.prepare('UPDATE sites SET config = ? WHERE id = ?').run(JSON.stringify(config), site.id);
     res.json({ ok: true, config });

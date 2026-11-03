@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { requireRole } from '../auth.js';
 import { tx, now } from '../db.js';
-import { bad, notFound, forbidden, str, int, oneOf, updateSql, ah } from '../util.js';
+import { bad, notFound, str, int, oneOf, updateSql, ah } from '../util.js';
 import {
   getSettings, today, licenseState, profileScope, getVisibleProfile,
-  activeInvite, limitsFor, insertInvite, BOT_ONLINE_MS, followupTexts, saveFollowup,
+  activeInvite, limitsFor, insertInvite, BOT_ONLINE_MS, followupTexts, saveFollowup, autoLicense,
 } from '../services.js';
 import { generateInvite, generateFollowup } from '../ai.js';
 import express from 'express';
@@ -135,28 +135,44 @@ export default function profileRoutes(db, cfg) {
     });
   });
 
-  r.post('/', requireRole('owner'), (req, res) => {
+  /** Owner creates for anyone; an operator creates their own profile and gets a free license from the pool. */
+  r.post('/', (req, res) => {
     const body = readProfileBody(req.body, { creating: true });
+    const isOp = req.user.role === 'operator';
+    if (isOp) body.operator_id = req.user.id;
     checkRefs(req.user.agencyId, body);
-    const licenseId = int(req.body?.license_id, { min: 1, field: 'ліцензія' });
-    const id = tx(db, () => {
+    const auto = isOp || req.body?.license_id === 'auto';
+    const licenseId = auto ? undefined : int(req.body?.license_id, { min: 1, field: 'ліцензія' });
+    const out = tx(db, () => {
       const cols = Object.keys(body).filter((k) => body[k] !== undefined);
-      const out = db.prepare(`INSERT INTO profiles (agency_id, created_at, ${cols.join(', ')}) VALUES (?, ?, ${cols.map(() => '?').join(', ')})`)
+      const ins = db.prepare(`INSERT INTO profiles (agency_id, created_at, ${cols.join(', ')}) VALUES (?, ?, ${cols.map(() => '?').join(', ')})`)
         .run(req.user.agencyId, now(), ...cols.map((k) => body[k]));
-      const pid = Number(out.lastInsertRowid);
+      const pid = Number(ins.lastInsertRowid);
+      if (auto) return { id: pid, license: autoLicense(db, req.user.agencyId, pid) };
       assignLicense(req.user.agencyId, pid, licenseId);
-      return pid;
+      return { id: pid, license: licenseId ?? null };
     });
-    res.status(201).json({ id });
+    res.status(201).json({ id: out.id, licensed: Boolean(out.license) });
+  });
+
+  /** "Take a free license" for a profile that has none (operators can't pick licenses by hand). */
+  r.post('/:id/license/auto', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const cur = db.prepare('SELECT * FROM licenses WHERE profile_id = ?').get(p.id);
+    if (cur && licenseState(cur).valid) return res.json({ ok: true, licensed: true });
+    const id = tx(db, () => {
+      if (cur) db.prepare('UPDATE licenses SET profile_id = NULL WHERE id = ?').run(cur.id); // expired/revoked one goes back
+      return autoLicense(db, req.user.agencyId, p.id);
+    });
+    if (!id) throw bad('Вільних ліцензій немає — попросіть керівника докупити');
+    res.json({ ok: true, licensed: true });
   });
 
   r.patch('/:id', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
-    let body = readProfileBody(req.body, { creating: false });
-    if (req.user.role === 'operator') {
-      // Operators may only pause/resume their own profiles.
-      body = { status: body.status };
-    }
+    const body = readProfileBody(req.body, { creating: false });
+    // Operators edit their own profiles fully, but can't hand them to someone else.
+    if (req.user.role === 'operator') delete body.operator_id;
     checkRefs(req.user.agencyId, body);
     tx(db, () => {
       const upd = updateSql(body);
@@ -189,7 +205,7 @@ export default function profileRoutes(db, cfg) {
   }));
 
   /** Try a prompt on this profile without saving anything (master prompt editor, profile prompt). */
-  r.post('/:id/invites/preview', requireRole('owner'), ah(async (req, res) => {
+  r.post('/:id/invites/preview', ah(async (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const settings = getSettings(db, req.user.agencyId);
     const prompt = str(req.body?.prompt, { max: 8000, field: 'промт' }) || '';
@@ -300,7 +316,6 @@ export default function profileRoutes(db, cfg) {
   });
 
   r.delete('/:id/invites/:inviteId', (req, res) => {
-    if (req.user.role !== 'owner') throw forbidden();
     const inv = getInvite(req);
     db.prepare('DELETE FROM invites WHERE id = ?').run(inv.id);
     res.json({ ok: true });

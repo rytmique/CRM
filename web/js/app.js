@@ -48,6 +48,7 @@ const NAV = {
     ['dashboard', 'Дашборд', 'dashboard', dashboard],
     ['profiles', 'Мої анкети', 'profiles', profiles],
     ['journal', 'Журнал', 'journal', journal],
+    ['sites', 'Сайти', 'sites', sites],
     ['extension', 'Розширення', 'extension', extension],
   ],
   admin: [

@@ -23,7 +23,12 @@ export default async function profilesPage(main, { user }) {
   let statusFilter = '';
 
   async function loadRefs() {
-    if (!owner) return;
+    if (!owner) {
+      // Operators add their own profiles; a free license is taken from the agency pool by itself.
+      const [sites, sc] = await Promise.all([get('/api/sites'), get('/api/scenarios')]);
+      refs = { operators: [], sites: sites.sites, licenses: [], templates: sc.templates };
+      return;
+    }
     const [ops, sites, lic, sc] = await Promise.all([get('/api/operators'), get('/api/sites'), get('/api/licenses'), get('/api/scenarios')]);
     refs = { operators: ops.operators, sites: sites.sites, licenses: lic.licenses, templates: sc.templates };
   }
@@ -52,13 +57,13 @@ export default async function profilesPage(main, { user }) {
           h('td', botBadge(p), p.bot_info ? h('div.small.muted', p.bot_info) : null),
           h('td.num', h('b', `${fmtInt(p.sent_today)}`), h('span.muted', ` / ${p.limits.dailyLimit}`), h('div.small.muted', `відп.: ${p.replies_today}`)),
           h('td.invite-cell', p.invite_text ? h('span.clamp', p.invite_text) : h('span.muted', 'ще не згенеровано'))))))
-        : empty(all.length ? 'Нічого не знайдено' : owner ? 'Додайте першу анкету — бот почне розсилку інвайтів з неї.' : 'Вам ще не призначили анкет.',
-          owner && !all.length ? h('button.btn.primary', { onclick: safe(() => openForm()) }, '+ Додати анкету') : null));
+        : empty(all.length ? 'Нічого не знайдено' : 'Додайте першу анкету — бот почне розсилку інвайтів з неї.',
+          !all.length ? h('button.btn.primary', { onclick: safe(() => openForm()) }, '+ Додати анкету') : null));
     };
     renderTable();
     page.replaceChildren(
       h('div.page-head', h('h1', owner ? 'Анкети' : 'Мої анкети', h('span.count', fmtInt(all.length))),
-        owner ? h('button.btn.primary', { onclick: safe(() => openForm()) }, '+ Додати анкету') : null),
+        h('button.btn.primary', { onclick: safe(() => openForm()) }, '+ Додати анкету')),
       h('div.toolbar', search, status),
       tableBox);
   }
@@ -67,7 +72,7 @@ export default async function profilesPage(main, { user }) {
   async function openForm(p = null) {
     await loadRefs();
     const freeLicenses = refs.licenses.filter((l) => (l.state === 'free') || (p && l.profile_id === p.id));
-    const { defaultPrompt, promptVars } = await get('/api/settings');
+    const { defaultPrompt, promptVars } = await get('/api/settings/prompt-info');
     let form;
     const ownPrompt = promptEditor({
       value: p?.prompt || '', defaultPrompt, promptVars, fixedProfileId: p?.id, name: 'prompt', rows: 10, allowEmpty: true,
@@ -83,10 +88,12 @@ export default async function profilesPage(main, { user }) {
       field('Країна', input('country', p?.country)),
       field('Сайт', select('site_id', p?.site_id, [['', '— вибрати —'], ...refs.sites.map((s) => [s.id, s.name])], { 'data-num': '' })),
       field('ID анкети на сайті', input('site_profile_id', p?.site_profile_id)),
-      field('Оператор', select('operator_id', p?.operator_id, [['', '— не призначено —'], ...refs.operators.filter((o) => o.active).map((o) => [o.id, o.name])], { 'data-num': '' })),
+      owner ? field('Оператор', select('operator_id', p?.operator_id, [['', '— не призначено —'], ...refs.operators.filter((o) => o.active).map((o) => [o.id, o.name])], { 'data-num': '' })) : null,
       field('Сценарій', select('scenario_id', p?.scenario_id, [['', 'Як у сайту (за замовчуванням)'], ...refs.templates.map((t) => [t.id, `Шаблон: ${t.name}`])], { 'data-num': '' }),
         refs.templates.length ? 'Можна дати цій анкеті свій сценарій' : 'Шаблони створюються в «Сайти» → «Шаблони сценаріїв»'),
-      field('Ліцензія', select('license_id', p?.license?.id, licOptions, { 'data-num': '' }), refs.licenses.length ? 'Термін іде з моменту першої прив’язки' : 'Ліцензій немає — зверніться до постачальника'),
+      owner
+        ? field('Ліцензія', select('license_id', p?.license?.id, licOptions, { 'data-num': '' }), refs.licenses.length ? 'Термін іде з моменту першої прив’язки' : 'Ліцензій немає — зверніться до постачальника')
+        : h('p.small.muted', p ? '' : '🔑 Ліцензія підбереться сама з вільних ліцензій агенції.'),
       field('Фото (URL)', input('photo_url', p?.photo_url, { type: 'url', placeholder: 'https://…' }), null),
       field('Статус', select('status', p?.status || 'active', [['active', 'Активна'], ['paused', 'Пауза']])),
 
@@ -113,9 +120,10 @@ export default async function profilesPage(main, { user }) {
     const submit = () => busy(saveBtn, async () => {
       if (!form.reportValidity()) return;
       const data = formData(form);
+      let created = null;
       if (p) await patch(`/api/profiles/${p.id}`, data);
-      else await post('/api/profiles', data);
-      toast(p ? 'Збережено' : 'Анкету створено');
+      else created = await post('/api/profiles', data);
+      toast(p ? 'Збережено' : created?.licensed === false && !owner ? 'Анкету створено, але вільних ліцензій немає — попросіть керівника' : 'Анкету створено');
       m.close();
       await load();
       if (p) openDetail(p.id);
@@ -216,7 +224,8 @@ export default async function profilesPage(main, { user }) {
         h('div.row-wrap.right',
           h('button.btn', { onclick: safe(async () => { await patch(`/api/profiles/${p.id}`, { status: p.status === 'active' ? 'paused' : 'active' }); toast(p.status === 'active' ? 'Анкету поставлено на паузу — бот зупиниться' : 'Анкету активовано'); m.close(); load(); openDetail(p.id); }) },
             p.status === 'active' ? '⏸ Пауза' : '▶ Активувати'),
-          owner ? h('button.btn', { onclick: safe(() => { m.close(); return openForm(p); }) }, '✎ Редагувати') : null)),
+          !owner && !p.license?.valid ? h('button.btn', { onclick: safe(async () => { await post(`/api/profiles/${p.id}/license/auto`); toast('Ліцензію прив’язано'); m.close(); load(); openDetail(p.id); }) }, '🔑 Взяти вільну ліцензію') : null,
+          h('button.btn', { onclick: safe(() => { m.close(); return openForm(p); }) }, '✎ Редагувати'))),
       h('div.stat-row',
         h('div', h('b', fmtInt(p.sent_today)), h('span', `сьогодні з ${p.limits.dailyLimit}`)),
         h('div', h('b', fmtInt(p.replies_today)), h('span', 'відповідей сьогодні')),
@@ -242,7 +251,7 @@ export default async function profilesPage(main, { user }) {
           h('p', i.text),
           h('div.row-wrap', h('small.muted', `${SOURCE[i.source] || i.source} · ${fmtDate(i.created_at)}`),
             h('button.btn.sm', { onclick: safe(async () => { await post(`/api/profiles/${p.id}/invites/${i.id}/activate`); toast('Інвайт активовано'); m.close(); openDetail(p.id); load(); }) }, 'Зробити активним'),
-            owner ? h('button.btn.sm.ghost', { onclick: safe(async () => { await del(`/api/profiles/${p.id}/invites/${i.id}`); m.close(); openDetail(p.id); }) }, 'Видалити') : null))))) : null,
+            h('button.btn.sm.ghost', { onclick: safe(async () => { await del(`/api/profiles/${p.id}/invites/${i.id}`); m.close(); openDetail(p.id); }) }, 'Видалити')))))) : null,
       owner ? h('div.danger-zone', h('button.btn.danger.ghost', { onclick: safe(async () => {
         if (!(await confirmDialog(`Видалити анкету «${p.name}» разом зі статистикою? Ліцензія звільниться.`, { ok: 'Видалити', danger: true }))) return;
         await del(`/api/profiles/${p.id}`);

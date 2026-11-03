@@ -36,6 +36,26 @@ export function getVisibleProfile(db, user, id) {
   return p;
 }
 
+/** Owner: any site of the agency. Operator: sites they added or that their profiles use. */
+export function canEditSite(db, user, site) {
+  if (!site || site.agency_id !== user.agencyId) return false;
+  if (user.role === 'owner') return true;
+  if (user.role !== 'operator') return false;
+  if (site.created_by === user.id) return true;
+  return Boolean(db.prepare('SELECT 1 FROM profiles WHERE site_id = ? AND operator_id = ? LIMIT 1').get(site.id, user.id));
+}
+
+/** Binds the oldest free, still valid license of the agency to the profile. Returns the license id or null. */
+export function autoLicense(db, agencyId, profileId, t = now()) {
+  if (db.prepare('SELECT 1 FROM licenses WHERE profile_id = ?').get(profileId)) return null;
+  const l = db.prepare(`SELECT * FROM licenses WHERE agency_id = ? AND profile_id IS NULL AND status = 'active'
+    AND (expires_at IS NULL OR expires_at > ?) ORDER BY expires_at IS NULL, expires_at, id LIMIT 1`).get(agencyId, t);
+  if (!l) return null;
+  if (!l.activated_at) db.prepare('UPDATE licenses SET profile_id = ?, activated_at = ?, expires_at = ? WHERE id = ?').run(profileId, t, t + l.days * DAY, l.id);
+  else db.prepare('UPDATE licenses SET profile_id = ? WHERE id = ?').run(profileId, l.id);
+  return l.id;
+}
+
 export function profileLicense(db, profileId) {
   return db.prepare('SELECT * FROM licenses WHERE profile_id = ?').get(profileId) || null;
 }

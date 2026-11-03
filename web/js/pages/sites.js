@@ -22,7 +22,7 @@ export default async function sitesPage(main) {
       h('p.small.muted', 'Збережені сценарії: застосуйте до сайту (⚙ Сценарій → вибрати шаблон) або виберіть для окремої анкети (Анкета → Редагувати → Сценарій). ⭐ — готові шаблони.'),
       lib.templates.length ? h('ul.tpl-list', lib.templates.map((t) => h('li',
         h('div', h('b', t.name), h('div.small.muted', scenarioSummary(t.scenario), t.profiles ? ` · анкет: ${t.profiles}` : '')),
-        h('div.row-wrap',
+        t.can_edit === false ? h('span.small.muted', 'шаблон іншого оператора') : h('div.row-wrap',
           h('button.btn.sm', { onclick: () => editTemplate(t) }, '✎ Змінити'),
           h('button.btn.sm.ghost', { onclick: safe(async () => {
             if (!(await confirmDialog(`Видалити шаблон «${t.name}»?${t.profiles ? ` ${t.profiles} анкет повернуться до сценарію сайту.` : ''}`, { ok: 'Видалити', danger: true }))) return;
@@ -35,7 +35,7 @@ export default async function sitesPage(main) {
       h('div.page-head', h('h1', 'Сайти'),
         h('div.row-wrap',
           demoAvailable && !sites.some((s) => s.name.startsWith('Демо')) ? h('button.btn', { onclick: safe(async () => { await post('/api/sites', { name: 'Демо-сайт (для тесту)', preset: 'demo' }); toast('Демо-сайт додано'); load(); }) }, '+ Демо-сайт') : null,
-          h('button.btn.primary', { onclick: () => openForm(null, fields) }, '+ Додати сайт'))),
+          h('button.btn.primary', { onclick: openNew }, '+ Додати сайт'))),
       h('div.callout',
         h('b', '🎯 Найпростіше — навчити бота кліками.'),
         ' Відкрийте сайт знайомств, натисніть значок розширення → «🎯 Навчити бота на цьому сайті» і клікайте по картці чоловіка, кнопці «Написати», полю вводу. Ручне налаштування нижче — для тонких правок.'),
@@ -49,12 +49,44 @@ export default async function sitesPage(main) {
             (s.config.actions || []).length ? ` · кнопок: ${s.config.actions.map((a) => a.name).join(', ')}` : '',
             (s.config.marks || []).length ? ` · ознак: ${s.config.marks.map((a) => a.name).join(', ')}` : ''),
           h('div.small', h('b', 'Сценарій: '), scenarioSummary(s.scenario), s.customScenario ? '' : h('span.muted', ' (стандарт)')),
-          h('div.row-wrap',
-            h('button.btn.sm.primary', { onclick: () => openScenario(s, load) }, '⚙ Сценарій'),
-            h('button.btn.sm', { onclick: () => openForm(s, fields) }, '✎ Налаштувати вручну')));
+          s.can_edit === false
+            ? h('div.small.muted', 'Цей сайт налаштовує інший оператор. Додайте анкету на цьому сайті — і зможете його змінювати.')
+            : h('div.row-wrap',
+              h('button.btn.sm.primary', { onclick: () => openScenario(s, load) }, '⚙ Сценарій'),
+              h('button.btn.sm', { onclick: () => openForm(s, fields) }, '✎ Налаштувати вручну')));
       }))
-        : empty('Сайтів ще немає', h('button.btn.primary', { onclick: () => openForm(null, fields) }, '+ Додати сайт')),
+        : empty('Сайтів ще немає', h('button.btn.primary', { onclick: openNew }, '+ Додати сайт')),
       templates);
+  }
+
+  /** New site = just a name and the search page. The rest the bot learns by clicks (🎯 in the extension). */
+  function openNew() {
+    const form = h('form.form-grid',
+      h('div.span-2', field('Назва сайту *', input('name', '', { required: true, maxlength: 120, placeholder: 'Напр. DateRu' }))),
+      h('div.span-2', field('Сторінка пошуку чоловіків *', input('searchUrl', '', { required: true, type: 'url', placeholder: 'https://site.com/search' }),
+        'Відкрийте на сайті пошук чоловіків і скопіюйте адресу з рядка браузера')));
+    const save = h('button.btn.primary', 'Додати');
+    const m = modal({ title: 'Новий сайт', body: form, actions: [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), save] });
+    const submit = () => busy(save, async () => {
+      if (!form.reportValidity()) return;
+      const name = form.querySelector('[name=name]').value.trim();
+      const searchUrl = form.querySelector('[name=searchUrl]').value.trim();
+      let baseUrl = '';
+      try { baseUrl = `${new URL(searchUrl).origin}/`; } catch { /* the form checked it is a URL */ }
+      await post('/api/sites', { name, base_url: baseUrl, config: { searchUrl } });
+      m.close();
+      await load();
+      modal({
+        title: '✓ Сайт додано — тепер навчіть бота',
+        body: h('ol.steps',
+          h('li', 'Анкети → виберіть або створіть анкету на цьому сайті.'),
+          h('li', 'Відкрийте сторінку пошуку сайту в Chrome: ', h('a', { href: searchUrl, target: '_blank', rel: 'noopener' }, 'відкрити')),
+          h('li', 'Значок розширення ❤ → «🎯 Навчити бота на цьому сайті» → клікайте за підказками.'),
+          h('li', 'Потім у розширенні 🧪 Тест-режим → ▶ Старт.')),
+      });
+    }).catch(() => {});
+    save.addEventListener('click', submit);
+    form.addEventListener('submit', (e) => { e.preventDefault(); submit(); });
   }
 
   /** Editable list of taught buttons / marks: name + selector (+ where for buttons). */
@@ -98,7 +130,7 @@ export default async function sitesPage(main) {
       field('Адреса сайту', input('base_url', s?.base_url, { placeholder: 'https://site.com' })),
       Object.entries(groups).map(([g, list]) => [
         h('h4.span-2', g),
-        list.map((f) => field(`${f.label}${f.required ? ' *' : ''}`, input(`cfg.${f.key}`, s?.config?.[f.key], { required: Boolean(f.required), class: 'mono', spellcheck: 'false' }), f.hint)),
+        list.map((f) => field(`${f.label}${f.required ? ' *' : ''}`, input(`cfg.${f.key}`, s?.config?.[f.key], { class: 'mono', spellcheck: 'false' }), f.hint)),
       ]),
       h('h4.span-2', 'Кнопки (лайк, підморгнути…) і ознаки в картці (онлайн…)'),
       h('p.small.muted.span-2', 'Зазвичай їх додають кліками в розширенні (🎯 → «Кнопки й ознаки»). Тут можна перейменувати або видалити.'),
@@ -107,7 +139,7 @@ export default async function sitesPage(main) {
       h('p.small.muted.span-2', 'Формат витягування даних: «.name» — текст елемента; «.link@href» — атрибут елемента; «@data-id» — атрибут самої картки. Можна писати button:has-text("Like") і кілька варіантів через кому. Перевірити — кнопкою 🧪 тест у розширенні.'));
     const save = h('button.btn.primary', 'Зберегти');
     const actions = [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), save];
-    if (s) actions.unshift(h('button.btn.danger.ghost.left', { onclick: safe(async () => {
+    if (s?.can_delete) actions.unshift(h('button.btn.danger.ghost.left', { onclick: safe(async () => {
       if (!(await confirmDialog(`Видалити сайт «${s.name}»? В анкетах цього сайту треба буде вибрати інший.`, { ok: 'Видалити', danger: true }))) return;
       await del(`/api/sites/${s.id}`);
       m.close();

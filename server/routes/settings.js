@@ -9,6 +9,13 @@ const isMasked = (v) => typeof v === 'string' && v.includes('••••');
 
 export default function settingsRoutes(db) {
   const r = Router();
+
+  /** What the profile form needs for the prompt editor — for operators too. */
+  r.get('/prompt-info', (req, res) => {
+    const s = getSettings(db, req.user.agencyId);
+    res.json({ defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS, masterPrompt: s.ai?.masterPrompt || '' });
+  });
+
   r.use(requireRole('owner'));
 
   const view = (s) => ({
