@@ -587,17 +587,49 @@ try {
     messageInput: '.tr-dst', sendButton: '.btn-send', sentConfirm: '.chat .sent-ok', sendError: '.chat .send-error',
     chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs',
     findInput: '.find-id', inboxUrl: womenUrl, inboxItem: '.chat-item', inboxUnread: '.ci-unread', inboxName: '.ci-name',
-    herCurrent: '.her-now', herSwitch: '.her-switch', herItem: '.her-item', herItemId: '.her-id', herItemName: '.her-name', chatHer: '.ch-her',
   } }, owner);
   await api('PUT', `/api/sites/${womenSite.id}/scenario`, { scenario: {
     steps: [{ actions: [{ do: 'message', text: 'invite' }] }],
     human: { ...FAST, reactFrom: 0, reactTo: 1, idleChance: 0 },
   } }, owner);
-  await api('PATCH', `/api/profiles/${kate.id}`, { site_id: womenSite.id, site_profile_id: '5000000001', daily_limit: 30 }, owner);
-  await api('PATCH', `/api/profiles/${maria.id}`, { site_id: womenSite.id, site_profile_id: '5000000002', daily_limit: 30 }, owner);
+  await api('PATCH', `/api/profiles/${kate.id}`, { site_id: womenSite.id, site_profile_id: '5000000001', daily_limit: 30, min_delay: 5, max_delay: 6 }, owner);
+  await api('PATCH', `/api/profiles/${maria.id}`, { site_id: womenSite.id, site_profile_id: '5000000002', daily_limit: 30, min_delay: 5, max_delay: 6 }, owner);
   await sitePage.goto(womenUrl);
   await sitePage.evaluate(() => localStorage.setItem('demo_her', JSON.stringify('5000000002'))); // the site shows Maria, the bot starts as Kate
   await sitePage.reload();
+  // the admin teaches the "Анкети" tab by clicking
+  const wTabId = await popup.evaluate(async () => (await chrome.tabs.query({})).find((t) => t.url.includes('women=1')).id);
+  const wRes = await popup.evaluate(({ pid, tid }) => new Promise((r) => chrome.runtime.sendMessage({ type: 'teach', profileId: pid, tabId: tid }, r)), { pid: kate.id, tid: wTabId });
+  if (!wRes?.ok) fail(`women teach: ${wRes?.error}`);
+  await sitePage.bringToFront();
+  const wp = sitePage.locator('#__agency_teach');
+  await wp.locator('.panel').waitFor();
+  const wRow = (label) => wp.locator('.row').filter({ hasText: label });
+  const wPick = async (label, sel, opts) => { await wRow(label).getByRole('button', { name: '🎯 Вибрати' }).click(); await sitePage.click(sel, opts); await sleep(250); };
+  const wFold = () => wp.locator('button[title="Згорнути"]').click();
+  await wp.getByRole('button', { name: /^Анкети/ }).click();
+  await wPick('Яка анкета зараз', '.her-now');
+  await wPick('Перемикач анкет', '.her-switch');
+  await wFold(); await sitePage.click('.her-switch'); await sleep(300); await wFold(); // the admin opens the list of women
+  await wPick('Жінка в списку', '.her-item >> nth=1', { position: { x: 4, y: 4 } });
+  await wFold(); await sitePage.click('.her-switch'); await sitePage.click('.task >> nth=0'); await sleep(400); await wFold(); // closes it, opens a chat
+  await wPick('у шапці чату', '.ch-her');
+  await sitePage.screenshot({ path: path.join(OUT, '32-teach-women.png') });
+  await wp.getByRole('button', { name: '💾 Зберегти' }).click();
+  await wp.locator('.msg', { hasText: 'Збережено' }).waitFor();
+  await wp.locator('button[title="Закрити"]').click();
+  const wcfg = (await api('GET', '/api/sites', null, owner)).sites.find((x) => x.id === womenSite.id).config;
+  const wHit = await sitePage.evaluate((c) => ({
+    herCurrent: document.querySelector(c.herCurrent)?.className, herSwitch: document.querySelector(c.herSwitch)?.className,
+    herItem: document.querySelectorAll(c.herItem).length, herItemId: document.querySelector(c.herItem)?.querySelector(c.herItemId)?.className,
+    herItemName: c.herItemName ? document.querySelector(c.herItem)?.querySelector(c.herItemName)?.className : '', chatHer: document.querySelector(c.chatHer)?.className,
+  }), wcfg);
+  if (wHit.herCurrent !== 'her-now' || wHit.herSwitch !== 'her-switch' || wHit.herItem !== 3 || wHit.herItemId !== 'her-id' || wHit.chatHer !== 'ch-her') {
+    fail(`women taught by clicks: ${JSON.stringify(wHit)}\n${JSON.stringify(wcfg, null, 1)}`);
+  }
+  await sitePage.evaluate(() => localStorage.setItem('demo_her', JSON.stringify('5000000002')));
+  await sitePage.reload();
+  log(`women taught by clicking: current ${wcfg.herCurrent}, switch ${wcfg.herSwitch}, row ${wcfg.herItem} (ID ${wcfg.herItemId}, name ${wcfg.herItemName || '—'}), chat ${wcfg.chatHer}`);
   await popup.bringToFront();
   await popup.reload();
   await popup.waitForSelector(`#profile option[value="${kate.id}"]`, { state: 'attached' });
@@ -629,6 +661,14 @@ try {
   await popup.bringToFront();
   await popup.click('#stop');
   await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
+  // the safety: a chat of another woman is never written in
+  await sitePage.click('.chat-item >> nth=0');
+  const wrongHer = await popup.evaluate(async ({ tid }) => {
+    await chrome.scripting.executeScript({ target: { tabId: tid }, files: ['content.js'] });
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tid }, func: () => window.__agencyBot.chatHerIs({ site: { chatHer: '.ch-her' }, id: '5000000001', name: 'Kate' }) });
+    return r.result;
+  }, { tid: wTabId });
+  if (wrongHer?.ok !== false || !/Maria/.test(wrongHer.now)) fail(`a chat of Maria passed as Kate's: ${JSON.stringify(wrongHer)}`);
   await popup.click('#rotate'); // back to one profile
   log('profile rotation ok: started as Kate (site switched from Maria), her hints done → switched the site to Maria → hers; never wrote as another woman');
 

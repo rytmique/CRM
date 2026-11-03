@@ -332,7 +332,7 @@ function renderDesk() {
     }));
     const sw = el('button', { class: 'her-switch', type: 'button' }, 'Анкети ▾');
     sw.addEventListener('click', () => { list.hidden = !list.hidden; });
-    document.querySelector('header .who').replaceChildren(el('span', { class: 'her-now' }), sw, list);
+    document.querySelector('.chats').prepend(el('div', { class: 'her-bar' }, el('span', { class: 'muted' }, 'Анкета:'), el('span', { class: 'her-now' }), sw, list));
   }
   showHer();
 
