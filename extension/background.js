@@ -84,7 +84,7 @@ async function api(path, { method = 'GET', body } = {}, attempt = 0) {
   try {
     res = await fetch(auth.server + path, {
       method,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${auth.token}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${auth.token}`, 'x-bot-version': chrome.runtime.getManifest().version },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -1503,7 +1503,7 @@ const handlers = {
     let res;
     try {
       res = await fetch(`${base}/api/auth/login`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: String(email || '').trim(), password, kind: 'bot', build: self.AGENCY_BUILD || '' }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: String(email || '').trim(), password, kind: 'bot', build: self.AGENCY_BUILD || '', version: chrome.runtime.getManifest().version }),
       });
     } catch {
       throw new Error(`Панель за адресою ${base} не відповідає. Перевірте, що вона запущена (чорне вікно start-test.bat) і адреса та сама, що в браузері панелі.`);
@@ -1523,6 +1523,14 @@ const handlers = {
   },
   async profiles() {
     return api('/api/bot/profiles');
+  },
+  /** After the new files were unpacked over the old ones: stop the bot and restart the extension with the new code. */
+  async reload() {
+    stopRequested = true;
+    await setState({ status: 'stopped', message: 'Перезапуск після оновлення' });
+    await chrome.storage.local.set({ updateTried: chrome.runtime.getManifest().version });
+    setTimeout(() => chrome.runtime.reload(), 300);
+    return {};
   },
   async start({ profileId, tabId, test, full, rotate }) {
     if (running) throw new Error('Бот уже працює');

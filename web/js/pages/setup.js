@@ -105,15 +105,10 @@ export default async function setupPage(main, { navigate }) {
       }).catch(() => {}));
       return [h('p', `Анкеті «${s.profile.name}» потрібен сайт.`), field('Сайт', sel), save];
     }
-    if (s.profile && st.license !== 'active' && st.license !== 'free') {
-      const take = h('button.btn.primary', '🔑 Взяти вільну ліцензію');
-      take.addEventListener('click', () => busy(take, async () => {
-        await post(`/api/profiles/${s.profile.id}/license/auto`);
-        toast('Ліцензію прив’язано');
-        await load(true);
-      }).catch(() => {}));
-      return [h('p', `Анкета «${s.profile.name}» без дійсної ліцензії — бот не запуститься.`), take,
-        h('p.small.muted', 'Немає вільних — попросіть керівника (або постачальника) додати ліцензії.')];
+    if (s.profile && st.license !== 'active') {
+      const why = { none: 'у команди ще немає плану анкет', expired: 'план команди закінчився', over: 'анкета понад план команди' }[st.license] || 'анкета не входить у план команди';
+      return [h('p', `«${s.profile.name}»: ${why} — бот не запуститься.`),
+        h('p.small.muted', st.license === 'over' ? 'Поставте непотрібну анкету на паузу або попросіть більше анкет у постачальника.' : 'Напишіть постачальнику — він увімкне план команди.')];
     }
     const f = {
       name: input('name', '', { maxlength: 80, placeholder: 'Anna' }),
@@ -127,10 +122,10 @@ export default async function setupPage(main, { navigate }) {
       if (!f.name.value.trim()) throw new Error('Вкажіть ім’я');
       const r = await post('/api/profiles', {
         name: f.name.value.trim(), age: f.age.value ? Number(f.age.value) : undefined, site_id: Number(f.site.value) || undefined,
-        bio: f.bio.value, interests: f.interests.value, license_id: 'auto',
+        bio: f.bio.value, interests: f.interests.value,
       });
       profileId = r.id;
-      toast(r.licensed ? 'Анкету створено, ліцензію прив’язано' : 'Анкету створено, але вільних ліцензій немає', r.licensed ? 'ok' : 'warn');
+      toast(r.licensed ? 'Анкету створено' : 'Анкету створено, але вона не входить у план команди', r.licensed ? 'ok' : 'warn');
       openKey = null;
       await load(true);
     }).catch(() => {}));

@@ -3,7 +3,7 @@ import { requireRole } from '../auth.js';
 import { tx, now } from '../db.js';
 import { bad, notFound, str, int, oneOf, updateSql, ah } from '../util.js';
 import {
-  getSettings, profileSettings, today, licenseState, profileScope, getVisibleProfile,
+  getSettings, profileSettings, planOf, accessFor, accessError, profileAccess, today, licenseState, profileScope, getVisibleProfile,
   activeInvite, limitsFor, insertInvite, BOT_ONLINE_MS, followupTexts, saveFollowup, autoLicense,
 } from '../services.js';
 import { checkProfileCap } from '../team.js';
@@ -71,15 +71,13 @@ export default function profileRoutes(db, cfg) {
       ORDER BY p.status = 'active' DESC, p.name COLLATE NOCASE`).all(day, day, ...scope.params, ...extraParams);
   };
 
-  const decorate = (db, user, p) => {
+  // "license" of a profile = is it in the team's plan (same shape as before, so old bots understand it)
+  const decorate = (db, user, p, plan = planOf(db, user.agencyId)) => {
     const settings = getSettings(db, user.agencyId);
-    const lic = p.license_id ? licenseState({
-      status: p.license_status, activated_at: p.license_activated_at, expires_at: p.license_expires_at,
-      days: p.license_days, profile_id: p.license_profile_id,
-    }) : licenseState(null);
+    const lic = accessFor(plan, p);
     return {
       ...p,
-      license: { id: p.license_id, key: p.license_key, ...lic, expiresAt: p.license_expires_at },
+      license: { ...lic, expiresAt: plan.until },
       limits: limitsFor(p, settings),
       bot_online: Boolean(p.bot_last_seen && now() - p.bot_last_seen < BOT_ONLINE_MS),
     };
@@ -115,7 +113,8 @@ export default function profileRoutes(db, cfg) {
   };
 
   r.get('/', (req, res) => {
-    res.json({ profiles: listQuery(req.user).map((p) => decorate(db, req.user, p)) });
+    const plan = planOf(db, req.user.agencyId);
+    res.json({ profiles: listQuery(req.user).map((p) => decorate(db, req.user, p, plan)), plan: { profiles: plan.profiles, used: plan.used, until: plan.until } });
   });
 
   r.get('/:id', (req, res) => {
@@ -152,31 +151,21 @@ export default function profileRoutes(db, cfg) {
     const isOp = req.user.role === 'operator';
     if (isOp) body.operator_id = req.user.id;
     checkRefs(req.user.agencyId, body);
-    checkProfileCap(db, req.user.agencyId);
-    const auto = isOp || req.body?.license_id === 'auto';
-    const licenseId = auto ? undefined : int(req.body?.license_id, { min: 1, field: 'ліцензія' });
-    const out = tx(db, () => {
-      const cols = Object.keys(body).filter((k) => body[k] !== undefined);
-      const ins = db.prepare(`INSERT INTO profiles (agency_id, created_at, ${cols.join(', ')}) VALUES (?, ?, ${cols.map(() => '?').join(', ')})`)
-        .run(req.user.agencyId, now(), ...cols.map((k) => body[k]));
-      const pid = Number(ins.lastInsertRowid);
-      if (auto) return { id: pid, license: autoLicense(db, req.user.agencyId, pid) };
-      assignLicense(req.user.agencyId, pid, licenseId);
-      return { id: pid, license: licenseId ?? null };
-    });
-    res.status(201).json({ id: out.id, licensed: Boolean(out.license) });
+    if (body.status !== 'paused') checkProfileCap(db, req.user.agencyId); // one more active profile must fit the plan
+    const ins = db.prepare(`INSERT INTO profiles (agency_id, created_at, ${Object.keys(body).filter((k) => body[k] !== undefined).join(', ')})
+      VALUES (?, ?, ${Object.keys(body).filter((k) => body[k] !== undefined).map(() => '?').join(', ')})`)
+      .run(req.user.agencyId, now(), ...Object.keys(body).filter((k) => body[k] !== undefined).map((k) => body[k]));
+    const id = Number(ins.lastInsertRowid);
+    const access = profileAccess(db, db.prepare('SELECT * FROM profiles WHERE id = ?').get(id));
+    res.status(201).json({ id, licensed: access.valid });
   });
 
-  /** "Take a free license" for a profile that has none (operators can't pick licenses by hand). */
+  /** Old bots / pages ask to "take a license": now it only says whether the profile is in the team's plan. */
   r.post('/:id/license/auto', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
-    const cur = db.prepare('SELECT * FROM licenses WHERE profile_id = ?').get(p.id);
-    if (cur && licenseState(cur).valid) return res.json({ ok: true, licensed: true });
-    const id = tx(db, () => {
-      if (cur) db.prepare('UPDATE licenses SET profile_id = NULL WHERE id = ?').run(cur.id); // expired/revoked one goes back
-      return autoLicense(db, req.user.agencyId, p.id);
-    });
-    if (!id) throw bad('Вільних ліцензій немає — попросіть керівника докупити');
+    const plan = planOf(db, p.agency_id);
+    const access = accessFor(plan, p);
+    if (!access.valid) throw bad(accessError(access, p, plan));
     res.json({ ok: true, licensed: true });
   });
 
@@ -186,11 +175,9 @@ export default function profileRoutes(db, cfg) {
     // Operators edit their own profiles fully, but can't hand them to someone else.
     if (req.user.role === 'operator') delete body.operator_id;
     checkRefs(req.user.agencyId, body);
-    tx(db, () => {
-      const upd = updateSql(body);
-      if (!upd.empty) db.prepare(`UPDATE profiles SET ${upd.sql} WHERE id = ?`).run(...upd.values, p.id);
-      if (req.user.role === 'owner') assignLicense(req.user.agencyId, p.id, int(req.body?.license_id, { min: 1, field: 'ліцензія' }));
-    });
+    if (body.status === 'active' && p.status !== 'active') checkProfileCap(db, req.user.agencyId); // back from a pause: must fit the plan
+    const upd = updateSql(body);
+    if (!upd.empty) db.prepare(`UPDATE profiles SET ${upd.sql} WHERE id = ?`).run(...upd.values, p.id);
     res.json({ ok: true });
   });
 

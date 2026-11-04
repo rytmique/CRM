@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireRole, hashPassword, destroyUserSessions } from '../auth.js';
-import { now } from '../db.js';
+import { now, cmpVersion } from '../db.js';
+import { latestBotVersion } from '../version.js';
 import { bad, notFound, str, updateSql } from '../util.js';
 import { today, BOT_ONLINE_MS } from '../services.js';
 import { operatorLink, resetOperatorLink, approveUser, rejectUser, checkOperatorCap, stopBots, setUserActive } from '../team.js';
@@ -16,10 +17,12 @@ export default function operatorRoutes(db) {
         (SELECT COUNT(*) FROM profiles p WHERE p.operator_id = u.id) AS profiles,
         (SELECT COUNT(*) FROM profiles p WHERE p.operator_id = u.id AND p.bot_last_seen > ?) AS bots_online,
         (SELECT COUNT(*) FROM messages m WHERE m.operator_id = u.id AND m.day = ? AND m.status = 'sent') AS sent_today,
-        (SELECT COUNT(*) FROM messages m WHERE m.operator_id = u.id AND m.reply_day = ?) AS replies_today
+        (SELECT COUNT(*) FROM messages m WHERE m.operator_id = u.id AND m.reply_day = ?) AS replies_today,
+        (SELECT s.version FROM sessions s WHERE s.user_id = u.id AND s.kind = 'bot' AND s.expires_at > ? ORDER BY s.last_used_at DESC LIMIT 1) AS bot_version
       FROM users u WHERE u.agency_id = ? AND u.role = 'operator' ORDER BY u.name COLLATE NOCASE`)
-      .all(now() - BOT_ONLINE_MS, day, day, req.user.agencyId);
-    res.json({ operators: rows });
+      .all(now() - BOT_ONLINE_MS, day, day, now(), req.user.agencyId);
+    const latest = latestBotVersion();
+    res.json({ operators: rows.map((o) => ({ ...o, bot_outdated: o.bot_version != null && cmpVersion(o.bot_version, latest) < 0 })), latestBot: latest });
   });
 
   // ---------- the team's registration link ----------

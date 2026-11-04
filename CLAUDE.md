@@ -29,7 +29,10 @@ server/
   strip.js        stripJs: прибирає коментарі/відступи з коду бота при завантаженні (токенізатор: рядки, шаблони, regex не чіпає)
   db.js           схема + MIGRATIONS (ALTER TABLE) + LATE_SQL індекси. Нові колонки — ТІЛЬКИ через MIGRATIONS
   auth.js         scrypt, Bearer-сесії (sha256 токена), ролі admin/owner/operator
-  services.js     ліцензії (+ autoLicense з пулу), canEditSite, ліміти, sentToday (перші + повторні), hourWindow, followups
+  services.js     ПЛАН КОМАНДИ замість ліцензій: planOf (settings.plan {profiles, until}; перші N активних анкет у плані), accessFor/profileAccess
+                  (форма {valid, state: active|over|expired|none, daysLeft} — та сама, що в старих ліцензій, поле 'license' у відповідях), accessError;
+                  profileSettings, canEditSite, ліміти (+ caps), sentToday, hourWindow, followups. Таблиця licenses — спадок, у UI не використовується
+  version.js      latestBotVersion() з extension/manifest.json; cmpVersion — у db.js
   scoring.js      бал чоловіка: ознаки картки (країна, вік, marks, слова) → спільна анонімна таблиця man_stats; rankingState
   billing.js      оплата за бота: operatorMonth/billingReport (заробіток введений або ≈ відповіді × perReply, шкала tiers, частка часу bot_activity / графік)
   learning.js     варіанти інвайтів (inviteStats, pickInvite = Thompson), optimizeProfile, спільна пам’ять ai_memory (refreshMemory, memoryLines), runLearning (таймер 30 хв в index.js)
@@ -68,7 +71,7 @@ web/js/pages/     join (реєстрація за посиланням #/join/<t
 demo-site/        фейковий сайт знайомств для тестів: картки, лайк, «online», чат-модалка зі скрепкою, профіль (+ лист, лічильники, Translate), вхідні,
                   капча (localStorage.demo_captcha), desk.html — «робочий стіл оператора» як у користувача (список чатів, чат з ID у шапці, підказки, глюк-підказка);
                   desk.html?women=1 — три жінки (вигадані ID 500000000N): .her-now, перемикач, свої підказки/чати (ключі localStorage demo_*@<id>)
-test/api.test.js  node:test по API (18 тестів)
+test/api.test.js  node:test по API (19 тестів)
 test/e2e.mjs      Playwright: справжнє розширення в Chromium на демо-сайті (повний сценарій)
 ```
 
@@ -87,6 +90,8 @@ test/e2e.mjs      Playwright: справжнє розширення в Chromium 
 12. 🔁 Зміна анкет (галочка в popup, `rotate`): `run(..., {rotate})` повертає 'limit'|'idle'|'stopped' → `rotateProfiles` бере наступну анкету того ж сайту (ліцензія, active, лишок ліміту; idle — відпочинок 10 хв, limit — 24 год) → `ensureHer` (herUrl з {pid} або клік herSwitch → herItem за herItemId/ім’ям → перевірка herCurrent). `writeHere` не пише, якщо `chatHer` показує іншу жінку. ID жінки = `profiles.site_profile_id`.
 13. Швидкість: popup `speed` 1–5 → `speedMul` (×2 … ×0.35) на всі паузи й друк. Стоп: `stopRequested` + `window.__agencyBotStop` у сторінці (typeText/submit перериваються, поле чиститься).
 14. Хто що бачить: NAV у web/js/app.js (owner: Головна, Команда, Анкети, Промпти, Журнал, Оплата, Сайти, Налаштування; приховані маршрути — licenses, setup, extension). Модель/навчання/caps — лише адмін (owner PUT /settings їх ігнорує). Промпт: анкета > оператор (users.prompt, profileSettings) > команда (ai.masterPrompt) > вбудований; фішки users.prompt_examples → у запит як приклади. Ключ: команди > платформи (якщо ai.platformKey).
+16. План команди: адмін задає «анкет у плані» + «до» (або без терміну) у запрошенні / картці команди (PUT /admin/agencies/:id/control {plan}); setPlan (team.js); створення/активація анкети понад план → 400; бот → 402 з поясненням. Міграція plan_v: старим командам план = к-сть ліцензій/анкет, без терміну.
+17. Оновлення бота: бот шле X-Bot-Version (sessions.version), /bot/profiles → bot {latest, min}; popup банер «Є нова версія» → завантажити (fetch /api/extension/download з токеном бота) → розпакувати туди ж → chrome.runtime.reload() (+ запасне посилання на chrome://extensions). minBotVersion (platform) → 426 на config. Після змін у extension/ — підняти version у manifest.json.
 15. Захист: бот логіниться з build (config.js AGENCY_BUILD); вимкнена копія → 403 і сесії видаляються; requireBuild (platform) — лише копії з панелі своєї команди. Віддалений стоп: heartbeat {startedAt, now} → stop, якщо stop_at пізніше старту; 401/403 на heartbeat → бот зупиняється.
 8. Навчання: сервер раз на 30 хв (`runLearning`): слабкий варіант (≥40 надсилань, ≥90 % гірший) → вимкнути + написати новий за зразком кращого; уроки пам’яті кожні 6 год (з цифр завжди; ШІ — якщо є ANTHROPIC_API_KEY на сервері).
 
@@ -130,6 +135,7 @@ npm run test-stand            # тестовий стенд на :3001 (той �
 захист бота (завантаження лише після входу, копії з мітками, вимкнення копій/пристроїв, без коментарів), ключ ШІ команди + облік по людях, промпт кожного оператора + фішки + «Що залітає»
 (вибір: «промпти кожен оператор сам собі», тімлід додає ключ на команду), простіша панель тімліда. Пристроїв на оператора — без обмежень (вибір користувача).
 Перший клієнт: тімлід із 10 операторами, у кожного 3–5 анкет.
+Потім (та сама сесія): ліцензії на анкету замінено «планом команди» (вибір користувача: «одна ліцензія на команду на N анкет, тімлід не морочиться»), зручне оновлення бота (банер у вікні бота, мін. версія).
 
 **Не перевірено на реальності:** справжній сайт знайомств (NDA), реальний деплой на Railway, справжні виклики Claude (в тестах мок), автопілот через добу (e2e перевіряє лише старт/стоп).
 

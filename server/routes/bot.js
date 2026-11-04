@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { now, tx } from '../db.js';
+import { now, tx, platformGet, cmpVersion } from '../db.js';
+import { latestBotVersion } from '../version.js';
 import { HttpError, bad, forbidden, notFound, str, int, oneOf, ah, dayKey } from '../util.js';
 import {
-  getSettings, profileSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
+  getSettings, profileSettings, planOf, accessFor, accessError, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
 import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter } from '../ai.js';
@@ -106,10 +107,13 @@ export default function botRoutes(db, cfg) {
   /** Loads a profile and verifies it may run right now. */
   const runnable = (req) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
-    const lic = licenseState(profileLicense(db, p.id));
-    if (!lic.valid) {
-      const why = { none: 'не має ліцензії', expired: 'має прострочену ліцензію', revoked: 'має відкликану ліцензію' }[lic.state] || 'не має дійсної ліцензії';
-      throw new HttpError(402, `Анкета «${p.name}» ${why}. Зверніться до керівника.`);
+    const plan = planOf(db, p.agency_id);
+    const lic = accessFor(plan, p);
+    if (!lic.valid) throw new HttpError(402, accessError(lic, p, plan));
+    // an old copy of the bot (the admin set a minimum version): tell how to update instead of working with old code
+    const min = platformGet(db, 'minBotVersion', '');
+    if (min && cmpVersion(req.user.botVersion, min) < 0) {
+      throw new HttpError(426, `Бот застарів (версія ${req.user.botVersion || 'стара'}, потрібна ${min}). Оновіть: у вікні бота «🔄 Оновити» або в панелі «Завантажити бота».`);
     }
     if (p.status !== 'active') throw new HttpError(409, `Анкету «${p.name}» поставлено на паузу в панелі.`);
     const settings = profileSettings(db, p);
@@ -125,7 +129,9 @@ export default function botRoutes(db, cfg) {
       FROM profiles p LEFT JOIN sites s ON s.id = p.site_id WHERE ${scope.where} ORDER BY p.name COLLATE NOCASE`).all(...scope.params);
     const settings = getSettings(db, req.user.agencyId);
     const day = dayKey(now(), settings.timezone);
+    const plan = planOf(db, req.user.agencyId);
     res.json({
+      bot: { latest: latestBotVersion(), min: platformGet(db, 'minBotVersion', '') }, // for "a new version is out"
       profiles: rows.map((p) => {
         const full = db.prepare('SELECT * FROM profiles WHERE id = ?').get(p.id);
         const limits = limitsFor(full, settings);
@@ -138,7 +144,7 @@ export default function botRoutes(db, cfg) {
           searchUrl: siteCfg.searchUrl || '',
           tested: Boolean(tested),
           started: Boolean(db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND status = 'sent' LIMIT 1").get(p.id)),
-          license: licenseState(profileLicense(db, p.id)),
+          license: accessFor(plan, p), // (the team's plan; same shape as the old license)
           sentToday: sentToday(db, p.id, day),
           dailyLimit: limits.dailyLimit,
         };

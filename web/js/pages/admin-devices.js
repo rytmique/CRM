@@ -10,7 +10,8 @@ export function devicesTable(devices, reload, { team = false } = {}) {
       h('td', h('b', d.name), h('div.small.muted', d.email)),
       team ? h('td', d.agency_name || h('span.muted', '—')) : null,
       h('td', d.kind === 'bot' ? badge('🧩 бот', 'info') : badge('🖥 панель', 'muted'),
-        d.kind === 'bot' ? h('div.small.muted', d.build ? (d.build_revoked ? 'копію вимкнено' : d.foreignBuild ? '⚠ копія іншої команди' : `копія ${d.build}`) : 'стара копія (без мітки)') : null),
+        d.kind === 'bot' ? h('div.small.muted', d.build ? (d.build_revoked ? 'копію вимкнено' : d.foreignBuild ? '⚠ копія іншої команди' : `копія ${d.build}`) : 'стара копія (без мітки)') : null,
+        d.kind === 'bot' ? h('div.small', d.outdated ? h('span.badge.warn', `версія ${d.version || 'стара'}`) : h('span.muted', `версія ${d.version}`)) : null),
       h('td', d.device),
       h('td', h('code.small', d.ip || '—')),
       h('td', ago(d.last_used_at)),
@@ -29,6 +30,16 @@ export default async function adminDevices(main) {
   async function load() {
     const [d, { builds }] = await Promise.all([get('/api/admin/devices'), get('/api/admin/builds')]);
     const strict = h('input', { type: 'checkbox', checked: d.requireBuild });
+    // the oldest version that may still start: older ones are told "update" (to switch everyone to a fix)
+    const minInput = h('input', { value: d.minBotVersion, placeholder: 'будь-яка', style: 'max-width:120px' });
+    const minSave = h('button.btn.sm', 'Зберегти');
+    minSave.addEventListener('click', () => busy(minSave, async () => {
+      await put('/api/admin/security', { minBotVersion: minInput.value.trim() });
+      toast(minInput.value.trim() ? `Старіші за ${minInput.value.trim()} боти не стартують, доки не оновляться` : 'Будь-яка версія може працювати');
+      load();
+    }).catch(() => {}));
+    const minBox = h('div.row-wrap', h('span.small', 'Мінімальна версія (старіші не стартують):'), minInput, minSave,
+      h('button.btn.sm.ghost', { onclick: () => { minInput.value = d.latest; } }, `= ${d.latest}`));
     strict.addEventListener('change', () => busy(null, async () => {
       if (strict.checked && d.oldCopies && !(await confirmDialog(`Зараз ${d.oldCopies} бот(ів) працюють зі старих копій без мітки — вони не зможуть увійти, доки люди не завантажать бота заново з панелі. Увімкнути?`, { ok: 'Увімкнути' }))) { strict.checked = false; return; }
       await put('/api/admin/security', { requireBuild: strict.checked });
@@ -37,8 +48,13 @@ export default async function adminDevices(main) {
     }).catch(() => {}));
     page.replaceChildren(
       h('div.page-head', h('h1', 'Пристрої й копії бота')),
-      h('div.callout', h('b', 'Як захищено бота. '), 'Без нашого сервера, підтвердженого акаунта й ліцензії бот нічого не вміє: тексти, навчання, сценарії й налаштування сайтів живуть на сервері. ',
+      h('div.callout', h('b', 'Як захищено бота. '), 'Без нашого сервера, підтвердженого акаунта й плану команди бот нічого не вміє: тексти, навчання, сценарії й налаштування сайтів живуть на сервері. ',
         'Кожне завантаження — окрема копія з міткою (видно, хто взяв). Код у копії без коментарів. Будь-яку копію чи пристрій можна вимкнути тут одним кліком.'),
+      h('section.card.stack',
+        h('h3', '🔄 Оновлення бота'),
+        h('p.small', `Найновіша версія: `, h('b', d.latest), d.outdated ? ` · зі старою версією зараз: ${d.outdated}` : ' · у всіх свіжа'),
+        h('p.small.muted', 'Люди бачать у вікні бота «Є нова версія» → «Завантажити» → розпакувати туди ж → «Перезапустити». Налаштування й вхід зберігаються.'),
+        minBox),
       h('section.card.stack',
         h('label.check', strict, h('span', h('b', 'Пускати лише копії бота, завантажені з панелі'), h('div.small.muted', 'Злита чи стара копія не зможе увійти. Копія іншої команди — теж.'))),
         d.oldCopies ? h('p.small', `⚠ Зараз працюють старі копії без мітки: ${d.oldCopies}. Попроси людей завантажити бота заново (меню «Завантажити бота»), потім вмикай.`) : null),

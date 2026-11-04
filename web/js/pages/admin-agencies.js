@@ -17,6 +17,9 @@ function randomPassword(len = 10) {
 }
 
 /** Ready-to-send message with the client's access — the admin just copies it. */
+/** "до 40 анкет, без терміну" / "до 40 анкет на 30 днів" */
+export const planText = (profiles, days) => (profiles ? `до ${profiles} анкет${days ? ` на ${days} днів` : ', без терміну'}` : '');
+
 export function accessModal({ title, email, password, licenses = 0, days = 0 }) {
   const text = [
     'Привіт! Ось твій доступ до Agency CRM:',
@@ -29,7 +32,7 @@ export function accessModal({ title, email, password, licenses = 0, days = 0 }) 
     '1. Увійди в панель і зміни пароль (Налаштування → Мій пароль).',
     '2. На головній сторінці є «Перші кроки» — просто йди по них зверху вниз.',
     '3. Бот-розширення: розділ «Розширення» → «Завантажити».',
-    licenses ? `\nЛіцензій: ${licenses} на ${days} днів — вони вже в розділі «Ліцензії».` : '',
+    licenses ? `\nПлан команди: ${planText(licenses, days)}. Нічого роздавати не треба — анкети просто працюють.` : '',
   ].join('\n').trim();
   const area = h('textarea.access-text', { rows: 13, readonly: true });
   area.value = text;
@@ -72,13 +75,13 @@ export default async function adminAgencies(main, { navigate }) {
           h('button.btn.primary', { onclick: () => inviteLeadForm() }, '+ Запросити тімліда'))),
       h('p.small.muted', 'Клікни на команду — відкриється її картка: люди, ліміти, ШІ, пристрої, стоп ботів.'),
       h('div.card.table-wrap', agencies.length ? h('table.table',
-        h('thead', h('tr', h('th', 'Команда'), h('th', 'Тімлід'), h('th.num', 'Операторів'), h('th.num', 'Анкет'), h('th.num', 'Діючих ліцензій'), h('th.num', 'Інвайтів за 30 дн'), h('th', 'Створено'), h('th', 'Статус'), h('th', ''))),
+        h('thead', h('tr', h('th', 'Команда'), h('th', 'Тімлід'), h('th.num', 'Операторів'), h('th.num', 'Анкет'), h('th.num', 'План'), h('th.num', 'Інвайтів за 30 дн'), h('th', 'Створено'), h('th', 'Статус'), h('th', ''))),
         h('tbody', agencies.map((a) => h('tr.clickable', { tabindex: 0, onclick: (e) => { if (!e.target.closest('button')) navigate(`agency?id=${a.id}`); } },
           h('td', h('b', a.name)),
           h('td', a.owner_email || '—'),
           h('td.num', fmtInt(a.operators)),
           h('td.num', fmtInt(a.profiles)),
-          h('td.num', fmtInt(a.licenses_live)),
+          h('td.num', a.plan?.profiles ? `${a.plan.used} / ${a.plan.profiles}` : h('span.muted', 'немає')),
           h('td.num', fmtInt(a.sent_30d)),
           h('td', fmtDate(a.created_at, false)),
           h('td', h('button.btn.sm', { onclick: safe(async () => {
@@ -95,20 +98,20 @@ export default async function adminAgencies(main, { navigate }) {
 
   function openForm() {
     const form = h('form.form-grid',
-      h('div.span-2', field('Назва агенції *', input('name', '', { required: true }))),
-      field('Ім’я керівника *', input('ownerName', '', { required: true })),
-      field('Email керівника (логін) *', input('ownerEmail', '', { required: true, type: 'email' })),
-      field('Пароль керівника *', input('ownerPassword', randomPassword(), { required: true, minlength: 8, autocomplete: 'off' }), 'Вже згенеровано — можна залишити'),
-      h('div.pair', field('Ліцензій одразу', input('licenses', 5, { type: 'number', min: 0, max: 500 })), field('днів кожна', input('days', 30, { type: 'number', min: 1, max: 3650 }))));
+      h('div.span-2', field('Назва команди *', input('name', '', { required: true }))),
+      field('Ім’я тімліда *', input('ownerName', '', { required: true })),
+      field('Email тімліда (логін) *', input('ownerEmail', '', { required: true, type: 'email' })),
+      field('Пароль тімліда *', input('ownerPassword', randomPassword(), { required: true, minlength: 8, autocomplete: 'off' }), 'Вже згенеровано — можна залишити'),
+      h('div.pair', field('Анкет у плані', input('licenses', 50, { type: 'number', min: 0, max: 10000 })), field('Днів (0 — без терміну)', input('days', 0, { type: 'number', min: 0, max: 3650 }))));
     const save = h('button.btn.primary', 'Створити');
-    const m = modal({ title: 'Нова агенція', body: form, actions: [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), save] });
+    const m = modal({ title: 'Нова команда (вручну)', body: form, actions: [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), save] });
     const submit = () => busy(save, async () => {
       if (!form.reportValidity()) return;
       const data = formData(form);
       const r = await post('/api/admin/agencies', data);
       m.close();
       load();
-      accessModal({ title: `Готово! Агенцію «${data.name}» створено`, email: data.ownerEmail, password: data.ownerPassword, licenses: r.keys.length, days: data.days });
+      accessModal({ title: `Готово! Агенцію «${data.name}» створено`, email: data.ownerEmail, password: data.ownerPassword, licenses: r.plan?.profiles || 0, days: Number(data.days) || 0 });
     }).catch(() => {});
     save.addEventListener('click', submit);
     form.addEventListener('submit', (e) => { e.preventDefault(); submit(); });

@@ -53,7 +53,8 @@ export default async function operatorsPage(main) {
           h('td.num', fmtInt(o.sent_today)),
           h('td.num', fmtInt(o.replies_today)),
           h('td', ago(o.last_login_at)),
-          h('td', o.active ? badge('Активний', 'ok') : badge('Вимкнено', 'muted')),
+          h('td', o.active ? badge('Активний', 'ok') : badge('Вимкнено', 'muted'),
+            o.bot_outdated ? h('div', h('span.badge.warn', { title: 'Попросіть оновити бота: у вікні бота «🔄 Оновити»' }, `старий бот ${o.bot_version || ''}`)) : null),
           h('td.actions', o.bots_online ? h('button.btn.sm', { title: 'Зупинити ботів цього оператора зараз (~30 с)', onclick: safe(async (e) => {
             e.stopPropagation();
             await post(`/api/operators/${o.id}/stop-bots`);

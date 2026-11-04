@@ -8,8 +8,8 @@
  */
 import crypto from 'node:crypto';
 import { now, tx } from './db.js';
-import { bad, notFound } from './util.js';
-import { getSettings } from './services.js';
+import { bad, notFound, mergeSettings } from './util.js';
+import { getSettings, planOf } from './services.js';
 import { destroyUserSessions } from './auth.js';
 
 const DAY = 86400000;
@@ -57,23 +57,35 @@ export function checkOperatorCap(db, agencyId) {
   if (n >= cap) throw bad(`Ліміт операторів для команди: ${cap}. Щоб додати більше — зверніться до постачальника.`);
 }
 
+/** One more active profile must fit into the team's plan (paused ones do not count). */
 export function checkProfileCap(db, agencyId) {
-  const cap = getSettings(db, agencyId).caps.maxProfiles;
-  if (!cap) return;
-  const n = db.prepare('SELECT COUNT(*) AS n FROM profiles WHERE agency_id = ?').get(agencyId).n;
-  if (n >= cap) throw bad(`Ліміт анкет для команди: ${cap}. Щоб додати більше — зверніться до постачальника.`);
+  const plan = planOf(db, agencyId);
+  if (plan.profiles && plan.used >= plan.profiles) {
+    throw bad(`У плані команди ${plan.profiles} анкет — усі зайняті. Поставте непотрібну анкету на паузу або попросіть більше в постачальника.`);
+  }
 }
 
-/** Approves a registration. Owners: only the platform admin; the licenses of the link are issued then. */
-export function approveUser(db, userId, { issueLicenses } = {}) {
+/** The team's plan: how many active profiles, and until when (days = 0 / empty → no end). */
+export function setPlan(db, agencyId, { profiles, days, until } = {}) {
+  const cur = getSettings(db, agencyId);
+  const plan = { ...cur.plan };
+  if (profiles !== undefined) plan.profiles = Math.max(0, Math.min(10000, Number(profiles) || 0));
+  if (until !== undefined) plan.until = until ? Number(until) : null;
+  else if (days !== undefined) plan.until = Number(days) > 0 ? now() + Number(days) * DAY : null;
+  db.prepare('UPDATE agencies SET settings = ? WHERE id = ?').run(JSON.stringify(mergeSettings(cur, { plan })), agencyId);
+  return plan;
+}
+
+/** Approves a registration. Owners: only the platform admin; the plan written on the link starts then. */
+export function approveUser(db, userId) {
   const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!u || !u.pending) throw notFound('Заявку не знайдено');
   if (u.role === 'operator') checkOperatorCap(db, u.agency_id);
   tx(db, () => {
     db.prepare('UPDATE users SET pending = 0, approved_at = ? WHERE id = ?').run(now(), u.id);
-    if (u.role === 'owner' && u.signup_link_id && issueLicenses) {
+    if (u.role === 'owner' && u.signup_link_id) {
       const l = db.prepare('SELECT licenses, days FROM signup_links WHERE id = ?').get(u.signup_link_id);
-      if (l?.licenses) issueLicenses(db, { agencyId: u.agency_id, count: l.licenses, days: l.days, note: 'з реєстрації' });
+      if (l?.licenses) setPlan(db, u.agency_id, { profiles: l.licenses, days: l.days });
     }
   });
   return u;

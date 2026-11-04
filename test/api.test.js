@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb } from '../server/db.js';
+import { openDb, cmpVersion } from '../server/db.js';
+import fs from 'node:fs';
 import { createApp, ensureAdmin } from '../server/app.js';
 import { setAiClientFactory } from '../server/ai.js';
 import { personalize } from '../server/personalize.js';
@@ -80,8 +81,8 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
     name: 'Rose Agency', ownerName: 'Olena', ownerEmail: 'owner@rose', ownerPassword: 'ownerpass1', licenses: 3, days: 30,
   }, 'admin');
   assert.equal(ag.status, 201, JSON.stringify(ag.data));
-  assert.equal(ag.data.keys.length, 3);
-  assert.match(ag.data.keys[0], /^AGC-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  assert.equal(ag.data.plan.profiles, 3, 'the team plan: up to 3 active profiles');
+  const agencyId = ag.data.id;
 
   await login('owner', 'owner@rose', 'ownerpass1');
   assert.equal((await call('GET', '/api/admin/agencies', undefined, 'owner')).status, 403);
@@ -97,15 +98,13 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal(op.status, 201);
   assert.equal((await call('POST', '/api/operators', { name: 'Dup', email: 'IRA@rose', password: 'irapass' }, 'owner')).status, 400);
 
-  // licenses
-  const lic = await call('GET', '/api/licenses', undefined, 'owner');
-  assert.equal(lic.data.summary.free, 3);
-  const [l1, l2] = lic.data.licenses;
+  // the team's plan: nothing to hand out, profiles just work while they fit
+  assert.deepEqual((await call('GET', '/api/profiles', undefined, 'owner')).data.plan.profiles, 3);
 
   // profiles
   const p1 = await call('POST', '/api/profiles', {
     name: 'Anna', age: 32, city: 'Kyiv', country: 'Ukraine', interests: 'yoga, travel, cooking',
-    operator_id: op.data.id, site_id: siteId, license_id: l1.id, target_age_min: 35, target_age_max: 60, daily_limit: 3,
+    operator_id: op.data.id, site_id: siteId, target_age_min: 35, target_age_max: 60, daily_limit: 3,
   }, 'owner');
   assert.equal(p1.status, 201, JSON.stringify(p1.data));
   const p2 = await call('POST', '/api/profiles', { name: 'Maria', age: 28, site_id: siteId }, 'owner');
@@ -136,8 +135,17 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.match(gen.data.invite.text, /\{name\}/);
   assert.match(gen.data.preview, /Michael/);
 
-  // bot: unlicensed profile is refused
-  assert.equal((await call('GET', `/api/bot/profiles/${p2.data.id}/config`, undefined, 'owner')).status, 402);
+  // bot: a profile over the team's plan is refused (the admin lowers the plan to 1: the newer profile is over it)
+  await call('PUT', `/api/admin/agencies/${agencyId}/control`, { plan: { profiles: 1 } }, 'admin');
+  const over = await call('GET', `/api/bot/profiles/${p2.data.id}/config`, undefined, 'owner');
+  assert.equal(over.status, 402);
+  assert.match(over.data.error, /понад план/);
+  assert.equal((await call('POST', '/api/profiles', { name: 'Third', site_id: siteId }, 'owner')).status, 400, 'no room in the plan');
+  const paused = await call('POST', '/api/profiles', { name: 'Third', site_id: siteId, status: 'paused' }, 'owner');
+  assert.equal(paused.status, 201, 'a paused profile does not take a place');
+  assert.equal((await call('PATCH', `/api/profiles/${paused.data.id}`, { status: 'active' }, 'owner')).status, 400);
+  await call('DELETE', `/api/profiles/${paused.data.id}`, undefined, 'owner');
+  await call('PUT', `/api/admin/agencies/${agencyId}/control`, { plan: { profiles: 3, until: new Date(Date.now() + 30 * 86400000).toISOString() } }, 'admin');
 
   // bot config
   const cfg = await call('GET', `/api/bot/profiles/${p1.data.id}/config`, undefined, 'op');
@@ -206,17 +214,15 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   const log = await call('GET', '/api/stats/messages?status=replied', undefined, 'owner');
   assert.equal(log.data.total, 1);
 
-  // license reassignment rules
-  assert.equal((await call('POST', `/api/licenses/${l2.id}/assign`, { profile_id: p2.data.id }, 'owner')).status, 200);
-  const lic2 = await call('GET', '/api/licenses', undefined, 'owner');
-  assert.equal(lic2.data.summary.active, 2);
-
-  // admin revokes → bot refused
-  await call('POST', `/api/admin/licenses/${l1.id}/revoke`, {}, 'admin');
-  assert.equal((await call('GET', `/api/bot/profiles/${p1.data.id}/config`, undefined, 'op')).status, 402);
-  await call('POST', `/api/admin/licenses/${l1.id}/restore`, {}, 'admin');
-  await call('POST', `/api/admin/licenses/${l1.id}/extend`, { days: 10 }, 'admin');
+  // the plan ends → the bot is refused; the admin moves the date (or takes the end away) → works again
+  await call('PUT', `/api/admin/agencies/${agencyId}/control`, { plan: { profiles: 3, until: new Date(Date.now() - 1000).toISOString() } }, 'admin');
+  const ended = await call('GET', `/api/bot/profiles/${p1.data.id}/config`, undefined, 'op');
+  assert.equal(ended.status, 402);
+  assert.match(ended.data.error, /План команди закінчився/);
+  await call('PUT', `/api/admin/agencies/${agencyId}/control`, { plan: { profiles: 3, until: new Date(Date.now() + 40 * 86400000).toISOString() } }, 'admin');
   assert.equal((await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'owner')).data.profile.license.daysLeft, 40);
+  await call('PUT', `/api/admin/agencies/${agencyId}/control`, { plan: { profiles: 3, until: null } }, 'admin');
+  assert.equal((await call('GET', `/api/profiles/${p1.data.id}`, undefined, 'owner')).data.profile.license.unlimited, true, 'no end date');
 
   // settings: secrets are masked and preserved
   const put = await call('PUT', '/api/settings', { settings: { ai: { apiKey: 'sk-ant-secret-123456', language: 'English' }, defaults: { dailyLimit: 200, minDelay: 30, maxDelay: 60 } } }, 'owner');
@@ -352,7 +358,7 @@ test('scenario: follow-ups until reply, three attempts, then dropped', async () 
   assert.equal(sc.data.scenario.steps.length, 3, 'empty step dropped');
 
   const lic = (await call('GET', '/api/licenses', undefined, 'lily')).data.licenses;
-  const p = (await call('POST', '/api/profiles', { name: 'Kate', age: 30, site_id: site.id, license_id: lic[0].id, daily_limit: 10 }, 'lily')).data;
+  const p = (await call('POST', '/api/profiles', { name: 'Kate', age: 30, site_id: site.id, daily_limit: 10 }, 'lily')).data;
   const cfg = await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'lily');
   assert.equal(cfg.status, 200, JSON.stringify(cfg.data));
   assert.equal(cfg.data.scenario.attempts, 3);
@@ -495,7 +501,7 @@ test('templates per profile and files attached to messages', async () => {
   assert.equal((await call('PUT', `/api/scenarios/${tpl.data.template.id}`, { name: 'Фото' }, 'iris')).data.template.name, 'Фото');
 
   const lic = (await call('GET', '/api/licenses', undefined, 'iris')).data.licenses;
-  const p = (await call('POST', '/api/profiles', { name: 'Lena', site_id: site.id, license_id: lic[0].id, scenario_id: tpl.data.template.id }, 'iris')).data;
+  const p = (await call('POST', '/api/profiles', { name: 'Lena', site_id: site.id, scenario_id: tpl.data.template.id }, 'iris')).data;
   assert.equal((await call('POST', '/api/profiles', { name: 'X', scenario_id: 999999 }, 'iris')).status, 400);
 
   // files: upload raw bodies, mark steps
@@ -605,7 +611,7 @@ test('roles: operator creates own profiles, sites and templates; owner controls'
   assert.equal((await call('PUT', `/api/sites/${opSite.data.id}`, { name: 'Мій сайт 2' }, 'op2')).status, 403);
   assert.equal((await call('DELETE', `/api/sites/${opSite.data.id}`, undefined, 'op1')).status, 403, 'only the owner deletes sites');
 
-  // profiles: an operator creates their own and gets a free license automatically
+  // profiles: an operator creates their own; it works while it fits the team's plan (2 here)
   const a = await call('POST', '/api/profiles', { name: 'Kate', site_id: demo.id, operator_id: 999 }, 'op1');
   assert.equal(a.status, 201, JSON.stringify(a.data));
   assert.equal(a.data.licensed, true);
@@ -614,9 +620,11 @@ test('roles: operator creates own profiles, sites and templates; owner controls'
   assert.equal(kate.license.state, 'active');
   assert.equal((await call('PUT', `/api/sites/${demo.id}/scenario`, { reset: true }, 'op1')).status, 200, 'her site is now editable');
   assert.equal((await call('POST', '/api/profiles', { name: 'Lisa', site_id: opSite.data.id }, 'op1')).data.licensed, true);
-  const c = await call('POST', '/api/profiles', { name: 'Nina' }, 'op2');
-  assert.equal(c.data.licensed, false, 'pool is empty');
-  assert.equal((await call('POST', `/api/profiles/${c.data.id}/license/auto`, {}, 'op2')).status, 400);
+  const full = await call('POST', '/api/profiles', { name: 'Nina' }, 'op2');
+  assert.equal(full.status, 400, 'the plan is full');
+  assert.match(full.data.error, /плані команди 2 анкет/);
+  const c = await call('POST', '/api/profiles', { name: 'Nina', status: 'paused' }, 'op2');
+  assert.equal(c.status, 201, 'a paused one can still be made');
   assert.equal((await call('GET', `/api/profiles/${c.data.id}`, undefined, 'op1')).status, 404, 'operators see only their own');
   assert.equal((await call('DELETE', `/api/profiles/${a.data.id}`, undefined, 'op1')).status, 403, 'only the owner deletes profiles');
   assert.equal((await call('GET', '/api/profiles', undefined, 'tulip')).data.profiles.length, 3, 'owner sees everything');
@@ -762,7 +770,7 @@ test('invites learn: variants by reply rate, weak ones replaced, shared lessons 
 
 test('setup wizard follows a new operator from nothing to a running bot', async () => {
   await login('admin7', 'root@test', 'rootpass123');
-  await call('POST', '/api/admin/agencies', { name: 'Lotus', ownerName: 'L', ownerEmail: 'owner@lotus', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin7');
+  await call('POST', '/api/admin/agencies', { name: 'Lotus', ownerName: 'L', ownerEmail: 'owner@lotus', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'admin7');
   await login('lotus', 'owner@lotus', 'ownerpass1');
   const newOp = (await call('POST', '/api/operators', { name: 'New', email: 'new@lotus', password: 'newpass1' }, 'lotus')).data;
   await login('newop', 'new@lotus', 'newpass1');
@@ -770,7 +778,7 @@ test('setup wizard follows a new operator from nothing to a running bot', async 
   assert.deepEqual(await steps(), { site: false, profile: false, extension: false, teach: false, test: false, start: false });
   // a profile on the ready demo site (like the test stand) does not tick the wizard: it is about the real site
   const demoSite = (await call('GET', '/api/sites', undefined, 'newop')).data.sites.find((x) => x.base_url.includes('/demo-site/'));
-  await call('POST', '/api/profiles', { name: 'Demo girl', site_id: demoSite.id, operator_id: newOp.id }, 'lotus'); // no license taken
+  await call('POST', '/api/profiles', { name: 'Demo girl', site_id: demoSite.id, operator_id: newOp.id }, 'lotus');
   assert.deepEqual(await steps(), { site: false, profile: false, extension: false, teach: false, test: false, start: false });
   assert.equal((await call('GET', '/api/stats/setup', undefined, 'newop')).data.demoOnly, true);
 
@@ -975,7 +983,9 @@ test('registration by link: admin → team lead (approved by admin), team lead �
   assert.equal(pend.role, 'owner');
   assert.equal((await call('POST', `/api/admin/users/${pend.id}/approve`, {}, 'adminR')).status, 200);
   await login('igor', 'igor@team.ua', 'longpass1');
-  assert.equal((await call('GET', '/api/licenses', undefined, 'igor')).data.licenses.length, 3, 'the licenses of the link are issued on approval');
+  const igorPlan = (await call('GET', '/api/profiles', undefined, 'igor')).data.plan;
+  assert.equal(igorPlan.profiles, 3, 'the plan of the link starts on approval');
+  assert.ok(igorPlan.until > Date.now() + 29 * 86400000, '30 days written on the link');
 
   // the team lead's link for operators
   const tl = (await call('GET', '/api/operators/link', undefined, 'igor')).data.link;
@@ -1016,11 +1026,11 @@ test('control panel: caps of the admin win, remote stop, blocking, overview and 
   const site = (await call('GET', '/api/sites', undefined, 'violet')).data.sites[0];
   await call('POST', '/api/operators', { name: 'Op A', email: 'opa@violet', password: 'opapass1' }, 'violet');
   // caps
-  assert.equal((await call('PUT', `/api/admin/agencies/${a.id}/control`, { caps: { dailyMax: 50, minDelayFloor: 60, maxOperators: 1, maxProfiles: 2 }, ai: { model: 'claude-haiku-5-5', variants: 2 } }, 'adminC')).status, 200);
+  assert.equal((await call('PUT', `/api/admin/agencies/${a.id}/control`, { caps: { dailyMax: 50, minDelayFloor: 60, maxOperators: 1 }, plan: { profiles: 2 }, ai: { model: 'claude-haiku-5-5', variants: 2 } }, 'adminC')).status, 200);
   assert.equal((await call('POST', '/api/operators', { name: 'Op B', email: 'opb@violet', password: 'opbpass1' }, 'violet')).status, 400, 'max operators');
   const p1 = (await call('POST', '/api/profiles', { name: 'P1', site_id: site.id, license_id: 'auto', daily_limit: 300, min_delay: 10, max_delay: 20 }, 'violet')).data;
   await call('POST', '/api/profiles', { name: 'P2', site_id: site.id }, 'violet');
-  assert.equal((await call('POST', '/api/profiles', { name: 'P3', site_id: site.id }, 'violet')).status, 400, 'max profiles');
+  assert.equal((await call('POST', '/api/profiles', { name: 'P3', site_id: site.id }, 'violet')).status, 400, 'the plan is full');
   await login('violetBot', 'owner@violet', 'ownerpass1', 'bot');
   const cfg = (await call('GET', `/api/bot/profiles/${p1.id}/config`, undefined, 'violetBot')).data;
   assert.equal(cfg.limits.dailyLimit, 50);
@@ -1037,7 +1047,7 @@ test('control panel: caps of the admin win, remote stop, blocking, overview and 
   assert.equal((await call('POST', `/api/bot/profiles/${p1.id}/heartbeat`, { state: 'running', startedAt: Date.now() + 1000, now: Date.now() }, 'violetBot')).data.stop, false);
   // the card and the overview
   const card = (await call('GET', `/api/admin/agencies/${a.id}/card`, undefined, 'adminC')).data;
-  assert.equal(card.caps.maxProfiles, 2);
+  assert.deepEqual([card.plan.profiles, card.plan.used], [2, 2]);
   assert.equal(card.ai.model, 'claude-haiku-5-5');
   assert.ok(card.people.some((u) => u.email === 'owner@violet' && u.devices >= 2));
   const ov = (await call('GET', '/api/admin/overview', undefined, 'adminC')).data;
@@ -1055,14 +1065,16 @@ test('control panel: caps of the admin win, remote stop, blocking, overview and 
 
 test('prompts: each operator their own prompt and tricks, used for their profiles; AI use counted per person', async () => {
   await login('adminP', 'root@test', 'rootpass123');
-  await call('POST', '/api/admin/agencies', { name: 'Peony', ownerName: 'P', ownerEmail: 'owner@peony', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'adminP');
-  await login('peony', 'owner@peony', 'ownerpass1');
-  const site = (await call('GET', '/api/sites', undefined, 'peony')).data.sites[0];
-  const op = (await call('POST', '/api/operators', { name: 'Maryna', email: 'maryna@peony', password: 'marynapass' }, 'peony')).data;
-  await login('maryna', 'maryna@peony', 'marynapass');
-  const p = (await call('POST', '/api/profiles', { name: 'Sofia', interests: 'books', site_id: site.id }, 'maryna')).data;
-  await call('PUT', '/api/settings', { settings: { ai: { apiKey: 'sk-ant-team-key-123456' } } }, 'peony');
-  await call('PUT', '/api/prompts/team', { prompt: 'TEAM PROMPT for {her_name}: write an opener.' }, 'peony');
+  await call('POST', '/api/admin/agencies', { name: 'Tansy', ownerName: 'P', ownerEmail: 'owner@tansy', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'adminP');
+  await login('tansy', 'owner@tansy', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'tansy')).data.sites[0];
+  const op = (await call('POST', '/api/operators', { name: 'Maryna', email: 'maryna@tansy', password: 'marynapass' }, 'tansy')).data;
+  await login('maryna', 'maryna@tansy', 'marynapass');
+  const made = await call('POST', '/api/profiles', { name: 'Sofia', interests: 'books', site_id: site.id }, 'maryna');
+  assert.equal(made.status, 201, JSON.stringify(made.data));
+  const p = made.data;
+  await call('PUT', '/api/settings', { settings: { ai: { apiKey: 'sk-ant-team-key-123456' } } }, 'tansy');
+  await call('PUT', '/api/prompts/team', { prompt: 'TEAM PROMPT for {her_name}: write an opener.' }, 'tansy');
   assert.equal((await call('PUT', '/api/prompts/team', { prompt: 'x' }, 'maryna')).status, 403, 'only the team lead changes the team prompt');
   await call('PUT', '/api/prompts/mine', { prompt: 'MARYNA PROMPT for {her_name}: short and playful.', examples: [{ text: 'Hi {name}! Guess which book I am reading now? Hint: it has a dragon.' }, 'too short'] }, 'maryna');
   let seen = null;
@@ -1074,12 +1086,12 @@ test('prompts: each operator their own prompt and tricks, used for their profile
   assert.match(seen.messages[0].content, /got replies[\s\S]*Guess which book/, 'her tricks as examples');
   assert.doesNotMatch(seen.messages[0].content, /too short/);
   // the team lead's own profile still uses the team prompt
-  const own = (await call('POST', '/api/profiles', { name: 'Lera', site_id: site.id }, 'peony')).data;
-  await call('POST', `/api/profiles/${own.id}/invites/generate`, {}, 'peony');
+  const own = (await call('POST', '/api/profiles', { name: 'Lera', site_id: site.id }, 'tansy')).data;
+  await call('POST', `/api/profiles/${own.id}/invites/generate`, {}, 'tansy');
   assert.match(seen.system, /^TEAM PROMPT for Lera/);
   setAiClientFactory(null);
   // who used the key how much
-  const usage = (await call('GET', '/api/settings', undefined, 'peony')).data.usage;
+  const usage = (await call('GET', '/api/settings', undefined, 'tansy')).data.usage;
   assert.equal(usage.find((u) => u.user_id === op.id)?.calls, 1);
   // "what works": everyone of the team, mine marked
   const pr = (await call('GET', '/api/prompts', undefined, 'maryna')).data;
@@ -1106,4 +1118,32 @@ test('code stripping keeps strings, templates and regexes intact', () => {
   assert.match(out, /\/\\\/\\\*\[\^\/\]\*\\\/\/g/);
   assert.doesNotMatch(out, /\n\n/);
   assert.doesNotThrow(() => new vm.Script(out.replace("'it''s'", "'its'")));
+});
+
+test('bot updates: the server tells the newest version; a minimum version stops old bots with a clear message', async () => {
+  await login('adminU', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Clover', ownerName: 'C', ownerEmail: 'owner@clover', ownerPassword: 'ownerpass1', licenses: 2 }, 'adminU');
+  await login('clover', 'owner@clover', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'clover')).data.sites[0];
+  const p = (await call('POST', '/api/profiles', { name: 'Ada', site_id: site.id }, 'clover')).data;
+  const bot = await call('POST', '/api/auth/login', { email: 'owner@clover', password: 'ownerpass1', kind: 'bot', version: '1.2.0' });
+  const asBot = (url, version) => fetch(base + url, { headers: { authorization: `Bearer ${bot.data.token}`, ...(version ? { 'x-bot-version': version } : {}) } });
+  const list = await (await asBot('/api/bot/profiles', '1.2.0')).json();
+  const latest = JSON.parse(fs.readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8')).version;
+  assert.equal(list.bot.latest, latest);
+  assert.ok(cmpVersion('1.2.0', latest) < 0, 'the old bot sees a newer version');
+  // the team lead and the admin see who has an old bot
+  assert.equal((await call('GET', '/api/admin/devices', undefined, 'adminU')).data.devices.find((d) => d.email === 'owner@clover' && d.kind === 'bot').outdated, true);
+  // a minimum version: old bots are told to update, new ones work
+  assert.equal((await call('PUT', '/api/admin/security', { minBotVersion: '9.9.9' }, 'adminU')).status, 400, 'not newer than the newest');
+  await call('PUT', '/api/admin/security', { minBotVersion: latest }, 'adminU');
+  const old = await asBot(`/api/bot/profiles/${p.id}/config`, '1.2.0');
+  assert.equal(old.status, 426);
+  assert.match((await old.json()).error, /Оновіть/);
+  assert.equal((await asBot(`/api/bot/profiles/${p.id}/config`, latest)).status, 200);
+  await call('PUT', '/api/admin/security', { minBotVersion: '' }, 'adminU');
+  assert.equal((await asBot(`/api/bot/profiles/${p.id}/config`, '1.2.0')).status, 200);
+  // versions compare as numbers
+  assert.equal(cmpVersion('1.10.0', '1.9.9'), 1);
+  assert.equal(cmpVersion('', '1.0.0'), -1);
 });

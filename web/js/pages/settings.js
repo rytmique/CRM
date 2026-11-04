@@ -102,7 +102,6 @@ export default async function settingsPage(main) {
         pwBtn),
       h('section.card', h('h3', 'Ще'),
         h('ul.tips',
-          h('li', h('a', { href: '#/licenses' }, 'Ліцензії'), ' — які анкети мають ліцензію, скільки вільних'),
           h('li', h('a', { href: '#/setup' }, '🚀 Підключення'), ' — покроковий майстер для нового сайту'),
           h('li', h('a', { href: '#/extension' }, 'Бот-розширення'), ' — як встановити і запустити')))));
 }

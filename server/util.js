@@ -35,6 +35,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   billing: { currency: '$', perReply: 10, tiers: [{ from: 0, pct: 5 }], prorate: true },
   // caps set by the platform admin (0 = no cap): the team cannot go above them
   caps: { dailyMax: 0, minDelayFloor: 0, maxOperators: 0, maxProfiles: 0 },
+  // the team's plan (instead of a license per profile): up to N active profiles; until = end date or null (no end)
+  plan: { profiles: 0, until: null },
 });
 
 function deepMerge(base, over) {

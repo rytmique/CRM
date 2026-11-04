@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { now } from '../db.js';
 import { int, lastDays } from '../util.js';
-import { getSettings, BOT_ONLINE_MS, licenseState, profileScope, profileLicense } from '../services.js';
+import { getSettings, BOT_ONLINE_MS, licenseState, profileScope, profileLicense, planOf, profileAccess } from '../services.js';
 import { siteReady, siteMissing } from '../sites.js';
 
 export default function statsRoutes(db) {
@@ -73,15 +73,10 @@ export default function statsRoutes(db) {
         return { ...m, chat_url: chatUrl };
       });
 
-    let licenses = null;
-    if (!isOp) {
-      const ls = db.prepare('SELECT * FROM licenses WHERE agency_id = ?').all(u.agencyId).map((l) => licenseState(l, t));
-      licenses = {
-        active: ls.filter((l) => l.state === 'active').length,
-        free: ls.filter((l) => l.state === 'free').length,
-        expiringSoon: ls.filter((l) => l.state === 'active' && l.daysLeft <= 3).length,
-      };
-    }
+    // the team's plan: how many profiles are used of how many (the team lead sees it; nothing to hand out)
+    const pl = planOf(db, u.agencyId);
+    const plan = isOp ? null : { profiles: pl.profiles, used: pl.used, until: pl.until, daysLeft: pl.until ? Math.max(0, Math.ceil((pl.until - t) / 86400000)) : null };
+    const licenses = null;
 
     res.json({
       range: { from, to: today, days },
@@ -90,7 +85,7 @@ export default function statsRoutes(db) {
       botsOnline: profiles.filter((p) => p.bot_online).length,
       profilesActive: profiles.filter((p) => p.status === 'active').length,
       profilesTotal: profiles.length,
-      daily, profiles, operators, recentReplies, licenses,
+      daily, profiles, operators, recentReplies, licenses, plan,
     });
   });
 
@@ -106,13 +101,12 @@ export default function statsRoutes(db) {
     });
     const operators = db.prepare("SELECT COUNT(*) AS n FROM users WHERE agency_id = ? AND role = 'operator' AND pending = 0").get(u.agencyId).n;
     const t = now();
-    const licensed = db.prepare(`SELECT COUNT(*) AS n FROM profiles p JOIN licenses l ON l.profile_id = p.id
-      WHERE p.agency_id = ? AND l.status = 'active' AND (l.expires_at IS NULL OR l.expires_at > ?)`).get(u.agencyId, t).n;
+    const licensed = planOf(db, u.agencyId).inPlan.size;
     const botRan = db.prepare('SELECT 1 FROM profiles WHERE agency_id = ? AND bot_last_seen IS NOT NULL LIMIT 1').get(u.agencyId)
       || db.prepare('SELECT 1 FROM messages WHERE agency_id = ? LIMIT 1').get(u.agencyId);
     const steps = [
       { key: 'site', title: 'Додай свій сайт знайомств', hint: 'Сайти → + Додати сайт. Підказки є біля кожного поля.', page: 'sites', done: ownSite },
-      { key: 'profile', title: 'Додай анкету й прив’яжи ліцензію', hint: 'Анкети → + Додати анкету: сайт, ліцензія, кілька слів про неї.', page: 'profiles', done: licensed > 0 },
+      { key: 'profile', title: 'Додай анкету', hint: 'Анкети → + Додати анкету: сайт і кілька слів про неї.', page: 'profiles', done: licensed > 0 },
       { key: 'bot', title: 'Встанови розширення й запусти бота', hint: 'Розширення → Завантажити. Спершу 🧪 тест, потім Старт.', page: 'extension', done: Boolean(botRan) },
       { key: 'ai', title: 'Підключи ШІ (ключ Claude)', hint: 'Налаштування → ШІ. Без ключа інвайти пише простий шаблон.', page: 'settings', done: Boolean(settings.ai.apiKey || process.env.ANTHROPIC_API_KEY), optional: true },
       { key: 'operator', title: 'Додай операторів', hint: 'Якщо бота запускатиме хтось інший. Можна й самому.', page: 'operators', done: operators > 0, optional: true },
@@ -142,7 +136,7 @@ export default function statsRoutes(db) {
     const t = now();
     const extension = Boolean(db.prepare(`SELECT 1 FROM sessions s JOIN users x ON x.id = s.user_id
       WHERE s.kind = 'bot' AND s.expires_at > ? AND ${u.role === 'operator' ? 'x.id = ?' : 'x.agency_id = ?'} LIMIT 1`).get(t, u.role === 'operator' ? u.id : u.agencyId));
-    const license = p ? licenseState(profileLicense(db, p.id)) : null;
+    const license = p ? profileAccess(db, { ...p, agency_id: u.agencyId }) : null;
     const sent = p ? db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent'").get(p.id).n : 0;
     const missing = site ? siteMissing(site.config) : [];
     const steps = [

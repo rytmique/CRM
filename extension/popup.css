@@ -45,3 +45,9 @@ a { color: var(--accent); }
 .check .muted { font-weight: 400; }
 body.testing .card { border-color: var(--accent); border-style: dashed; }
 button.teach { width: 100%; background: var(--bg); border-style: dashed; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* a new version of the bot */
+.update { background: #fff4e5; border: 1px solid #f0c27a; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; display: grid; gap: 6px; }
+.update-steps { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 12.5px; }
+.update-steps button { width: 100%; }
+@media (prefers-color-scheme: dark) { .update { background: #3a2a17; border-color: #8a5a1f; } }

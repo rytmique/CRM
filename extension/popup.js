@@ -69,7 +69,7 @@ function renderProfiles() {
   sel.replaceChildren(...profiles.map((p) => {
     const o = document.createElement('option');
     o.value = p.id;
-    const lic = p.license.valid ? '' : ' · ⛔ без ліцензії';
+    const lic = p.license.valid ? '' : ' · ⛔ поза планом';
     const paused = p.status !== 'active' ? ' · пауза' : '';
     o.textContent = `${p.name}${p.age ? `, ${p.age}` : ''} — ${p.site_name || 'сайт не вибрано'} (${p.sentToday}/${p.dailyLimit})${lic}${paused}`;
     return o;
@@ -115,8 +115,9 @@ function updateNote() {
   updateGuide(p);
   let note = '';
   if (p) {
-    if (!p.license.valid) note = 'Анкета без дійсної ліцензії — бот не запуститься.';
-    else if (p.license.daysLeft <= 3) note = `Ліцензія закінчується через ${p.license.daysLeft} дн.`;
+    if (!p.license.valid) note = { none: 'У команди ще немає плану анкет — бот не запуститься. Напишіть постачальнику.', expired: 'План команди закінчився — бот не запуститься. Напишіть постачальнику.' }[p.license.state]
+      || 'Анкета понад план команди — бот не запуститься. Поставте іншу анкету на паузу в панелі.';
+    else if (!p.license.unlimited && p.license.daysLeft <= 3) note = `План команди закінчується через ${p.license.daysLeft} дн.`;
     if (p.status !== 'active') note = 'Анкету поставлено на паузу в панелі.';
   }
   $('profile-note').textContent = note;
@@ -145,13 +146,69 @@ async function showMain(info) {
   $('panel-link').href = info.auth.server;
   render(info.state);
   try {
-    profiles = (await send('profiles')).profiles;
+    const r = await send('profiles');
+    profiles = r.profiles;
     renderProfiles();
+    renderUpdate(r.bot);
   } catch (e) {
     $('main-error').textContent = e.message;
     if (/увійдіть|Сесія/.test(e.message)) init();
   }
   send('seen').catch(() => {});
+}
+
+// ---------- 🔄 a new version of the bot ----------
+const newer = (a, b) => { // a > b ("1.3.0" > "1.2.9")
+  const pa = String(a || '0').split('.').map(Number); const pb = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+};
+async function renderUpdate(bot) {
+  const box = $('update');
+  const mine = chrome.runtime.getManifest().version;
+  const { updateTried } = await chrome.storage.local.get('updateTried');
+  if (!bot?.latest || !newer(bot.latest, mine)) {
+    box.hidden = true;
+    if (updateTried) chrome.storage.local.remove('updateTried');
+    return;
+  }
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  const head = el('div', 'update-head');
+  head.append(el('b', '', `🔄 Є нова версія бота: ${bot.latest}`), el('span', 'muted', ` (у вас ${mine})`));
+  const steps = el('ol', 'update-steps');
+  const dl = el('button', 'primary', '⬇ Завантажити оновлення');
+  const li1 = el('li'); li1.append(dl);
+  const li2 = el('li', '', 'Розпакуйте архів туди ж, куди першого разу, — із заміною файлів (Windows спитає «Замінити?» → «Так»).');
+  const restart = el('button', '', '🔄 Перезапустити бота');
+  const manual = el('a', 'small', 'Не спрацювало? Відкрити сторінку розширень і натиснути ⟳ біля Agency Bot');
+  manual.href = '#';
+  manual.addEventListener('click', (e) => { e.preventDefault(); chrome.tabs.create({ url: 'chrome://extensions' }); });
+  const li3 = el('li'); li3.append(restart, manual);
+  steps.append(li1, li2, li3);
+  const note = el('p', 'small muted');
+  if (updateTried === mine) note.textContent = '⚠ Версія не змінилась: схоже, архів розпаковано в іншу папку. Потрібна саме та папка, яку вибирали в chrome://extensions → «Завантажити розпаковане».';
+  else if (bot.min && newer(bot.min, mine)) note.textContent = 'Ця версія вже застаріла — бот не запуститься, доки не оновите.';
+  dl.addEventListener('click', async () => {
+    dl.disabled = true;
+    try {
+      const { auth } = await chrome.storage.local.get('auth');
+      const res = await fetch(`${auth.server}/api/extension/download`, { headers: { authorization: `Bearer ${auth.token}` } });
+      if (!res.ok) throw new Error(`помилка ${res.status}`);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await res.blob());
+      a.download = 'agency-bot.zip';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      dl.textContent = '✓ Завантажено — тепер крок 2';
+    } catch (e) {
+      dl.disabled = false;
+      $('main-error').textContent = `Не вдалося завантажити: ${e.message}`;
+    }
+  });
+  restart.addEventListener('click', () => send('reload').catch(() => {}));
+  box.replaceChildren(head, steps, note);
+  box.hidden = false;
 }
 
 function showLogin(info) {

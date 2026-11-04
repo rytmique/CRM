@@ -43,7 +43,7 @@ export default function authRoutes(db, cfg = {}) {
     const build = str(req.body?.build, { max: 40 });
     if (kind === 'bot') checkBuild(db, u, build);
     clearLoginAttempts(req.loginAttemptKey);
-    const token = createSession(db, u.id, kind, { ip: req.ip, agent: req.get('user-agent'), build });
+    const token = createSession(db, u.id, kind, { ip: req.ip, agent: req.get('user-agent'), build, version: kind === 'bot' ? str(req.body?.version, { max: 20 }) : '' });
     res.json({ token, user: publicUser(db, u.id) });
   });
 

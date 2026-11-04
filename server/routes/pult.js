@@ -5,11 +5,11 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import { requireRole, hashPassword, destroyUserSessions } from '../auth.js';
-import { now, platformGet, platformSet } from '../db.js';
+import { now, platformGet, platformSet, cmpVersion } from '../db.js';
+import { latestBotVersion } from '../version.js';
 import { bad, notFound, str, int, mergeSettings } from '../util.js';
-import { getSettings, today, BOT_ONLINE_MS, licenseState } from '../services.js';
-import { issueLicenses } from './admin.js';
-import { ownerLink, operatorLink, pendingUsers, approveUser, rejectUser, stopBots, setUserActive } from '../team.js';
+import { getSettings, today, BOT_ONLINE_MS, planOf } from '../services.js';
+import { ownerLink, operatorLink, pendingUsers, approveUser, rejectUser, stopBots, setUserActive, setPlan } from '../team.js';
 
 const DAY = 86400000;
 const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
@@ -52,9 +52,12 @@ export default function pultRoutes(db) {
     // what needs a look: registrations, licenses running out, bots stuck on a captcha / block, teams with no key
     const attention = [];
     if (totals.pending) attention.push({ kind: 'pending', text: `Нові реєстрації чекають підтвердження: ${totals.pending}`, go: 'registrations' });
-    const soon = db.prepare(`SELECT a.name, COUNT(*) AS n FROM licenses l JOIN agencies a ON a.id = l.agency_id
-      WHERE l.status = 'active' AND l.expires_at BETWEEN ? AND ? GROUP BY a.id`).all(t, t + 5 * DAY);
-    for (const s of soon) attention.push({ kind: 'licenses', text: `«${s.name}»: ліцензій закінчується за 5 днів — ${s.n}`, go: 'admin-licenses' });
+    for (const a of db.prepare('SELECT id, name FROM agencies WHERE active = 1').all()) {
+      const p = planOf(db, a.id);
+      if (!p.profiles) attention.push({ kind: 'plan', text: `«${a.name}»: немає плану анкет — бот не працюватиме`, go: `agency?id=${a.id}` });
+      else if (p.until && p.until < t + 5 * DAY) attention.push({ kind: 'plan', text: `«${a.name}»: план ${p.until < t ? 'закінчився' : `закінчується ${new Date(p.until).toLocaleDateString('uk-UA')}`}`, go: `agency?id=${a.id}` });
+      else if (p.used > p.profiles) attention.push({ kind: 'plan', text: `«${a.name}»: активних анкет ${p.used}, а в плані ${p.profiles} — зайві не працюють`, go: `agency?id=${a.id}` });
+    }
     const blocked = db.prepare(`SELECT p.name, a.name AS agency, a.id AS agency_id FROM profiles p JOIN agencies a ON a.id = p.agency_id
       WHERE p.bot_state = 'error' AND p.bot_last_seen > ? ORDER BY p.bot_last_seen DESC LIMIT 5`).all(t - BOT_ONLINE_MS);
     for (const b of blocked) attention.push({ kind: 'bot', text: `«${b.agency}» · ${b.name}: бот зупинився з помилкою або на капчі`, go: `agency?id=${b.agency_id}` });
@@ -90,7 +93,7 @@ export default function pultRoutes(db) {
         (SELECT COALESCE(SUM(calls), 0) FROM ai_usage g WHERE g.agency_id = u.agency_id AND g.user_id = u.id AND g.day LIKE ?) AS ai_calls
       FROM users u WHERE u.agency_id = ? ORDER BY u.role = 'owner' DESC, u.pending DESC, u.name COLLATE NOCASE`)
       .all(t - BOT_ONLINE_MS, day, day, t, `${month}%`, a.id);
-    const lic = db.prepare('SELECT * FROM licenses WHERE agency_id = ?').all(a.id).map((l) => licenseState(l, t));
+    const plan = planOf(db, a.id);
     const usage = db.prepare('SELECT COALESCE(SUM(calls),0) AS calls, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(output_tokens),0) AS output FROM ai_usage WHERE agency_id = ? AND day LIKE ?').get(a.id, `${month}%`);
     const link = db.prepare("SELECT token, uses FROM signup_links WHERE kind = 'operator' AND agency_id = ? AND active = 1 ORDER BY id DESC LIMIT 1").get(a.id);
     res.json({
@@ -101,7 +104,7 @@ export default function pultRoutes(db) {
       billing: s.billing,
       people,
       profiles: db.prepare('SELECT COUNT(*) AS n FROM profiles WHERE agency_id = ?').get(a.id).n,
-      licenses: { total: lic.length, valid: lic.filter((l) => l.valid).length, free: lic.filter((l) => l.state === 'free').length },
+      plan: { profiles: plan.profiles, used: plan.used, until: plan.until },
       link: link ? { token: link.token, uses: link.uses } : null,
       models: MODELS,
     });
@@ -133,6 +136,14 @@ export default function pultRoutes(db) {
       for (const k of ['autoOptimize', 'sharedMemory', 'platformKey']) if (ai[k] !== undefined) patch.ai[k] = Boolean(ai[k]);
     }
     db.prepare('UPDATE agencies SET settings = ? WHERE id = ?').run(JSON.stringify(mergeSettings(cur, patch)), a.id);
+    // the plan: how many active profiles, until when (until: a date or null = no end)
+    const pl = req.body?.plan;
+    if (pl && typeof pl === 'object') {
+      const profiles = int(pl.profiles, { min: 0, max: 10000, field: 'анкет у плані' }) ?? 0;
+      let until = null;
+      if (pl.until) { until = Date.parse(pl.until); if (!Number.isFinite(until)) throw bad('Невірна дата плану'); }
+      setPlan(db, a.id, { profiles, until });
+    }
     res.json({ ok: true });
   });
 
@@ -156,7 +167,7 @@ export default function pultRoutes(db) {
     if (!u) throw notFound('Людину не знайдено');
     return u;
   };
-  r.post('/users/:id/approve', (req, res) => { approveUser(db, userOr404(req.params.id).id, { issueLicenses }); res.json({ ok: true }); });
+  r.post('/users/:id/approve', (req, res) => { approveUser(db, userOr404(req.params.id).id); res.json({ ok: true }); });
   r.post('/users/:id/reject', (req, res) => { rejectUser(db, userOr404(req.params.id).id); res.json({ ok: true }); });
   r.post('/users/:id/block', (req, res) => { setUserActive(db, userOr404(req.params.id).id, false); res.json({ ok: true }); });
   r.post('/users/:id/unblock', (req, res) => { setUserActive(db, userOr404(req.params.id).id, true); res.json({ ok: true }); });
@@ -180,8 +191,9 @@ export default function pultRoutes(db) {
   r.get('/registrations', (_req, res) => res.json({ pending: pendingUsers(db), links: linkRows() }));
   r.post('/links', (req, res) => {
     const note = str(req.body?.note, { max: 120 }) || '';
-    const licenses = int(req.body?.licenses, { min: 0, max: 500, field: 'ліцензій' }) ?? 0;
-    const days = int(req.body?.days, { min: 1, max: 3650, field: 'днів' }) ?? 30;
+    // the team's plan written on the link: how many profiles, days (0 = no end)
+    const licenses = int(req.body?.planProfiles ?? req.body?.licenses, { min: 0, max: 10000, field: 'анкет у плані' }) ?? 0;
+    const days = int(req.body?.planDays ?? req.body?.days, { min: 0, max: 3650, field: 'днів' }) ?? 0;
     const l = ownerLink(db, req.user.id, { note, licenses, days });
     res.status(201).json({ link: { id: l.id, token: l.token, expires_at: l.expires_at } });
   });
@@ -194,14 +206,18 @@ export default function pultRoutes(db) {
   r.get('/devices', (req, res) => {
     const t = now();
     const agencyId = Number(req.query.agency_id) || 0;
-    const rows = db.prepare(`SELECT s.rowid AS id, s.kind, s.ip, s.agent, s.build, s.created_at, s.last_used_at, u.id AS user_id, u.name, u.email, u.role,
+    const rows = db.prepare(`SELECT s.rowid AS id, s.kind, s.ip, s.agent, s.build, s.version, s.created_at, s.last_used_at, u.id AS user_id, u.name, u.email, u.role,
         a.id AS agency_id, a.name AS agency_name, b.revoked_at AS build_revoked, b.agency_id AS build_agency
       FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN agencies a ON a.id = u.agency_id LEFT JOIN extension_builds b ON b.build = s.build AND s.build != ''
       WHERE s.expires_at > ? ${agencyId ? 'AND u.agency_id = ?' : ''} ORDER BY s.last_used_at DESC LIMIT 500`).all(t, ...(agencyId ? [agencyId] : []));
+    const latest = latestBotVersion();
     res.json({
-      devices: rows.map((d) => ({ ...d, device: deviceName(d.agent), foreignBuild: Boolean(d.build && d.build_agency && d.build_agency !== d.agency_id) })),
+      devices: rows.map((d) => ({ ...d, device: deviceName(d.agent), foreignBuild: Boolean(d.build && d.build_agency && d.build_agency !== d.agency_id),
+        outdated: d.kind === 'bot' && cmpVersion(d.version, latest) < 0 })),
       requireBuild: platformGet(db, 'requireBuild', '0') === '1',
       oldCopies: rows.filter((d) => d.kind === 'bot' && !d.build).length,
+      latest, minBotVersion: platformGet(db, 'minBotVersion', ''),
+      outdated: rows.filter((d) => d.kind === 'bot' && cmpVersion(d.version, latest) < 0).length,
     });
   });
   r.delete('/devices/:id', (req, res) => {
@@ -225,7 +241,14 @@ export default function pultRoutes(db) {
   });
   r.put('/security', (req, res) => {
     if (req.body?.requireBuild !== undefined) platformSet(db, 'requireBuild', req.body.requireBuild ? '1' : '0');
-    res.json({ requireBuild: platformGet(db, 'requireBuild', '0') === '1' });
+    // the oldest bot that may still start (older ones are told to update); '' = any
+    if (req.body?.minBotVersion !== undefined) {
+      const v = String(req.body.minBotVersion || '').trim();
+      if (v && !/^\d+(\.\d+){0,3}$/.test(v)) throw bad('Версія виглядає як 1.3.0');
+      if (v && cmpVersion(v, latestBotVersion()) > 0) throw bad(`Найновіша версія бота — ${latestBotVersion()}`);
+      platformSet(db, 'minBotVersion', v);
+    }
+    res.json({ requireBuild: platformGet(db, 'requireBuild', '0') === '1', minBotVersion: platformGet(db, 'minBotVersion', '') });
   });
 
   return r;

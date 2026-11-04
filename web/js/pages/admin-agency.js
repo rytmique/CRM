@@ -15,7 +15,7 @@ export default async function adminAgency(main, { navigate }) {
   async function load() {
     const c = await get(`/api/admin/agencies/${id}/card`);
     const a = c.agency;
-    const tabs = [['people', `Люди (${c.people.length})`], ['caps', 'Ліміти'], ['ai', 'ШІ'], ['devices', 'Пристрої']];
+    const tabs = [['people', `Люди (${c.people.length})`], ['caps', 'План і ліміти'], ['ai', 'ШІ'], ['devices', 'Пристрої']];
     const panel = { people: peoplePanel, caps: capsPanel, ai: aiPanel, devices: devicesPanel }[tab](c);
     page.replaceChildren(
       h('div.page-head',
@@ -33,8 +33,9 @@ export default async function adminAgency(main, { navigate }) {
             load();
           }) }, a.active ? 'Призупинити команду' : 'Увімкнути команду'))),
       h('div.tiles',
-        h('div.tile', h('span.tile-label', 'Анкет'), h('b.tile-value', fmtInt(c.profiles)), h('span.tile-sub', c.caps.maxProfiles ? `макс. ${c.caps.maxProfiles}` : 'без обмеження')),
-        h('div.tile', h('span.tile-label', 'Ліцензій діє'), h('b.tile-value', fmtInt(c.licenses.valid)), h('span.tile-sub', `вільних ${c.licenses.free} · `, h('a', { href: '#/admin-licenses' }, 'видати'))),
+        h('div.tile', h('span.tile-label', 'План команди'), h('b.tile-value', c.plan.profiles ? `${fmtInt(c.plan.used)} / ${fmtInt(c.plan.profiles)}` : '—'),
+          h('span.tile-sub', !c.plan.profiles ? 'немає — бот не працює' : c.plan.until ? `активних анкет · до ${new Date(c.plan.until).toLocaleDateString('uk-UA')}` : 'активних анкет · без терміну')),
+        h('div.tile', h('span.tile-label', 'Анкет усього'), h('b.tile-value', fmtInt(c.profiles)), h('span.tile-sub', 'разом з тими, що на паузі')),
         h('div.tile', h('span.tile-label', 'ШІ цього місяця'), h('b.tile-value', fmtInt(c.ai.usage.calls)), h('span.tile-sub', c.ai.teamKey ? 'ключ команди' : c.ai.platformKey && c.ai.platformKeySet ? 'ключ платформи' : 'шаблони (ключа немає)'))),
       c.link ? h('div.link-box', h('span.small.muted', 'Посилання для операторів цієї команди:'), h('input', { value: `${location.origin}/#/join/${c.link.token}`, readonly: true }),
         h('button.btn.sm', { onclick: () => copy(`${location.origin}/#/join/${c.link.token}`) }, 'Скопіювати')) : null,
@@ -79,11 +80,19 @@ export default async function adminAgency(main, { navigate }) {
   }
 
   function capsPanel(c) {
+    // the plan: how many active profiles may work, until when (empty date = no end)
+    const planProfiles = input('planProfiles', c.plan.profiles || '', { type: 'number', min: 0, max: 10000, placeholder: 'напр. 50' });
+    const planUntil = input('planUntil', c.plan.until ? new Date(c.plan.until).toISOString().slice(0, 10) : '', { type: 'date' });
+    const savePlan = h('button.btn.primary', 'Зберегти план');
+    savePlan.addEventListener('click', () => busy(savePlan, async () => {
+      await put(`/api/admin/agencies/${c.agency.id}/control`, { plan: { profiles: Number(planProfiles.value) || 0, until: planUntil.value ? `${planUntil.value}T23:59:59` : null } });
+      toast('План збережено');
+      load();
+    }).catch(() => {}));
     const f = {
       dailyMax: input('dailyMax', c.caps.dailyMax || '', { type: 'number', min: 0, max: 5000, placeholder: 'без обмеження' }),
       minDelayFloor: input('minDelayFloor', c.caps.minDelayFloor || '', { type: 'number', min: 0, max: 3600, placeholder: 'без обмеження' }),
       maxOperators: input('maxOperators', c.caps.maxOperators || '', { type: 'number', min: 0, max: 1000, placeholder: 'без обмеження' }),
-      maxProfiles: input('maxProfiles', c.caps.maxProfiles || '', { type: 'number', min: 0, max: 10000, placeholder: 'без обмеження' }),
     };
     const save = h('button.btn.primary', 'Зберегти ліміти');
     save.addEventListener('click', () => busy(save, async () => {
@@ -91,14 +100,22 @@ export default async function adminAgency(main, { navigate }) {
       toast('Ліміти збережено — команда не зможе їх перевищити');
       load();
     }).catch(() => {}));
-    return h('section.card.stack',
-      h('p.small.muted', 'Межі, які команда не може перевищити (порожньо або 0 — без обмеження). Свої ліміти тімлід ставить усередині цих меж.'),
-      h('div.caps-grid',
-        field('Макс. повідомлень на анкету в день', f.dailyMax, `у команди зараз: ${c.defaults.dailyLimit}`),
-        field('Мін. пауза між чоловіками, с', f.minDelayFloor, `у команди зараз: ${c.defaults.minDelay}–${c.defaults.maxDelay} с`),
-        field('Макс. операторів', f.maxOperators),
-        field('Макс. анкет', f.maxProfiles)),
-      h('div.row-wrap', save));
+    return h('div.stack',
+      h('section.card.stack',
+        h('h3', 'План команди'),
+        h('p.small.muted', 'Одна «ліцензія» на всю команду: скільки активних анкет може працювати одночасно. Тімлід нічого не роздає — анкети просто працюють. Анкети на паузі не рахуються.'),
+        h('div.caps-grid',
+          field('Анкет у плані', planProfiles, `зараз активних: ${c.plan.used}`),
+          field('Діє до', planUntil, 'порожньо — без терміну')),
+        h('div.row-wrap', savePlan)),
+      h('section.card.stack',
+        h('h3', 'Ліміти'),
+        h('p.small.muted', 'Межі, які команда не може перевищити (порожньо або 0 — без обмеження). Свої ліміти тімлід ставить усередині цих меж.'),
+        h('div.caps-grid',
+          field('Макс. повідомлень на анкету в день', f.dailyMax, `у команди зараз: ${c.defaults.dailyLimit}`),
+          field('Мін. пауза між чоловіками, с', f.minDelayFloor, `у команди зараз: ${c.defaults.minDelay}–${c.defaults.maxDelay} с`),
+          field('Макс. операторів', f.maxOperators)),
+        h('div.row-wrap', save)));
   }
 
   function aiPanel(c) {

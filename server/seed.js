@@ -1,6 +1,7 @@
 import { tx, now } from './db.js';
 import { hashPassword } from './auth.js';
 import { createAgency, issueLicenses } from './routes/admin.js';
+import { setPlan } from './team.js';
 import { insertInvite, getSettings } from './services.js';
 import { templateInvite } from './ai.js';
 import { dayKey } from './util.js';
@@ -32,6 +33,7 @@ export function seedTestData(db, cfg, { password = 'test12345' } = {}) {
   const operatorId = Number(db.prepare("INSERT INTO users (agency_id, role, name, email, pass_hash, created_at) VALUES (?, 'operator', ?, ?, ?, ?)")
     .run(agencyId, 'Оператор (тест)', 'operator@test', hashPassword(password), t0).lastInsertRowid);
   issueLicenses(db, { agencyId, count: 5, days: 30, note: 'тестові' });
+  setPlan(db, agencyId, { profiles: 10 }); // the team's plan: up to 10 active profiles, no end date
   const site = db.prepare('SELECT id FROM sites WHERE agency_id = ? ORDER BY id LIMIT 1').get(agencyId);
   const licenses = db.prepare('SELECT id, days FROM licenses WHERE agency_id = ? ORDER BY id').all(agencyId);
   const tz = getSettings(db, agencyId).timezone;

@@ -3,7 +3,6 @@ import { api, post, session, setUnauthorizedHandler } from './api.js';
 import dashboard from './pages/dashboard.js';
 import profiles from './pages/profiles.js';
 import operators from './pages/operators.js';
-import licenses from './pages/licenses.js';
 import journal from './pages/journal.js';
 import sites from './pages/sites.js';
 import settings from './pages/settings.js';
@@ -59,7 +58,6 @@ const NAV = {
     ['sites', 'Сайти', 'sites', sites],
     ['settings', 'Налаштування', 'settings', settings],
     ['operators', 'Команда', 'operators', operators, { hidden: true, parent: 'team' }],
-    ['licenses', 'Ліцензії', 'licenses', licenses, { hidden: true, parent: 'profiles' }],
     ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'dashboard' }],
     ['extension', 'Бот', 'extension', extension, { hidden: true, parent: 'dashboard' }],
   ],
@@ -78,7 +76,7 @@ const NAV = {
     ['agencies', 'Команди', 'agencies', adminAgencies],
     ['registrations', 'Реєстрації', 'operators', adminRegistrations],
     ['devices', 'Пристрої й копії бота', 'shield', adminDevices],
-    ['admin-licenses', 'Ліцензії', 'licenses', adminLicenses],
+    ['admin-licenses', 'Ліцензії (старі)', 'licenses', adminLicenses, { hidden: true, parent: 'agencies' }],
     ['admin-billing', 'Оплата за бота', 'licenses', adminBilling],
     ['memory', 'Пам’ять ШІ', 'settings', adminMemory],
     ['agency', 'Команда', 'agencies', adminAgency, { hidden: true, parent: 'agencies' }],

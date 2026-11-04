@@ -35,6 +35,34 @@ export function licenseState(l, t = now()) {
   return { state: l.profile_id ? 'active' : 'free', valid: Boolean(l.profile_id), daysLeft };
 }
 
+/**
+ * The team's plan: up to N active profiles, with or without an end date. The first N active profiles (oldest first)
+ * are in the plan — nobody has to hand out anything.
+ */
+export function planOf(db, agencyId) {
+  const plan = getSettings(db, agencyId).plan || {};
+  const active = db.prepare("SELECT id FROM profiles WHERE agency_id = ? AND status = 'active' ORDER BY id").all(agencyId).map((r) => r.id);
+  const profiles = Number(plan.profiles) || 0;
+  return { profiles, until: plan.until || null, used: active.length, inPlan: new Set(active.slice(0, profiles)) };
+}
+
+/** May the bot work for this profile? Same shape as the old license state: { valid, state, daysLeft }. */
+export function accessFor(plan, profile, t = now()) {
+  const daysLeft = plan.until ? Math.max(0, Math.ceil((plan.until - t) / DAY)) : 9999;
+  if (!plan.profiles) return { valid: false, state: 'none', daysLeft: 0 };
+  if (plan.until && plan.until <= t) return { valid: false, state: 'expired', daysLeft: 0 };
+  if (profile.status === 'active' && !plan.inPlan.has(profile.id)) return { valid: false, state: 'over', daysLeft };
+  return { valid: true, state: 'active', daysLeft, unlimited: !plan.until };
+}
+export const profileAccess = (db, profile) => accessFor(planOf(db, profile.agency_id), profile);
+
+/** Why the bot may not work for a profile, in plain words. */
+export function accessError(access, profile, plan) {
+  if (access.state === 'none') return 'У команди ще немає плану анкет. Зверніться до постачальника.';
+  if (access.state === 'expired') return 'План команди закінчився. Зверніться до постачальника.';
+  return `Анкета «${profile.name}» понад план команди (${plan.profiles} анкет). Поставте непотрібну анкету на паузу або попросіть більше в постачальника.`;
+}
+
 /** SQL fragment + params limiting profiles to what the user may see. Alias: p */
 export function profileScope(user) {
   if (user.role === 'operator') return { where: 'p.agency_id = ? AND p.operator_id = ?', params: [user.agencyId, user.id] };

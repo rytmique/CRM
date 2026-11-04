@@ -323,6 +323,12 @@ const MIGRATIONS = [
   ['sessions', 'build', "TEXT NOT NULL DEFAULT ''"],
   // remote stop from the panel: a bot started before this moment stops at its next heartbeat
   ['profiles', 'stop_at', 'INTEGER'],
+  // one plan per team instead of a license per profile: existing teams get as many profiles as they had licenses (or profiles), no end date
+  ['agencies', 'plan_v', 'INTEGER NOT NULL DEFAULT 1', `UPDATE agencies SET settings = json_set(CASE WHEN json_valid(settings) THEN settings ELSE '{}' END, '$.plan',
+    json_object('profiles', max((SELECT COUNT(*) FROM licenses l WHERE l.agency_id = agencies.id AND l.status = 'active'),
+      (SELECT COUNT(*) FROM profiles p WHERE p.agency_id = agencies.id)), 'until', NULL))`],
+  // which version of the bot a device runs (for updates)
+  ['sessions', 'version', "TEXT NOT NULL DEFAULT ''"],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */
@@ -332,6 +338,16 @@ CREATE INDEX IF NOT EXISTS idx_activity_agency ON bot_activity(agency_id, operat
 CREATE INDEX IF NOT EXISTS idx_messages_operator_reply ON messages(agency_id, operator_id, reply_day);
 CREATE INDEX IF NOT EXISTS idx_users_pending ON users(agency_id, pending);
 `;
+
+/** "1.3.0" vs "1.2.9": -1 / 0 / 1 (missing parts = 0; no version at all = oldest). */
+export function cmpVersion(a, b) {
+  const pa = String(a || '0').split('.').map((x) => Number(x) || 0);
+  const pb = String(b || '0').split('.').map((x) => Number(x) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0) ? -1 : 1;
+  }
+  return 0;
+}
 
 /** Platform switch (admin): read / write. */
 export function platformGet(db, key, fallback = '') {

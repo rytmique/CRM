@@ -24,9 +24,9 @@ const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 export function createSession(db, userId, kind = 'web', meta = {}) {
   const token = crypto.randomBytes(32).toString('base64url');
   const t = now();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, kind, created_at, expires_at, last_used_at, ip, agent, build) VALUES (?,?,?,?,?,?,?,?,?)')
+  db.prepare('INSERT INTO sessions (token_hash, user_id, kind, created_at, expires_at, last_used_at, ip, agent, build, version) VALUES (?,?,?,?,?,?,?,?,?,?)')
     .run(sha256(token), userId, kind, t, t + (SESSION_TTL[kind] || SESSION_TTL.web), t,
-      String(meta.ip || '').slice(0, 64), String(meta.agent || '').slice(0, 200), String(meta.build || '').slice(0, 40));
+      String(meta.ip || '').slice(0, 64), String(meta.agent || '').slice(0, 200), String(meta.build || '').slice(0, 40), String(meta.version || '').slice(0, 20));
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(t, userId);
   return token;
 }
@@ -42,7 +42,7 @@ export function destroyUserSessions(db, userId) {
 /** Express middleware: resolves Bearer token into req.user (or 401). */
 export function authenticate(db) {
   const findSession = db.prepare(`
-    SELECT s.token_hash, s.kind, s.expires_at, s.last_used_at,
+    SELECT s.token_hash, s.kind, s.expires_at, s.last_used_at, s.version,
            u.id, u.agency_id, u.role, u.name, u.email, u.active, u.pending, u.tg_chat_id,
            a.active AS agency_active, a.name AS agency_name
     FROM sessions s
@@ -50,6 +50,7 @@ export function authenticate(db) {
     LEFT JOIN agencies a ON a.id = u.agency_id
     WHERE s.token_hash = ?`);
   const touch = db.prepare('UPDATE sessions SET last_used_at = ? WHERE token_hash = ?');
+  const setVersion = db.prepare('UPDATE sessions SET version = ? WHERE token_hash = ?');
 
   return (req, _res, next) => {
     const header = req.get('authorization') || '';
@@ -62,10 +63,13 @@ export function authenticate(db) {
     if (row.pending) return next(new HttpError(401, 'Реєстрацію ще не підтверджено'));
     if (row.role !== 'admin' && !row.agency_active) return next(new HttpError(403, 'Агенцію призупинено. Зверніться до постачальника.'));
     if (t - row.last_used_at > 60000) touch.run(t, row.token_hash);
+    // which version of the bot this device runs (the bot sends it with every call)
+    const botVersion = String(req.get('x-bot-version') || '').slice(0, 20);
+    if (botVersion && botVersion !== row.version) setVersion.run(botVersion, row.token_hash);
     req.token = token;
     req.user = {
       id: row.id, agencyId: row.agency_id, role: row.role, name: row.name, email: row.email,
-      tgChatId: row.tg_chat_id, agencyName: row.agency_name, sessionKind: row.kind,
+      tgChatId: row.tg_chat_id, agencyName: row.agency_name, sessionKind: row.kind, botVersion: botVersion || row.version || '',
     };
     next();
   };

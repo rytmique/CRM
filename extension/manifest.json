@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Agency Bot — інвайти з анкет",
   "short_name": "Agency Bot",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Розсилає інвайт-повідомлення з анкети на сайті знайомств і повідомляє про відповіді. Переписку веде жива людина.",
   "minimum_chrome_version": "116",
   "permissions": [

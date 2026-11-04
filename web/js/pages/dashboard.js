@@ -59,7 +59,9 @@ export default async function dashboard(main, { user, navigate }) {
       tile('Відповідей сьогодні', fmtInt(st.today.replies), `конверсія інвайтів дня ${fmtPct(st.today.rate)}`),
       tile(`Конверсія за ${days} дн`, fmtPct(st.period.rate), `${fmtInt(st.period.sent)} інвайтів → відповіді`),
       tile('Ботів онлайн', `${st.botsOnline} / ${st.profilesActive}`, 'з активних анкет', st.botsOnline ? 'good' : ''),
-      st.licenses ? tile('Ліцензії', fmtInt(st.licenses.active), st.licenses.expiringSoon ? `⚠ ${st.licenses.expiringSoon} закінчуються ≤ 3 дн` : `${st.licenses.free} вільних`, st.licenses.expiringSoon ? 'warn' : '') : null);
+      st.plan ? tile('План команди', st.plan.profiles ? `${fmtInt(st.plan.used)} / ${fmtInt(st.plan.profiles)}` : '—',
+        !st.plan.profiles ? 'плану ще немає — напишіть постачальнику' : st.plan.used > st.plan.profiles ? '⚠ анкет більше, ніж у плані' : st.plan.until ? `активних анкет · до ${new Date(st.plan.until).toLocaleDateString('uk-UA')}` : 'активних анкет · без терміну',
+        !st.plan.profiles || st.plan.used > st.plan.profiles || (st.plan.daysLeft !== null && st.plan.daysLeft <= 5) ? 'warn' : '') : null);
 
     const charts = h('div.grid-2',
       h('section.card', columnChart({ title: 'Інвайти по днях', data: st.daily.map((d) => ({ day: d.day, value: d.sent })), series: '--series-1', extra: (d) => {

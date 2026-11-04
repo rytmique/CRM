@@ -60,17 +60,16 @@ try {
 
   // ---------- data setup through the API ----------
   const admin = (await api('POST', '/api/auth/login', { email: 'admin@e2e', password: 'admin12345' })).token;
-  await api('POST', '/api/admin/agencies', { name: 'Rose Agency', ownerName: 'Олена', ownerEmail: 'owner@e2e', ownerPassword: 'owner12345', licenses: 3, days: 30 }, admin);
+  await api('POST', '/api/admin/agencies', { name: 'Rose Agency', ownerName: 'Олена', ownerEmail: 'owner@e2e', ownerPassword: 'owner12345', planProfiles: 3, planDays: 30 }, admin);
   const owner = (await api('POST', '/api/auth/login', { email: 'owner@e2e', password: 'owner12345' })).token;
   const op = await api('POST', '/api/operators', { name: 'Ірина', email: 'ira@e2e', password: 'ira123' }, owner);
   const site = (await api('GET', '/api/sites', null, owner)).sites[0];
-  const lic = (await api('GET', '/api/licenses', null, owner)).licenses;
   const anna = await api('POST', '/api/profiles', {
     name: 'Anna', age: 32, city: 'Kyiv', country: 'Ukraine', interests: 'yoga, travel, cooking', looking_for: 'a kind and honest man',
-    bio: 'Paediatric nurse, loves long walks by the Dnipro and baking on Sundays.', operator_id: op.id, site_id: site.id, license_id: lic[0].id,
+    bio: 'Paediatric nurse, loves long walks by the Dnipro and baking on Sundays.', operator_id: op.id, site_id: site.id,
     daily_limit: 4, min_delay: 5, max_delay: 6,
   }, owner);
-  const maria = await api('POST', '/api/profiles', { name: 'Maria', age: 27, interests: 'dancing, books', city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id, license_id: lic[1].id }, owner);
+  const maria = await api('POST', '/api/profiles', { name: 'Maria', age: 27, interests: 'dancing, books', city: 'Lviv', country: 'Ukraine', site_id: site.id, operator_id: op.id }, owner);
   await api('POST', '/api/profiles', { name: 'Olha', age: 35, city: 'Odesa', country: 'Ukraine', site_id: site.id, status: 'paused' }, owner);
   await api('PUT', '/api/settings', { settings: { inboxCheckEvery: 2 } }, owner);
   const FAST = { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: false, spread: false, thinkFrom: 0, thinkTo: 1, actionGapFrom: 0, actionGapTo: 1, pageGapFrom: 0, pageGapTo: 1 };
@@ -129,7 +128,7 @@ try {
   await page.screenshot({ path: path.join(OUT, '04-profile-form.png') });
   await page.keyboard.press('Escape');
 
-  for (const [hash, file] of [['licenses', '05-licenses'], ['team', '06-operators'], ['sites', '07-sites'], ['settings', '08-settings'], ['extension', '09-extension'], ['prompts', '09b-prompts']]) {
+  for (const [hash, file] of [['team', '06-operators'], ['sites', '07-sites'], ['settings', '08-settings'], ['extension', '09-extension'], ['prompts', '09b-prompts']]) {
     await goHash(page, hash);
     await page.waitForSelector('.page-head h1');
     await sleep(200);
@@ -246,7 +245,7 @@ try {
   await popup.click('#stop');
   await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
   const taught = await api('POST', '/api/sites', { name: 'Навчений кліками' }, owner);
-  const kate = await api('POST', '/api/profiles', { name: 'Kate', age: 29, interests: 'tennis, jazz', site_id: taught.id, operator_id: op.id, license_id: lic[2].id, daily_limit: 4, min_delay: 5, max_delay: 6 }, owner);
+  const kate = await api('POST', '/api/profiles', { name: 'Kate', age: 29, interests: 'tennis, jazz', site_id: taught.id, operator_id: op.id, daily_limit: 4, min_delay: 5, max_delay: 6 }, owner);
   const tpage = await context.newPage();
   await tpage.goto(`${BASE}/demo-site/search.html?teach=1`);
   const teachTab = await popup.evaluate(async () => (await chrome.tabs.query({})).find((t) => t.url.includes('teach=1')).id);

@@ -52,7 +52,7 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   // The extension calls the API from chrome-extension://… ; auth is a Bearer token (no cookies), so * is safe.
   app.use('/api', (req, res, next) => {
     res.set('Access-Control-Allow-Origin', '*');
-    res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Bot-Version');
     res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();

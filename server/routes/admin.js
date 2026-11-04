@@ -9,8 +9,9 @@ import { bad, notFound, str, int, licenseKey, updateSql } from '../util.js';
 import { licenseState } from '../services.js';
 import { demoSiteConfig } from '../sites.js';
 import { refreshMemory } from '../learning.js';
+import { setPlan } from '../team.js';
 import { billingReport, sanitizeTiers, currentMonth, validMonth } from '../billing.js';
-import { getSettings } from '../services.js';
+import { getSettings, planOf } from '../services.js';
 import { mergeSettings } from '../util.js';
 import { rankingState } from '../scoring.js';
 
@@ -64,7 +65,8 @@ export default function adminRoutes(db, cfg) {
         (SELECT COUNT(*) FROM profiles WHERE agency_id = a.id) AS profiles,
         (SELECT COUNT(*) FROM licenses WHERE agency_id = a.id AND status = 'active' AND (expires_at IS NULL OR expires_at > ?)) AS licenses_live,
         (SELECT COUNT(*) FROM messages WHERE agency_id = a.id AND sent_at > ?) AS sent_30d
-      FROM agencies a ORDER BY a.id DESC`).all(t, t - 30 * DAY);
+      FROM agencies a ORDER BY a.id DESC`).all(t, t - 30 * DAY)
+      .map((a) => { const p = planOf(db, a.id); return { ...a, plan: { profiles: p.profiles, used: p.used, until: p.until } }; });
     res.json({ agencies: rows });
   });
 
@@ -76,10 +78,11 @@ export default function adminRoutes(db, cfg) {
     if (ownerPassword.length < 8) throw bad('Пароль керівника — мінімум 8 символів');
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(ownerEmail)) throw bad('Такий email вже зайнятий');
     const agencyId = createAgency(db, cfg, { name, ownerName, ownerEmail, ownerPassword });
-    const count = int(req.body?.licenses, { min: 0, max: 500, field: 'кількість ліцензій' }) || 0;
-    const days = int(req.body?.days, { min: 1, max: 3650, field: 'днів' }) || 30;
-    const keys = count ? issueLicenses(db, { agencyId, count, days }) : [];
-    res.status(201).json({ id: agencyId, keys });
+    // the team's plan: up to N profiles (the old "licenses" field), days = 0 / empty → no end date
+    const profiles = int(req.body?.planProfiles ?? req.body?.licenses, { min: 0, max: 10000, field: 'анкет у плані' }) || 0;
+    const days = int(req.body?.planDays ?? req.body?.days, { min: 0, max: 3650, field: 'днів' }) || 0;
+    const plan = setPlan(db, agencyId, { profiles, days });
+    res.status(201).json({ id: agencyId, keys: [], plan });
   });
 
   r.patch('/agencies/:id', (req, res) => {
