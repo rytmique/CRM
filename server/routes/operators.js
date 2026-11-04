@@ -3,6 +3,7 @@ import { requireRole, hashPassword, destroyUserSessions } from '../auth.js';
 import { now } from '../db.js';
 import { bad, notFound, str, updateSql } from '../util.js';
 import { today, BOT_ONLINE_MS } from '../services.js';
+import { operatorLink, resetOperatorLink, approveUser, rejectUser, checkOperatorCap, stopBots, setUserActive } from '../team.js';
 
 export default function operatorRoutes(db) {
   const r = Router();
@@ -11,7 +12,7 @@ export default function operatorRoutes(db) {
   r.get('/', (req, res) => {
     const day = today(db, req.user.agencyId);
     const rows = db.prepare(`
-      SELECT u.id, u.name, u.email, u.tg_chat_id, u.active, u.created_at, u.last_login_at,
+      SELECT u.id, u.name, u.email, u.tg_chat_id, u.active, u.pending, u.created_at, u.last_login_at,
         (SELECT COUNT(*) FROM profiles p WHERE p.operator_id = u.id) AS profiles,
         (SELECT COUNT(*) FROM profiles p WHERE p.operator_id = u.id AND p.bot_last_seen > ?) AS bots_online,
         (SELECT COUNT(*) FROM messages m WHERE m.operator_id = u.id AND m.day = ? AND m.status = 'sent') AS sent_today,
@@ -21,12 +22,31 @@ export default function operatorRoutes(db) {
     res.json({ operators: rows });
   });
 
+  // ---------- the team's registration link ----------
+  const linkView = (l) => ({ token: l.token, uses: l.uses, created_at: l.created_at });
+  r.get('/link', (req, res) => res.json({ link: linkView(operatorLink(db, req.user.agencyId, req.user.id)) }));
+  r.post('/link/reset', (req, res) => res.json({ link: linkView(resetOperatorLink(db, req.user.agencyId, req.user.id)) }));
+
+  const mine = (id, req) => {
+    const u = db.prepare("SELECT * FROM users WHERE id = ? AND agency_id = ? AND role = 'operator'").get(Number(id), req.user.agencyId);
+    if (!u) throw notFound('Оператора не знайдено');
+    return u;
+  };
+  r.post('/:id/approve', (req, res) => { approveUser(db, mine(req.params.id, req).id); res.json({ ok: true }); });
+  r.post('/:id/reject', (req, res) => { rejectUser(db, mine(req.params.id, req).id); res.json({ ok: true }); });
+  /** Stops this operator's bots now (they can start again by hand). */
+  r.post('/:id/stop-bots', (req, res) => {
+    const u = mine(req.params.id, req);
+    res.json({ ok: true, profiles: stopBots(db, 'operator_id = ? AND agency_id = ?', [u.id, req.user.agencyId]) });
+  });
+
   r.post('/', (req, res) => {
     const name = str(req.body?.name, { required: true, field: 'ім’я', max: 120 });
     const email = str(req.body?.email, { required: true, field: 'email / логін', max: 200 });
     const password = String(req.body?.password || '');
     if (password.length < 6) throw bad('Пароль — мінімум 6 символів');
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw bad('Такий email / логін вже зайнятий');
+    checkOperatorCap(db, req.user.agencyId);
     const out = db.prepare('INSERT INTO users (agency_id, role, name, email, pass_hash, tg_chat_id, created_at) VALUES (?,?,?,?,?,?,?)')
       .run(req.user.agencyId, 'operator', name, email, hashPassword(password), str(req.body?.tg_chat_id, { max: 64 }) || null, now());
     res.status(201).json({ id: Number(out.lastInsertRowid) });
@@ -54,7 +74,8 @@ export default function operatorRoutes(db) {
       active,
     });
     if (!upd.empty) db.prepare(`UPDATE users SET ${upd.sql} WHERE id = ?`).run(...upd.values, id);
-    if (passHash || active === 0) destroyUserSessions(db, id);
+    if (active === 0) setUserActive(db, id, false);
+    else if (passHash) destroyUserSessions(db, id);
     res.json({ ok: true });
   });
 

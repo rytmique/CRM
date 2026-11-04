@@ -22,7 +22,11 @@
 ```
 server/
   index.js        старт: .env, Railway автодетект (RAILWAY_PUBLIC_DOMAIN, RAILWAY_VOLUME_MOUNT_PATH), TEST_SEED, RESET_ADMIN_PASSWORD
-  app.js          createApp({db, publicUrl, demoSite, persistent, mediaDir}) — роутинг, CORS для розширення, /download/extension.zip
+  app.js          createApp({db, publicUrl, demoSite, persistent, mediaDir}) — роутинг, CORS для розширення, облік ШІ (onAiUsage → ai_usage),
+                  GET /api/extension/download (лише після входу: копія з міткою extension_builds, код через strip.js; /download/extension.zip → 403)
+  team.js         реєстрація за посиланням (signup_links: owner — одноразове від адміна, operator — одне на команду), approve/reject (users.pending),
+                  caps-перевірки (maxOperators/maxProfiles), stopBots (profiles.stop_at), setUserActive
+  strip.js        stripJs: прибирає коментарі/відступи з коду бота при завантаженні (токенізатор: рядки, шаблони, regex не чіпає)
   db.js           схема + MIGRATIONS (ALTER TABLE) + LATE_SQL індекси. Нові колонки — ТІЛЬКИ через MIGRATIONS
   auth.js         scrypt, Bearer-сесії (sha256 токена), ролі admin/owner/operator
   services.js     ліцензії (+ autoLicense з пулу), canEditSite, ліміти, sentToday (перші + повторні), hourWindow, followups
@@ -43,6 +47,10 @@ server/
     scenarios.js  шаблони сценаріїв (CRUD)
     profiles.js   анкети, інвайти, followups, media (upload raw body + X-File-Name)
     stats.js      overview, /setup (майстер підключення: 6 кроків), messages; billing.js (/api/billing, PUT earnings); admin.js (+ /memory, /billing, PATCH agencies billing.tiers)
+    pult.js       ПУЛЬТ адміна: /overview, /agencies/:id/card, PUT /agencies/:id/control (caps + ai: model/variants/autoOptimize/sharedMemory/platformKey),
+                  stop-bots, /users/:id/approve|reject|block|unblock|signout|stop-bots|password, /registrations, /links, /devices, /builds(+revoke), PUT /security (requireBuild)
+    prompts.js    GET /api/prompts (мій промпт + фішки, промпт команди, «Що залітає»: люди за % відповідей, кращі інвайти), PUT /mine, PUT /team (owner)
+    auth.js       login (+pending, +build, ip/agent у sessions), /join/:token (GET інфо, POST реєстрація → pending), publicUser.pendingCount
 extension/
   background.js   оркестрація: run(), runTest() (+ звіт /test), runActions(), processDue() (нагадування + повторні), scanAhead() (розвідка),
                   guard() (капча/блок → пауза, людина, далі повільніше), автопілот (chrome.alarms 1 хв, autopilotTick),
@@ -53,12 +61,14 @@ extension/
                   fill/submit/compose, typeText (друк по літері), humanClick, clickAction, view, inbox (+ текст), probe, blocked
   picker.js       панель «🎯 Навчити бота»: вибір елементів мишкою → селектори, автопошук ID/імені/«Написати»
   popup.*         логін, вибір анкети, тест-режим, ⏰ Автопілот, Старт/Стоп, 🎯 Навчити
-web/js/pages/     setup (🚀 Підключення за руку), dashboard (банер майстра), profiles (варіанти інвайтів, файли, повторні, нагадування),
+web/js/pages/     join (реєстрація за посиланням #/join/<token>), operators (= «Команда»: посилання, підтвердження, ⏹), prompts (мій промпт, фішки, що залітає, команди),
+                  admin-overview (Пульт), admin-agency (картка команди #/agency?id=), admin-registrations, admin-devices (пристрої й копії бота),
+                  setup (🚀 Підключення за руку), dashboard (банер майстра), profiles (варіанти інвайтів, файли, повторні, нагадування),
                   sites (+ шаблони; новий сайт = назва + URL пошуку), scenario.js (кроки, після відповіді, дні, рівномірно), journal, admin-memory, …
 demo-site/        фейковий сайт знайомств для тестів: картки, лайк, «online», чат-модалка зі скрепкою, профіль (+ лист, лічильники, Translate), вхідні,
                   капча (localStorage.demo_captcha), desk.html — «робочий стіл оператора» як у користувача (список чатів, чат з ID у шапці, підказки, глюк-підказка);
                   desk.html?women=1 — три жінки (вигадані ID 500000000N): .her-now, перемикач, свої підказки/чати (ключі localStorage demo_*@<id>)
-test/api.test.js  node:test по API (13 тестів)
+test/api.test.js  node:test по API (18 тестів)
 test/e2e.mjs      Playwright: справжнє розширення в Chromium на демо-сайті (повний сценарій)
 ```
 
@@ -76,6 +86,8 @@ test/e2e.mjs      Playwright: справжнє розширення в Chromium 
 9. Сайт-«робочий стіл» (немає `card`, є `taskItem`): цикл = повторні (`/due`, без `manUrl` — `findMan` за ID у полі пошуку) → `processTasks` (підказки сайту: реакція `react`, `openTask` клік → `waitChat` перевіряє шапку → ID з `chatId` → `/filter` з `via` з підказки → пише) → чекає нових підказок 1–2.5 хв. `writeHere` на таких сайтах завжди перевіряє, що відкритий чат його (`chatName`/`chatId`). Відповіді без ID — сервер матчить за ім’ям.
 12. 🔁 Зміна анкет (галочка в popup, `rotate`): `run(..., {rotate})` повертає 'limit'|'idle'|'stopped' → `rotateProfiles` бере наступну анкету того ж сайту (ліцензія, active, лишок ліміту; idle — відпочинок 10 хв, limit — 24 год) → `ensureHer` (herUrl з {pid} або клік herSwitch → herItem за herItemId/ім’ям → перевірка herCurrent). `writeHere` не пише, якщо `chatHer` показує іншу жінку. ID жінки = `profiles.site_profile_id`.
 13. Швидкість: popup `speed` 1–5 → `speedMul` (×2 … ×0.35) на всі паузи й друк. Стоп: `stopRequested` + `window.__agencyBotStop` у сторінці (typeText/submit перериваються, поле чиститься).
+14. Хто що бачить: NAV у web/js/app.js (owner: Головна, Команда, Анкети, Промпти, Журнал, Оплата, Сайти, Налаштування; приховані маршрути — licenses, setup, extension). Модель/навчання/caps — лише адмін (owner PUT /settings їх ігнорує). Промпт: анкета > оператор (users.prompt, profileSettings) > команда (ai.masterPrompt) > вбудований; фішки users.prompt_examples → у запит як приклади. Ключ: команди > платформи (якщо ai.platformKey).
+15. Захист: бот логіниться з build (config.js AGENCY_BUILD); вимкнена копія → 403 і сесії видаляються; requireBuild (platform) — лише копії з панелі своєї команди. Віддалений стоп: heartbeat {startedAt, now} → stop, якщо stop_at пізніше старту; 401/403 на heartbeat → бот зупиняється.
 8. Навчання: сервер раз на 30 хв (`runLearning`): слабкий варіант (≥40 надсилань, ≥90 % гірший) → вимкнути + написати новий за зразком кращого; уроки пам’яті кожні 6 год (з цифр завжди; ШІ — якщо є ANTHROPIC_API_KEY на сервері).
 
 ## Запуск і перевірка
@@ -98,6 +110,7 @@ npm run test-stand            # тестовий стенд на :3001 (той �
 - Не ламати сумісність БД: тільки нові колонки через `MIGRATIONS`.
 - Тексти інтерфейсу — українською. `.bat` файли — CRLF (див. `.gitattributes`).
 - Не додавати фічі для обходу антибот-захисту сайтів (fingerprint spoofing, chrome.debugger тощо). Людський темп і ліміти — ок.
+- Безпека продукту: повний зіп з кодом сервера (git archive) більше НЕ роздавати людям ззовні — лише для власного тесту користувача; агенціям — тільки панель на Railway + бот із «Завантажити бота».
 
 ## Документація для людей (Claude Docs, у користувача)
 - Інструкція зі скрінами: https://claude.ai/artifact/BmrmPduhLTeCVcf1pbVf4P — **застаріла**: немає навчання кліками, сценаріїв, шаблонів, файлів.
@@ -113,6 +126,10 @@ npm run test-stand            # тестовий стенд на :3001 (той �
 Листопад 2026 (третя сесія): листи, «Підказки сайту» (робочий стіл), оплата за бота (% від заробітку, шкала, лише час роботи), тест-режим + повний прогін + 📋 звіт,
 фікси після репетиції користувача (логін з будь-якою адресою панелі + чернетка логіна, Стоп одразу, «Frame removed», повзунок швидкості, майстер не рахує демо),
 🔁 зміна анкет (вибір користувача: «на сайті, і в розширенні теж; коли нема роботи або ліміту — переглядати інші анкети»).
+Листопад 2026 (четверта сесія): пульт адміна, реєстрація за посиланням з підтвердженням (вибір користувача: тімлід за посиланням від адміна, оператори — за посиланням тімліда, той підтверджує/відхиляє, адмін контролює все),
+захист бота (завантаження лише після входу, копії з мітками, вимкнення копій/пристроїв, без коментарів), ключ ШІ команди + облік по людях, промпт кожного оператора + фішки + «Що залітає»
+(вибір: «промпти кожен оператор сам собі», тімлід додає ключ на команду), простіша панель тімліда. Пристроїв на оператора — без обмежень (вибір користувача).
+Перший клієнт: тімлід із 10 операторами, у кожного 3–5 анкет.
 
 **Не перевірено на реальності:** справжній сайт знайомств (NDA), реальний деплой на Railway, справжні виклики Claude (в тестах мок), автопілот через добу (e2e перевіряє лише старт/стоп).
 

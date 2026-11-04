@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     variants: 3, // invite variants live at once per profile (A/B/C test)
     autoOptimize: true, // retire weak variants, write new ones
     sharedMemory: true, // use the platform lessons in prompts
+    platformKey: true, // the platform's own key may be used when the team has none (set by the platform admin)
   },
   telegram: { botToken: '', chatId: '' },
   defaults: { dailyLimit: 150, minDelay: 40, maxDelay: 90 },
@@ -32,6 +33,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   dedupeAcrossAgency: false,
   // payment for the bot: tiers are set by the platform admin, the rest by the agency
   billing: { currency: '$', perReply: 10, tiers: [{ from: 0, pct: 5 }], prorate: true },
+  // caps set by the platform admin (0 = no cap): the team cannot go above them
+  caps: { dailyMax: 0, minDelayFloor: 0, maxOperators: 0, maxProfiles: 0 },
 });
 
 function deepMerge(base, over) {

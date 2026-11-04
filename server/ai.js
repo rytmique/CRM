@@ -25,6 +25,19 @@ const FORBIDDEN = [
 const defaultFactory = (apiKey) => new Anthropic({ apiKey, maxRetries: 2, timeout: 60_000 });
 let clientFactory = defaultFactory;
 
+/** The team's own key; the platform's key only if the platform admin allows it for this team. */
+export function keyFor(settings) {
+  return settings.ai.apiKey || (settings.ai.platformKey !== false ? process.env.ANTHROPIC_API_KEY || '' : '');
+}
+
+/** Who used how much: the server records each AI call (per team, per person). */
+let usageHook = null;
+export function onAiUsage(fn) { usageHook = fn; }
+function recordUsage(profile, settings, response) {
+  if (!usageHook || !profile?.agency_id) return;
+  try { usageHook({ agencyId: profile.agency_id, userId: profile.operator_id || 0, timezone: settings?.timezone, usage: response?.usage || {} }); } catch { /* never breaks a text */ }
+}
+
 /** Test hook: replace the Anthropic client factory (null = the real one). */
 export function setAiClientFactory(fn) {
   clientFactory = fn || defaultFactory;
@@ -96,10 +109,11 @@ export function fillPromptVars(template, profile, language) {
   return String(template).replace(/\{(her_name|her_age|her_city|her_country|about|interests|looking_for|tone|notes|language|profile)\}/g, (_, k) => vars[k]);
 }
 
-/** Which prompt applies: explicit override (preview) > the profile's own > the agency master prompt > built-in. */
+/** Which prompt applies: explicit override (preview) > the profile's own > her operator's own > the team's > built-in. */
 export function resolvePrompt({ profile, settings, override }) {
   if (override && override.trim()) return { text: override, source: 'override' };
   if (profile.prompt && profile.prompt.trim()) return { text: profile.prompt, source: 'profile' };
+  if (settings.ai.operatorPrompt && settings.ai.operatorPrompt.trim()) return { text: settings.ai.operatorPrompt, source: 'operator' };
   if (settings.ai.masterPrompt && settings.ai.masterPrompt.trim()) return { text: settings.ai.masterPrompt, source: 'agency' };
   return { text: DEFAULT_PROMPT, source: 'default' };
 }
@@ -120,7 +134,7 @@ export async function askClaude({ apiKey, model, system, user }) {
   return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
 }
 
-async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel, bestExample, memory, max = 1000 }) {
+async function callClaude({ apiKey, model, system, language, instructions, profile, previous, previousLabel, bestExample, memory, examples, settings, max = 1000 }) {
   const client = clientFactory(apiKey);
   const userParts = [
     `Her profile:\n${profileBrief(profile)}`,
@@ -128,6 +142,7 @@ async function callClaude({ apiKey, model, system, language, instructions, profi
     instructions ? `Extra guidance from the agency: ${instructions}` : '',
     profile.notes ? `Notes about her: ${profile.notes}` : '',
     memory?.length ? `What works on this platform, learned from real replies (follow it unless the profile says otherwise):\n${memory.map((l) => `- ${l}`).join('\n')}` : '',
+    examples?.length ? `Messages written by her operator that got replies. Match their style and tricks, but never copy them word for word:\n${examples.map((e) => `- ${e}`).join('\n')}` : '',
     bestExample ? `This message of hers gets the most replies so far. Keep what makes it work, but write a new one with a different opening and a different question:\n${bestExample}` : '',
     previous ? (previousLabel ? `${previousLabel}\n${previous}` : `Her current messages are below (separated by ---). Write a fresh one with a different opening and a different question:\n${previous}`) : '',
   ].filter(Boolean);
@@ -147,6 +162,7 @@ async function callClaude({ apiKey, model, system, language, instructions, profi
     throw mapError(e);
   }
 
+  recordUsage(profile, settings, response);
   if (response.stop_reason === 'refusal') {
     throw new HttpError(422, 'ШІ відмовився писати текст для цієї анкети. Перевірте опис анкети та інструкції.');
   }
@@ -160,7 +176,7 @@ async function callClaude({ apiKey, model, system, language, instructions, profi
  * Uses Claude when an API key is configured, otherwise a local template (so the system works out of the box).
  */
 export async function generateInvite({ profile, settings, previous = '', promptOverride = '', bestExample = '', memory = [] }) {
-  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const apiKey = keyFor(settings);
   const language = profile.language || settings.ai.language || 'English';
   const prompt = resolvePrompt({ profile, settings, override: promptOverride });
   if (!apiKey) {
@@ -168,12 +184,12 @@ export async function generateInvite({ profile, settings, previous = '', promptO
   }
   const model = settings.ai.model || 'claude-opus-5-5';
   const system = fillPromptVars(prompt.text, profile, language);
-  let out = await callClaude({ apiKey, model, system, language, instructions: settings.ai.instructions, profile, previous, bestExample, memory });
+  let out = await callClaude({ apiKey, model, system, language, instructions: settings.ai.instructions, profile, previous, bestExample, memory, examples: settings.ai.examples, settings });
   if (inviteProblems(out.text).length) {
     // One retry, telling the model what went wrong. Contacts/links are never allowed, whatever the prompt says:
     // dating sites ban profiles for them.
     out = await callClaude({
-      apiKey, model, system, language, profile, previous, bestExample, memory,
+      apiKey, model, system, language, profile, previous, bestExample, memory, examples: settings.ai.examples, settings,
       instructions: `${settings.ai.instructions || ''}\nThe previous draft was rejected: it contained contact details, links or messenger names, or was too short. Never include any of them.`.trim(),
     });
     if (inviteProblems(out.text).length) throw new HttpError(422, 'ШІ двічі згенерував текст із контактами/посиланнями або занадто короткий. Спробуйте ще раз або змініть промт.');
@@ -206,13 +222,13 @@ export const templateFollowup = (profile, step) => ({ text: FOLLOWUP_TEMPLATES[(
 
 /** One follow-up text for the given scenario step (2, 3…). */
 export async function generateFollowup({ profile, settings, step, previous = [] }) {
-  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const apiKey = keyFor(settings);
   const language = profile.language || settings.ai.language || 'English';
   if (!apiKey) return templateFollowup(profile, step);
   const model = settings.ai.model || 'claude-opus-5-5';
   const prev = previous.filter(Boolean).map((t, i) => `Message ${i + 1}: ${t}`).join('\n');
   const ask = (extra = '') => callClaude({
-    apiKey, model, system: FOLLOWUP_PROMPT, language, profile,
+    apiKey, model, system: FOLLOWUP_PROMPT, language, profile, settings,
     instructions: [settings.ai.instructions, `This is attempt number ${step}.`, extra].filter(Boolean).join('\n'),
     previous: prev ? `${prev}\n(These were sent before and got no answer. Write the next one, different from them.)` : '',
     previousLabel: 'Her earlier messages:',
@@ -250,11 +266,11 @@ export const templateReengage = () => ({ text: REENGAGE_TEMPLATES.join('\n---\n'
 
 /** Three reminder variants ("---"-separated) for men who replied and then went quiet. */
 export async function generateReengage({ profile, settings }) {
-  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const apiKey = keyFor(settings);
   const language = profile.language || settings.ai.language || 'English';
   if (!apiKey) return templateReengage();
   const model = settings.ai.model || 'claude-opus-5-5';
-  const out = await callClaude({ apiKey, model, system: REENGAGE_PROMPT, language, profile, instructions: settings.ai.instructions });
+  const out = await callClaude({ apiKey, model, system: REENGAGE_PROMPT, language, profile, settings, instructions: settings.ai.instructions });
   const variants = out.text.split(/\n\s*-{3,}\s*\n/).map((t) => cleanInvite(t)).filter((t) => t.length >= 20 && !FORBIDDEN.some((re) => re.test(t)));
   if (!variants.length) return templateReengage();
   return { text: variants.slice(0, 5).join('\n---\n'), source: 'ai', model: out.model };
@@ -291,13 +307,13 @@ export function templateLetter(p) {
 
 /** A first letter for the site's mail section. */
 export async function generateLetter({ profile, settings, memory = [] }) {
-  const apiKey = settings.ai.apiKey || process.env.ANTHROPIC_API_KEY || '';
+  const apiKey = keyFor(settings);
   const language = profile.language || settings.ai.language || 'English';
   if (!apiKey) return templateLetter(profile);
   const model = settings.ai.model || 'claude-opus-5-5';
-  let out = await callClaude({ apiKey, model, system: LETTER_PROMPT, language, profile, instructions: settings.ai.instructions, memory, max: 3000 });
+  let out = await callClaude({ apiKey, model, system: LETTER_PROMPT, language, profile, settings, instructions: settings.ai.instructions, memory, max: 3000 });
   if (FORBIDDEN.some((re) => re.test(out.text))) {
-    out = await callClaude({ apiKey, model, system: LETTER_PROMPT, language, profile, memory, max: 3000, instructions: `${settings.ai.instructions || ''}\nThe previous draft contained contact details, links or messenger names. Never include any of them.`.trim() });
+    out = await callClaude({ apiKey, model, system: LETTER_PROMPT, language, profile, settings, memory, max: 3000, instructions: `${settings.ai.instructions || ''}\nThe previous draft contained contact details, links or messenger names. Never include any of them.`.trim() });
     if (FORBIDDEN.some((re) => re.test(out.text))) throw new HttpError(422, 'ШІ згенерував лист із контактами/посиланнями. Спробуйте ще раз.');
   }
   return { text: out.text.slice(0, 3000), source: 'ai', model: out.model };

@@ -14,6 +14,13 @@ import adminMemory from './pages/admin-memory.js';
 import setup from './pages/setup.js';
 import billing from './pages/billing.js';
 import adminBilling from './pages/admin-billing.js';
+import adminOverview from './pages/admin-overview.js';
+import adminAgency from './pages/admin-agency.js';
+import adminRegistrations from './pages/admin-registrations.js';
+import adminDevices from './pages/admin-devices.js';
+import prompts from './pages/prompts.js';
+import { renderJoin } from './pages/join.js';
+import { downloadBot } from './pages/extension.js';
 import { get } from './api.js';
 
 const ICONS = {
@@ -26,6 +33,8 @@ const ICONS = {
   extension: '<path d="M12 3v12M7 10l5 5 5-5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/><circle cx="12" cy="12" r="6.5"/>',
   agencies: '<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2M10 21v-3h4v3"/>',
+  prompts: '<path d="M4 5h16v11H8l-4 4z"/><path d="M8 9h8M8 12h5"/>',
+  shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
   theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>',
   logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"/>',
 };
@@ -38,35 +47,45 @@ function icon(name) {
   return el;
 }
 
+// [key, label, icon, page, { hidden: not in the menu but opens by link, parent: menu item to highlight }]
 const NAV = {
   owner: [
-    ['dashboard', 'Дашборд', 'dashboard', dashboard],
-    ['setup', 'Підключення', 'extension', setup],
+    ['dashboard', 'Головна', 'dashboard', dashboard],
+    ['team', 'Команда', 'operators', operators],
     ['profiles', 'Анкети', 'profiles', profiles],
-    ['operators', 'Оператори', 'operators', operators],
-    ['licenses', 'Ліцензії', 'licenses', licenses],
+    ['prompts', 'Промпти', 'prompts', prompts],
     ['journal', 'Журнал', 'journal', journal],
     ['billing', 'Оплата за бота', 'licenses', billing],
     ['sites', 'Сайти', 'sites', sites],
-    ['extension', 'Розширення', 'extension', extension],
     ['settings', 'Налаштування', 'settings', settings],
+    ['operators', 'Команда', 'operators', operators, { hidden: true, parent: 'team' }],
+    ['licenses', 'Ліцензії', 'licenses', licenses, { hidden: true, parent: 'profiles' }],
+    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'dashboard' }],
+    ['extension', 'Бот', 'extension', extension, { hidden: true, parent: 'dashboard' }],
   ],
   operator: [
-    ['dashboard', 'Дашборд', 'dashboard', dashboard],
-    ['setup', 'Підключення', 'extension', setup],
+    ['dashboard', 'Головна', 'dashboard', dashboard],
     ['profiles', 'Мої анкети', 'profiles', profiles],
+    ['prompts', 'Мій промпт', 'prompts', prompts],
     ['journal', 'Журнал', 'journal', journal],
     ['billing', 'Мій заробіток', 'licenses', billing],
     ['sites', 'Сайти', 'sites', sites],
-    ['extension', 'Розширення', 'extension', extension],
+    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'dashboard' }],
+    ['extension', 'Бот', 'extension', extension, { hidden: true, parent: 'dashboard' }],
   ],
   admin: [
-    ['agencies', 'Агенції', 'agencies', adminAgencies],
+    ['overview', 'Огляд', 'dashboard', adminOverview],
+    ['agencies', 'Команди', 'agencies', adminAgencies],
+    ['registrations', 'Реєстрації', 'operators', adminRegistrations],
+    ['devices', 'Пристрої й копії бота', 'shield', adminDevices],
     ['admin-licenses', 'Ліцензії', 'licenses', adminLicenses],
-    ['memory', 'Пам’ять ШІ', 'settings', adminMemory],
     ['admin-billing', 'Оплата за бота', 'licenses', adminBilling],
+    ['memory', 'Пам’ять ШІ', 'settings', adminMemory],
+    ['agency', 'Команда', 'agencies', adminAgency, { hidden: true, parent: 'agencies' }],
   ],
 };
+/** Menu item → where its "new" counter comes from (registrations waiting). */
+const BADGES = { owner: 'team', admin: 'registrations' };
 
 const root = document.getElementById('app');
 let cleanup = null;
@@ -96,7 +115,8 @@ function renderLogin(message) {
     h('div.field', h('label', { for: 'l-email' }, 'Email / логін'), h('input#l-email', { name: 'email', autocomplete: 'username', required: true })),
     h('div.field', h('label', { for: 'l-pass' }, 'Пароль'), h('input#l-pass', { name: 'password', type: 'password', autocomplete: 'current-password', required: true })),
     err,
-    h('button.btn.primary.block', { type: 'submit' }, 'Увійти'));
+    h('button.btn.primary.block', { type: 'submit' }, 'Увійти'),
+    h('p.small.muted.center', 'Немає акаунта? Попросіть у керівника посилання для реєстрації.'));
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     err.textContent = '';
@@ -127,10 +147,11 @@ function layout(items, activeKey) {
   const nav = h('nav.sidebar', { 'aria-label': 'Розділи' },
     h('div.brand', h('img', { src: 'favicon.png', alt: '', width: 24, height: 24 }), h('span', 'Agency CRM')),
     u.agencyName ? h('div.agency-name', u.agencyName) : null,
-    h('div.nav-list', items.map(([key, label, ic]) =>
-      h(`a.nav-item${key === activeKey ? '.active' : ''}`, { href: `#/${key}`, 'aria-current': key === activeKey ? 'page' : null },
-        icon(ic), label))),
+    h('div.nav-list', items.filter((i) => !i[4]?.hidden).map(([key, label, ic]) =>
+      h(`a.nav-item${key === activeKey ? '.active' : ''}`, { href: `#/${key}`, 'aria-current': key === activeKey ? 'page' : null, 'data-key': key },
+        icon(ic), h('span.nav-label', label)))),
     h('div.nav-foot',
+      u.role !== 'admin' ? h('button.nav-item.subtle.nav-bot', { onclick: (e) => downloadBot(e.currentTarget), title: 'Бот-розширення для браузера: ваша особиста копія' }, icon('extension'), 'Завантажити бота') : null,
       themeBtn,
       h('div.me', h('b', u.name), h('small', { title: u.email }, { admin: 'Адміністратор платформи', owner: 'Керівник', operator: 'Оператор' }[u.role])),
       h('button.nav-item.subtle', { onclick: logout }, icon('logout'), 'Вийти')));
@@ -138,6 +159,14 @@ function layout(items, activeKey) {
   const burger = h('button.burger', { 'aria-label': 'Меню', onclick: () => document.body.classList.toggle('nav-open') }, '☰');
   root.replaceChildren(h('div.shell', nav, h('div.topbar', burger, h('span', 'Agency CRM')), main));
   nav.addEventListener('click', (e) => { if (e.target.closest('a')) document.body.classList.remove('nav-open'); });
+  // "N new" next to the menu item: registrations waiting for approval
+  const badgeKey = BADGES[u.role];
+  if (badgeKey) {
+    get('/api/auth/me').then(({ user }) => {
+      const link = nav.querySelector(`[data-key="${badgeKey}"]`);
+      if (link && user?.pendingCount) link.append(h('span.nav-badge', String(user.pendingCount)));
+    }).catch(() => {});
+  }
   return main;
 }
 
@@ -149,6 +178,9 @@ async function logout() {
 }
 
 async function route() {
+  // a registration link works with or without being logged in
+  const join = /^#\/join\/([\w-]+)/.exec(location.hash);
+  if (join) { cleanup?.(); cleanup = null; return renderJoin(root, join[1], { loggedIn: Boolean(session.token), onDone: () => { location.hash = ''; route(); } }); }
   if (!session.token) return renderLogin();
   if (!session.user) {
     try { session.user = (await api('/api/auth/me')).user; } catch { return renderLogin(); }
@@ -165,7 +197,7 @@ async function route() {
   const item = items.find((i) => i[0] === key) || items[0];
   cleanup?.();
   cleanup = null;
-  const main = layout(items, item[0]);
+  const main = layout(items, item[4]?.parent || item[0]);
   document.title = `${item[1]} · Agency CRM`;
   try {
     cleanup = (await item[3](main, { user: session.user, navigate: (k) => { location.hash = `#/${k}`; } })) || null;

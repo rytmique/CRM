@@ -30,7 +30,7 @@ export default async function profilesPage(main, { user }) {
       return;
     }
     const [ops, sites, lic, sc] = await Promise.all([get('/api/operators'), get('/api/sites'), get('/api/licenses'), get('/api/scenarios')]);
-    refs = { operators: ops.operators, sites: sites.sites, licenses: lic.licenses, templates: sc.templates };
+    refs = { operators: ops.operators.filter((o) => !o.pending), sites: sites.sites, licenses: lic.licenses, templates: sc.templates };
   }
 
   async function load() {
@@ -63,7 +63,9 @@ export default async function profilesPage(main, { user }) {
     renderTable();
     page.replaceChildren(
       h('div.page-head', h('h1', owner ? 'Анкети' : 'Мої анкети', h('span.count', fmtInt(all.length))),
-        h('button.btn.primary', { onclick: safe(() => openForm()) }, '+ Додати анкету')),
+        h('div.row-wrap',
+          owner ? h('a.btn.ghost', { href: '#/licenses', title: 'Ліцензії команди' }, `🔑 Ліцензії: вільних ${refs.licenses.filter((l) => l.state === 'free').length}`) : null,
+          h('button.btn.primary', { onclick: safe(() => openForm()) }, '+ Додати анкету'))),
       h('div.toolbar', search, status),
       tableBox);
   }

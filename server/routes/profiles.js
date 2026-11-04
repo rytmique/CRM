@@ -3,9 +3,10 @@ import { requireRole } from '../auth.js';
 import { tx, now } from '../db.js';
 import { bad, notFound, str, int, oneOf, updateSql, ah } from '../util.js';
 import {
-  getSettings, today, licenseState, profileScope, getVisibleProfile,
+  getSettings, profileSettings, today, licenseState, profileScope, getVisibleProfile,
   activeInvite, limitsFor, insertInvite, BOT_ONLINE_MS, followupTexts, saveFollowup, autoLicense,
 } from '../services.js';
+import { checkProfileCap } from '../team.js';
 import { generateInvite, generateFollowup, generateReengage, generateLetter } from '../ai.js';
 import express from 'express';
 import { profileScenario, followupSteps, usesLetters } from '../scenario.js';
@@ -85,7 +86,7 @@ export default function profileRoutes(db, cfg) {
   };
 
   const checkRefs = (agencyId, body) => {
-    if (body.operator_id && !db.prepare("SELECT 1 FROM users WHERE id = ? AND agency_id = ? AND role IN ('operator','owner')").get(body.operator_id, agencyId)) {
+    if (body.operator_id && !db.prepare("SELECT 1 FROM users WHERE id = ? AND agency_id = ? AND role IN ('operator','owner') AND pending = 0").get(body.operator_id, agencyId)) {
       throw bad('Оператора не знайдено');
     }
     if (body.site_id && !db.prepare('SELECT 1 FROM sites WHERE id = ? AND agency_id = ?').get(body.site_id, agencyId)) {
@@ -151,6 +152,7 @@ export default function profileRoutes(db, cfg) {
     const isOp = req.user.role === 'operator';
     if (isOp) body.operator_id = req.user.id;
     checkRefs(req.user.agencyId, body);
+    checkProfileCap(db, req.user.agencyId);
     const auto = isOp || req.body?.license_id === 'auto';
     const licenseId = auto ? undefined : int(req.body?.license_id, { min: 1, field: 'ліцензія' });
     const out = tx(db, () => {
@@ -207,7 +209,7 @@ export default function profileRoutes(db, cfg) {
 
   r.post('/:id/invites/generate', ah(async (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
-    const settings = getSettings(db, req.user.agencyId);
+    const settings = profileSettings(db, p);
     const live = inviteStats(db, p.id);
     const variant = Boolean(req.body?.variant);
     const best = bestOf(live);
@@ -223,7 +225,7 @@ export default function profileRoutes(db, cfg) {
   /** Try a prompt on this profile without saving anything (master prompt editor, profile prompt). */
   r.post('/:id/invites/preview', ah(async (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
-    const settings = getSettings(db, req.user.agencyId);
+    const settings = profileSettings(db, p);
     const prompt = str(req.body?.prompt, { max: 8000, field: 'промт' }) || '';
     // Unsaved form values (profile editor) take part in the preview.
     const draft = {};
@@ -296,7 +298,7 @@ export default function profileRoutes(db, cfg) {
   r.post('/:id/followups/:step/generate', ah(async (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
     const step = stepParam(req);
-    const settings = getSettings(db, req.user.agencyId);
+    const settings = profileSettings(db, p);
     const have = followupTexts(db, p.id);
     const previous = [activeInvite(db, p.id)?.text, ...[...have.entries()].filter(([k]) => k !== step).sort((a, b) => a[0] - b[0]).map(([, t]) => t)];
     const gen = step === REENGAGE_STEP ? await generateReengage({ profile: p, settings })

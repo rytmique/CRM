@@ -1,4 +1,19 @@
-import { h } from '../ui.js';
+import { h, busy, toast } from '../ui.js';
+import { session } from '../api.js';
+
+/** The bot as a zip: a personal copy (marked for this person; the panel's address is inside). */
+export async function downloadBot(btn) {
+  await busy(btn, async () => {
+    const res = await fetch('/api/extension/download', { headers: { authorization: `Bearer ${session.token}` } });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Не вдалося завантажити бота');
+    const a = h('a', { href: URL.createObjectURL(await res.blob()), download: 'agency-bot.zip' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast('Бота завантажено: розпакуйте архів і додайте папку в браузер (кроки нижче)');
+  }).catch(() => {});
+}
 
 export default async function extensionPage(main, { user }) {
   main.replaceChildren(h('div.page',
@@ -7,7 +22,7 @@ export default async function extensionPage(main, { user }) {
       h('section.card',
         h('h3', 'Встановлення (Chrome, Opera, Edge, Brave)'),
         h('ol.steps',
-          h('li', h('a.btn.primary', { href: '/download/extension.zip', download: 'agency-bot.zip' }, '⬇ Завантажити розширення'), h('div.small.muted', 'Адреса цієї панелі вже вшита в архів')),
+          h('li', h('button.btn.primary', { onclick: (e) => downloadBot(e.currentTarget) }, '⬇ Завантажити бота'), h('div.small.muted', 'Це ваша особиста копія: адреса панелі вже всередині. Не передавайте її іншим — кожен завантажує свою.')),
           h('li', 'Розпакуйте архів у постійну папку (не видаляйте її).'),
           h('li', 'Відкрийте ', h('code', 'chrome://extensions'), ' (в Опері — ', h('code', 'opera://extensions'), ') і ввімкніть «Режим розробника».'),
           h('li', 'Натисніть «Завантажити розпаковане» і виберіть папку ', h('code', 'agency-bot'), '.'),

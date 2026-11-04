@@ -9,6 +9,18 @@ export function getSettings(db, agencyId) {
   return parseSettings(row?.settings);
 }
 
+/** The team's settings for one profile's texts: + its operator's own prompt and "what works for me" examples. */
+export function profileSettings(db, profile) {
+  const s = getSettings(db, profile.agency_id);
+  const op = profile.operator_id ? db.prepare('SELECT id, prompt, prompt_examples FROM users WHERE id = ?').get(profile.operator_id) : null;
+  if (op?.prompt?.trim()) s.ai.operatorPrompt = op.prompt;
+  try {
+    const ex = JSON.parse(op?.prompt_examples || '[]');
+    if (Array.isArray(ex) && ex.length) s.ai.examples = ex.map((e) => String(e.text || e)).filter(Boolean).slice(0, 10);
+  } catch { /* none */ }
+  return s;
+}
+
 export function today(db, agencyId) {
   return dayKey(now(), getSettings(db, agencyId).timezone);
 }
@@ -66,9 +78,13 @@ export function activeInvite(db, profileId) {
 
 export function limitsFor(profile, settings) {
   const d = settings.defaults;
-  const minDelay = profile.min_delay ?? d.minDelay;
+  const caps = settings.caps || {};
+  // the platform admin's caps win over the team's numbers
+  const minDelay = Math.max(profile.min_delay ?? d.minDelay, caps.minDelayFloor || 0);
   const maxDelay = Math.max(minDelay, profile.max_delay ?? d.maxDelay);
-  return { dailyLimit: profile.daily_limit ?? d.dailyLimit, minDelay, maxDelay };
+  let dailyLimit = profile.daily_limit ?? d.dailyLimit;
+  if (caps.dailyMax) dailyLimit = Math.min(dailyLimit, caps.dailyMax);
+  return { dailyLimit, minDelay, maxDelay };
 }
 
 /** Messages sent today: first contacts + follow-up messages. */

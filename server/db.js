@@ -229,6 +229,54 @@ CREATE INDEX IF NOT EXISTS idx_profiles_agency ON profiles(agency_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 `;
 
+/** Tables added later (CREATE IF NOT EXISTS is safe on old databases too). */
+const LATER_TABLES = `
+-- registration links: the platform admin invites a team lead (owner), a team lead invites operators
+CREATE TABLE IF NOT EXISTS signup_links (
+  id INTEGER PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL CHECK (kind IN ('owner','operator')),
+  agency_id INTEGER REFERENCES agencies(id) ON DELETE CASCADE,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note TEXT NOT NULL DEFAULT '',
+  licenses INTEGER NOT NULL DEFAULT 0,
+  days INTEGER NOT NULL DEFAULT 30,
+  max_uses INTEGER,
+  uses INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER
+);
+
+-- every download of the bot is a separate marked copy: who took it, and it can be switched off
+CREATE TABLE IF NOT EXISTS extension_builds (
+  id INTEGER PRIMARY KEY,
+  build TEXT NOT NULL UNIQUE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  agency_id INTEGER REFERENCES agencies(id) ON DELETE CASCADE,
+  ip TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER
+);
+
+-- AI texts written with the team's key: per person per day (the team lead sees who uses how much)
+CREATE TABLE IF NOT EXISTS ai_usage (
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL DEFAULT 0,
+  day TEXT NOT NULL,
+  calls INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (agency_id, user_id, day)
+);
+
+-- platform-wide switches of the admin
+CREATE TABLE IF NOT EXISTS platform (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`;
+
 /** Columns added after the first release: [table, column, definition]. */
 const MIGRATIONS = [
   ['profiles', 'prompt', "TEXT NOT NULL DEFAULT ''"],
@@ -262,6 +310,19 @@ const MIGRATIONS = [
   // last heartbeat and whether the bot was really working then (payment counts only that)
   ['profiles', 'bot_beat_at', 'INTEGER'],
   ['profiles', 'bot_beat_active', 'INTEGER NOT NULL DEFAULT 0'],
+  // registration by link: waits until the team lead (or the platform admin) approves
+  ['users', 'pending', 'INTEGER NOT NULL DEFAULT 0'],
+  ['users', 'signup_link_id', 'INTEGER'],
+  ['users', 'approved_at', 'INTEGER'],
+  // each operator's own prompt and "what works for me" examples
+  ['users', 'prompt', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'prompt_examples', "TEXT NOT NULL DEFAULT '[]'"],
+  // devices: where a session came from and which copy of the bot
+  ['sessions', 'ip', "TEXT NOT NULL DEFAULT ''"],
+  ['sessions', 'agent', "TEXT NOT NULL DEFAULT ''"],
+  ['sessions', 'build', "TEXT NOT NULL DEFAULT ''"],
+  // remote stop from the panel: a bot started before this moment stops at its next heartbeat
+  ['profiles', 'stop_at', 'INTEGER'],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */
@@ -269,12 +330,22 @@ const LATE_SQL = `
 CREATE INDEX IF NOT EXISTS idx_messages_due ON messages(profile_id, stage, next_at);
 CREATE INDEX IF NOT EXISTS idx_activity_agency ON bot_activity(agency_id, operator_id, day);
 CREATE INDEX IF NOT EXISTS idx_messages_operator_reply ON messages(agency_id, operator_id, reply_day);
+CREATE INDEX IF NOT EXISTS idx_users_pending ON users(agency_id, pending);
 `;
+
+/** Platform switch (admin): read / write. */
+export function platformGet(db, key, fallback = '') {
+  return db.prepare('SELECT value FROM platform WHERE key = ?').get(key)?.value ?? fallback;
+}
+export function platformSet(db, key, value) {
+  db.prepare('INSERT INTO platform (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value));
+}
 
 export function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  db.exec(LATER_TABLES);
   for (const [table, column, def, after] of MIGRATIONS) {
     const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
     if (!has) {
@@ -286,8 +357,9 @@ export function openDb(file) {
   return db;
 }
 
-/** Runs fn inside a transaction; rolls back on throw. */
+/** Runs fn inside a transaction; rolls back on throw. Inside another transaction it simply joins it. */
 export function tx(db, fn) {
+  if (db.isTransaction) return fn();
   db.exec('BEGIN');
   try {
     const out = fn();

@@ -95,7 +95,7 @@ export function operatorMonth(db, { agencyId, userId, month, settings }) {
 export function billingReport(db, { agencyId, month, settings, onlyUserId = null }) {
   const users = onlyUserId
     ? db.prepare('SELECT id, name, role FROM users WHERE id = ?').all(onlyUserId)
-    : db.prepare(`SELECT u.id, u.name, u.role FROM users u WHERE u.agency_id = ? AND (u.role = 'operator'
+    : db.prepare(`SELECT u.id, u.name, u.role FROM users u WHERE u.agency_id = ? AND u.pending = 0 AND (u.role = 'operator'
         OR EXISTS (SELECT 1 FROM bot_activity b WHERE b.operator_id = u.id) OR EXISTS (SELECT 1 FROM messages m WHERE m.operator_id = u.id))
         ORDER BY u.role = 'owner', u.name COLLATE NOCASE`).all(agencyId);
   const rows = users.map((u) => ({ name: u.name, role: u.role, ...operatorMonth(db, { agencyId, userId: u.id, month, settings }) }));

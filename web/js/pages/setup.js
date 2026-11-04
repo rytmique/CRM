@@ -1,4 +1,5 @@
 import { h, field, input, textarea, select, busy, toast, badge } from '../ui.js';
+import { downloadBot } from './extension.js';
 import { get, post, patch } from '../api.js';
 
 /**
@@ -143,7 +144,7 @@ export default async function setupPage(main, { navigate }) {
   function extensionStep(st) {
     return [
       h('ol.steps',
-        h('li', h('a.btn.primary', { href: '/download/extension.zip', download: 'agency-bot.zip' }, '⬇ Завантажити розширення'), h('div.small.muted', 'Адреса панелі вже вписана всередині')),
+        h('li', h('button.btn.primary', { onclick: (e) => downloadBot(e.currentTarget) }, '⬇ Завантажити бота'), h('div.small.muted', 'Ваша особиста копія: адреса панелі вже вписана всередині')),
         h('li', 'Розпакуйте архів у постійну папку (не видаляйте її потім).'),
         h('li', 'Відкрийте ', h('code', 'chrome://extensions'), ' (в Опері — ', h('code', 'opera://extensions'), ') → увімкніть «Режим розробника».'),
         h('li', '«Завантажити розпаковане» → виберіть папку ', h('code', 'agency-bot'), '.'),

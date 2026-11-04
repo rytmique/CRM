@@ -108,12 +108,22 @@ async function heartbeat(force = false, botState) {
   try {
     // "active": really working now (writing or pausing between men) — payment for the bot counts only that time
     const active = running && !state.test && ['running', 'waiting'].includes(state.status);
-    const r = await api(`/api/bot/profiles/${state.profileId}/heartbeat`, { method: 'POST', body: { state: botState || mapBotState(), info, active } });
+    const r = await api(`/api/bot/profiles/${state.profileId}/heartbeat`, { method: 'POST', body: { state: botState || mapBotState(), info, active, startedAt: state.startedAt, now: Date.now() } });
     if (r.paused && running && !stopRequested) {
       stopRequested = true;
       await log('Анкету поставлено на паузу в панелі — зупиняюсь', 'warn');
     }
-  } catch { /* heartbeat is best-effort */ }
+    if (r.stop && running && !stopRequested) {
+      stopRequested = true;
+      await log('⏹ Бота зупинили з панелі — зупиняюсь', 'warn');
+    }
+  } catch (e) {
+    // the account was switched off / signed out / the team paused: stop at once instead of working blind
+    if ((e.status === 401 || e.status === 403) && running && !stopRequested) {
+      stopRequested = true;
+      await log(`⏹ ${e.message} — зупиняюсь`, 'warn');
+    }
+  }
 }
 
 const mapBotState = () => ({ running: 'running', waiting: 'running', sleeping: 'running', watching: 'done', limit: 'limit', error: 'error', blocked: 'error', stopped: 'idle', idle: 'idle' }[state.status] || 'running');
@@ -1493,7 +1503,7 @@ const handlers = {
     let res;
     try {
       res = await fetch(`${base}/api/auth/login`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: String(email || '').trim(), password, kind: 'bot' }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: String(email || '').trim(), password, kind: 'bot', build: self.AGENCY_BUILD || '' }),
       });
     } catch {
       throw new Error(`Панель за адресою ${base} не відповідає. Перевірте, що вона запущена (чорне вікно start-test.bat) і адреса та сама, що в браузері панелі.`);

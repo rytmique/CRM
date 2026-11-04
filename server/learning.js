@@ -9,7 +9,7 @@
  *    names, no texts of a particular profile). They are added to every invite/follow-up prompt.
  */
 import { now, tx } from './db.js';
-import { getSettings } from './services.js';
+import { profileSettings } from './services.js';
 import { generateInvite, askClaude } from './ai.js';
 
 const MIN_SENT_TO_JUDGE = 40; // sends before a variant may be retired
@@ -214,6 +214,6 @@ export async function runLearning(db, log = console) {
   const profiles = db.prepare(`SELECT p.* FROM profiles p JOIN agencies a ON a.id = p.agency_id
     WHERE p.status = 'active' AND a.active = 1 AND EXISTS (SELECT 1 FROM invites i WHERE i.profile_id = p.id AND i.active = 1)`).all();
   for (const p of profiles) {
-    try { await optimizeProfile(db, p, getSettings(db, p.agency_id)); } catch (e) { log.error?.('optimize', p.id, e.message); }
+    try { await optimizeProfile(db, p, profileSettings(db, p)); } catch (e) { log.error?.('optimize', p.id, e.message); }
   }
 }

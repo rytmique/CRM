@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { now, tx } from '../db.js';
 import { HttpError, bad, forbidden, notFound, str, int, oneOf, ah, dayKey } from '../util.js';
 import {
-  getSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
+  getSettings, profileSettings, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
 import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter } from '../ai.js';
@@ -112,7 +112,7 @@ export default function botRoutes(db, cfg) {
       throw new HttpError(402, `Анкета «${p.name}» ${why}. Зверніться до керівника.`);
     }
     if (p.status !== 'active') throw new HttpError(409, `Анкету «${p.name}» поставлено на паузу в панелі.`);
-    const settings = getSettings(db, req.user.agencyId);
+    const settings = profileSettings(db, p);
     const day = dayKey(now(), settings.timezone);
     const limits = limitsFor(p, settings);
     const remaining = Math.max(0, limits.dailyLimit - sentToday(db, p.id, day));
@@ -190,8 +190,9 @@ export default function botRoutes(db, cfg) {
       // Pause between men: the profile's own > the scenario's > the agency default.
       limits: {
         ...limits, remaining,
-        minDelay: p.min_delay ?? scenario.human.gapFrom ?? limits.minDelay,
-        maxDelay: Math.max(p.min_delay ?? scenario.human.gapFrom ?? limits.minDelay, p.max_delay ?? scenario.human.gapTo ?? limits.maxDelay),
+        // (never below the platform admin's floor)
+        minDelay: Math.max(p.min_delay ?? scenario.human.gapFrom ?? limits.minDelay, settings.caps.minDelayFloor || 0),
+        maxDelay: Math.max(p.min_delay ?? scenario.human.gapFrom ?? limits.minDelay, settings.caps.minDelayFloor || 0, p.max_delay ?? scenario.human.gapTo ?? limits.maxDelay),
       },
       license: lic,
       inboxCheckEvery: settings.inboxCheckEvery,
@@ -538,8 +539,12 @@ export default function botRoutes(db, cfg) {
     }
     db.prepare('UPDATE profiles SET bot_state = ?, bot_info = ?, bot_last_seen = ?, bot_beat_at = ?, bot_beat_active = ? WHERE id = ?')
       .run(state, str(req.body?.info, { max: 300 }) || '', state === 'idle' ? null : t, t, active ? 1 : 0, p.id);
-    const fresh = db.prepare('SELECT status FROM profiles WHERE id = ?').get(p.id);
-    res.json({ ok: true, paused: fresh.status !== 'active' });
+    const fresh = db.prepare('SELECT status, stop_at FROM profiles WHERE id = ?').get(p.id);
+    // "Stop the bots" in the panel: a bot started before that moment stops now (a new start works again)
+    // (the start time is the browser's clock: shifted by the difference between the two clocks)
+    const startedAt = (Number(req.body?.startedAt) || 0) + (Number(req.body?.now) ? t - Number(req.body.now) : 0);
+    const stop = Boolean(fresh.stop_at && startedAt && fresh.stop_at > startedAt);
+    res.json({ ok: true, paused: fresh.status !== 'active', stop });
   });
 
   return r;

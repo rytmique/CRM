@@ -21,19 +21,21 @@ function randomPassword(len = 10) {
   return Array.from(crypto.randomBytes(len), (b) => abc[b % abc.length]).join('');
 }
 
-export function createAgency(db, cfg, { name, ownerName, ownerEmail, ownerPassword }) {
-  return tx(db, () => {
+/** A team with its lead. Registered by link → the lead waits for the admin's approval (pending). Works inside a running tx too. */
+export function createAgency(db, cfg, { name, ownerName, ownerEmail, ownerPassword, pending = false, signupLinkId = null }) {
+  const make = () => {
     const t = now();
     const a = db.prepare('INSERT INTO agencies (name, active, settings, created_at) VALUES (?,1,?,?)').run(name, '{}', t);
     const agencyId = Number(a.lastInsertRowid);
-    db.prepare('INSERT INTO users (agency_id, role, name, email, pass_hash, created_at) VALUES (?,?,?,?,?,?)')
-      .run(agencyId, 'owner', ownerName, ownerEmail, hashPassword(ownerPassword), t);
+    db.prepare('INSERT INTO users (agency_id, role, name, email, pass_hash, created_at, pending, signup_link_id) VALUES (?,?,?,?,?,?,?,?)')
+      .run(agencyId, 'owner', ownerName, ownerEmail, hashPassword(ownerPassword), t, pending ? 1 : 0, signupLinkId);
     if (cfg.demoSite) {
       db.prepare('INSERT INTO sites (agency_id, name, base_url, config, created_at) VALUES (?,?,?,?,?)')
         .run(agencyId, 'Демо-сайт (для тесту)', `${cfg.publicUrl}/demo-site/`, JSON.stringify(demoSiteConfig(cfg.publicUrl)), t);
     }
     return agencyId;
-  });
+  };
+  return tx(db, make);
 }
 
 export function issueLicenses(db, { agencyId, count, days, note = '' }) {

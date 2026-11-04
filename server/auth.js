@@ -20,11 +20,13 @@ export function verifyPassword(password, stored) {
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-export function createSession(db, userId, kind = 'web') {
+/** meta: where it came from (ip, browser) and which copy of the bot — shown to the admin as "devices". */
+export function createSession(db, userId, kind = 'web', meta = {}) {
   const token = crypto.randomBytes(32).toString('base64url');
   const t = now();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, kind, created_at, expires_at, last_used_at) VALUES (?,?,?,?,?,?)')
-    .run(sha256(token), userId, kind, t, t + (SESSION_TTL[kind] || SESSION_TTL.web), t);
+  db.prepare('INSERT INTO sessions (token_hash, user_id, kind, created_at, expires_at, last_used_at, ip, agent, build) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(sha256(token), userId, kind, t, t + (SESSION_TTL[kind] || SESSION_TTL.web), t,
+      String(meta.ip || '').slice(0, 64), String(meta.agent || '').slice(0, 200), String(meta.build || '').slice(0, 40));
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(t, userId);
   return token;
 }
@@ -41,7 +43,7 @@ export function destroyUserSessions(db, userId) {
 export function authenticate(db) {
   const findSession = db.prepare(`
     SELECT s.token_hash, s.kind, s.expires_at, s.last_used_at,
-           u.id, u.agency_id, u.role, u.name, u.email, u.active, u.tg_chat_id,
+           u.id, u.agency_id, u.role, u.name, u.email, u.active, u.pending, u.tg_chat_id,
            a.active AS agency_active, a.name AS agency_name
     FROM sessions s
     JOIN users u ON u.id = s.user_id
@@ -57,6 +59,7 @@ export function authenticate(db) {
     const t = now();
     if (!row || row.expires_at < t) return next(new HttpError(401, 'Сесія завершилась, увійдіть знову'));
     if (!row.active) return next(new HttpError(401, 'Обліковий запис вимкнено'));
+    if (row.pending) return next(new HttpError(401, 'Реєстрацію ще не підтверджено'));
     if (row.role !== 'admin' && !row.agency_active) return next(new HttpError(403, 'Агенцію призупинено. Зверніться до постачальника.'));
     if (t - row.last_used_at > 60000) touch.run(t, row.token_hash);
     req.token = token;

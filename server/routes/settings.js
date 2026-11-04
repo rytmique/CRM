@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireRole } from '../auth.js';
-import { bad, mask, mergeSettings, ah, int, str } from '../util.js';
+import { bad, mask, mergeSettings, ah, int, str, dayKey } from '../util.js';
 import { getSettings } from '../services.js';
 import { DEFAULT_PROMPT, PROMPT_VARS } from '../ai.js';
 import { sendTelegram } from '../telegram.js';
@@ -25,17 +25,27 @@ export default function settingsRoutes(db) {
     telegram: { ...s.telegram, botToken: mask(s.telegram.botToken), hasToken: Boolean(s.telegram.botToken) },
   });
 
+  /** AI texts this month per person (the team's key): who uses it how much. */
+  const usageOf = (agencyId, month) => db.prepare(`SELECT g.user_id, COALESCE(u.name, '—') AS name, SUM(g.calls) AS calls, SUM(g.input_tokens) AS input, SUM(g.output_tokens) AS output
+    FROM ai_usage g LEFT JOIN users u ON u.id = g.user_id WHERE g.agency_id = ? AND g.day LIKE ? GROUP BY g.user_id ORDER BY calls DESC`).all(agencyId, `${month}%`);
+
   r.get('/', (req, res) => {
     const agency = db.prepare('SELECT name FROM agencies WHERE id = ?').get(req.user.agencyId);
+    const s = getSettings(db, req.user.agencyId);
     res.json({
-      settings: view(getSettings(db, req.user.agencyId)), agencyName: agency?.name || '', defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS,
+      settings: view(s), agencyName: agency?.name || '', defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS,
       memory: memoryLines(db, { ai: { sharedMemory: true } }),
+      usage: usageOf(req.user.agencyId, dayKey(Date.now(), s.timezone).slice(0, 7)),
+      platformKey: s.ai.platformKey !== false && Boolean(process.env.ANTHROPIC_API_KEY),
     });
   });
 
   r.put('/', (req, res) => {
     const cur = getSettings(db, req.user.agencyId);
     const patch = structuredClone(req.body?.settings || {});
+    // the platform admin's switches: caps, model, learning — the team cannot change them
+    delete patch.caps;
+    if (patch.ai) for (const k of ['model', 'variants', 'autoOptimize', 'sharedMemory', 'platformKey', 'operatorPrompt', 'examples']) delete patch.ai[k];
     if (patch.ai && (patch.ai.apiKey === undefined || isMasked(patch.ai.apiKey))) delete patch.ai.apiKey;
     if (patch.telegram && (patch.telegram.botToken === undefined || isMasked(patch.telegram.botToken))) delete patch.telegram.botToken;
     if (patch.billing) {

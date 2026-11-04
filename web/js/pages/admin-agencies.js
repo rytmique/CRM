@@ -1,5 +1,6 @@
 import { h, field, input, formData, busy, toast, modal, badge, empty, fmtInt, fmtDate, copy, safe, confirmDialog } from '../ui.js';
 import { get, post, patch, session } from '../api.js';
+import { inviteLeadForm } from './admin-registrations.js';
 
 export function showKeys(keys) {
   const text = keys.join('\n');
@@ -55,7 +56,7 @@ async function downloadBackup(btn) {
   }).catch(() => {});
 }
 
-export default async function adminAgencies(main) {
+export default async function adminAgencies(main, { navigate }) {
   const page = h('div.page');
   main.replaceChildren(page);
 
@@ -66,11 +67,13 @@ export default async function adminAgencies(main) {
       health.persistentStorage === false ? h('div.alert.err', { role: 'alert' },
         h('b', '⚠ Диск не підключено — після наступного оновлення всі дані зникнуть.'),
         h('div', 'Railway → твій сервіс → правий клік → Attach Volume → шлях /data. Потім зайди сюди знову.')) : null,
-      h('div.page-head', h('h1', 'Агенції', h('span.count', fmtInt(agencies.length))),
-        h('div.row-wrap', backupBtn, h('button.btn.primary', { onclick: openForm }, '+ Нова агенція'))),
+      h('div.page-head', h('h1', 'Команди', h('span.count', fmtInt(agencies.length))),
+        h('div.row-wrap', backupBtn, h('button.btn', { onclick: openForm, title: 'Створити вручну: ти сам задаєш логін і пароль тімліда' }, '+ Створити вручну'),
+          h('button.btn.primary', { onclick: () => inviteLeadForm() }, '+ Запросити тімліда'))),
+      h('p.small.muted', 'Клікни на команду — відкриється її картка: люди, ліміти, ШІ, пристрої, стоп ботів.'),
       h('div.card.table-wrap', agencies.length ? h('table.table',
-        h('thead', h('tr', h('th', 'Агенція'), h('th', 'Керівник'), h('th.num', 'Операторів'), h('th.num', 'Анкет'), h('th.num', 'Діючих ліцензій'), h('th.num', 'Інвайтів за 30 дн'), h('th', 'Створено'), h('th', 'Статус'), h('th', ''))),
-        h('tbody', agencies.map((a) => h('tr',
+        h('thead', h('tr', h('th', 'Команда'), h('th', 'Тімлід'), h('th.num', 'Операторів'), h('th.num', 'Анкет'), h('th.num', 'Діючих ліцензій'), h('th.num', 'Інвайтів за 30 дн'), h('th', 'Створено'), h('th', 'Статус'), h('th', ''))),
+        h('tbody', agencies.map((a) => h('tr.clickable', { tabindex: 0, onclick: (e) => { if (!e.target.closest('button')) navigate(`agency?id=${a.id}`); } },
           h('td', h('b', a.name)),
           h('td', a.owner_email || '—'),
           h('td.num', fmtInt(a.operators)),
@@ -87,7 +90,7 @@ export default async function adminAgencies(main) {
             if (!(await confirmDialog(`Згенерувати новий пароль для керівника «${a.name}»? Старий перестане діяти.`, { ok: 'Згенерувати' }))) return;
             const r = await post(`/api/admin/agencies/${a.id}/reset-owner`);
             accessModal({ title: `Новий доступ: ${a.name}`, email: r.email, password: r.password });
-          }) }, 'Новий пароль')))))) : empty('Агенцій ще немає. Натисни «+ Нова агенція» — це твій перший клієнт (або тестова агенція для себе).')));
+          }) }, 'Новий пароль')))))) : empty('Команд ще немає. Натисни «+ Запросити тімліда» — він сам зареєструється за посиланням.')));
   }
 
   function openForm() {

@@ -7,6 +7,23 @@ import { personalize } from '../server/personalize.js';
 import { buildZip } from '../server/zip.js';
 import { optimizeProfile, pickInvite, inviteStats, refreshMemory, memoryLines } from '../server/learning.js';
 import { getSettings } from '../server/services.js';
+import vm from 'node:vm';
+import { stripJs } from '../server/strip.js';
+
+/** Reads a STORE-only zip (what the server makes) into { name: Buffer }. */
+function unzip(buf) {
+  const out = {};
+  let i = 0;
+  while (buf.readUInt32LE(i) === 0x04034b50) {
+    const size = buf.readUInt32LE(i + 18);
+    const nameLen = buf.readUInt16LE(i + 26);
+    const extra = buf.readUInt16LE(i + 28);
+    const name = buf.slice(i + 30, i + 30 + nameLen).toString();
+    out[name] = buf.slice(i + 30 + nameLen + extra, i + 30 + nameLen + extra + size);
+    i += 30 + nameLen + extra + size;
+  }
+  return out;
+}
 
 let server, base, db;
 const tokens = {};
@@ -529,12 +546,43 @@ test('templates per profile and files attached to messages', async () => {
   assert.equal((await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'iris')).data.scenario.steps, 3);
 });
 
-test('extension zip is served with server url baked in', async () => {
-  const res = await fetch(`${base}/download/extension.zip`);
+test('the bot is downloaded only after logging in: a marked copy, no comments, can be switched off', async () => {
+  assert.equal((await fetch(`${base}/download/extension.zip`)).status, 403, 'no open download any more');
+  assert.equal((await fetch(`${base}/api/extension/download`)).status, 401);
+  await login('admin2', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Lily', ownerName: 'L', ownerEmail: 'owner@lily', ownerPassword: 'ownerpass1', licenses: 1, days: 30 }, 'admin2');
+  await login('lily', 'owner@lily', 'ownerpass1');
+  const res = await fetch(`${base}/api/extension/download`, { headers: { authorization: `Bearer ${tokens.lily}` } });
   assert.equal(res.status, 200);
   const buf = Buffer.from(await res.arrayBuffer());
-  assert.ok(buf.includes(Buffer.from('agency-bot/manifest.json')));
-  assert.ok(buf.includes(Buffer.from('self.AGENCY_DEFAULT_SERVER = "http://localhost:9"')));
+  const files = unzip(buf);
+  assert.ok(files['agency-bot/manifest.json']);
+  const conf = files['agency-bot/config.js'].toString();
+  assert.match(conf, /self\.AGENCY_DEFAULT_SERVER = "http:\/\/localhost:9"/);
+  const build = /AGENCY_BUILD = "([^"]+)"/.exec(conf)[1];
+  // the code: no comments, still valid JavaScript (each file is parsed)
+  for (const [name, data] of Object.entries(files).filter(([n]) => n.endsWith('.js'))) {
+    const code = data.toString();
+    assert.doesNotMatch(code, /^\s*\/\/ |\/\*\*/m, `${name} still has comments`);
+    assert.doesNotThrow(() => new vm.Script(code, { filename: name }), `${name} is broken`);
+  }
+  // the bot logs in with its mark; the admin sees the copy and the device, and can switch the copy off
+  const bot = await call('POST', '/api/auth/login', { email: 'owner@lily', password: 'ownerpass1', kind: 'bot', build });
+  assert.equal(bot.status, 200);
+  const dev = (await call('GET', '/api/admin/devices', undefined, 'admin2')).data;
+  assert.ok(dev.devices.some((d) => d.build === build && d.kind === 'bot' && d.email === 'owner@lily'));
+  const copy = (await call('GET', '/api/admin/builds', undefined, 'admin2')).data.builds.find((b) => b.build === build);
+  assert.equal(copy.sessions, 1);
+  await call('POST', `/api/admin/builds/${copy.id}/revoke`, {}, 'admin2');
+  const after = await fetch(`${base}/api/bot/profiles`, { headers: { authorization: `Bearer ${bot.data.token}` } });
+  assert.equal(after.status, 401, 'the switched-off copy is signed out at once');
+  const again = await call('POST', '/api/auth/login', { email: 'owner@lily', password: 'ownerpass1', kind: 'bot', build });
+  assert.equal(again.status, 403);
+  // "only copies from the panel": an old copy without a mark cannot log in
+  await call('PUT', '/api/admin/security', { requireBuild: true }, 'admin2');
+  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@lily', password: 'ownerpass1', kind: 'bot' })).status, 403);
+  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@lily', password: 'ownerpass1' })).status, 200, 'the panel itself is not affected');
+  await call('PUT', '/api/admin/security', { requireBuild: false }, 'admin2');
 });
 
 test('roles: operator creates own profiles, sites and templates; owner controls', async () => {
@@ -702,8 +750,11 @@ test('invites learn: variants by reply rate, weak ones replaced, shared lessons 
   assert.match(seen.messages[0].content, /What works on this platform[\s\S]*concrete hobby/);
   assert.match(seen.messages[0].content, /gets the most replies so far/, 'the best variant is the model for new ones');
   assert.equal(inviteStats(db, p.id).length, 4);
-  // an agency may switch the shared memory off
+  // the team cannot switch it off itself; the platform admin can, for one team
+  const daisyId = (await call('GET', '/api/auth/me', undefined, 'daisy')).data.user.agencyId;
   await call('PUT', '/api/settings', { settings: { ai: { sharedMemory: false } } }, 'daisy');
+  assert.equal(getSettings(db, daisyId).ai.sharedMemory, true);
+  assert.equal((await call('PUT', `/api/admin/agencies/${daisyId}/control`, { ai: { sharedMemory: false } }, 'admin6')).status, 200);
   await call('POST', `/api/profiles/${p.id}/invites/generate`, { variant: true }, 'daisy');
   assert.doesNotMatch(seen.messages[0].content, /What works on this platform/);
   setAiClientFactory(null);
@@ -905,4 +956,154 @@ test('invite variants: two bot starts at once still give 3, not 5', async () => 
   const p = (await call('POST', '/api/profiles', { name: 'Lida', site_id: site.id, license_id: 'auto' }, 'poppy')).data;
   await Promise.all([1, 2, 3].map(() => call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'poppy')));
   assert.equal(inviteStats(db, p.id).length, 3);
+});
+
+test('registration by link: admin → team lead (approved by admin), team lead → operators (approve / reject)', async () => {
+  await login('adminR', 'root@test', 'rootpass123');
+  // the admin makes a one-time link with 3 licenses
+  const link = (await call('POST', '/api/admin/links', { note: 'Ігор, 10 людей', licenses: 3, days: 30 }, 'adminR')).data.link;
+  const info = await call('GET', `/api/auth/join/${link.token}`);
+  assert.equal(info.data.kind, 'owner');
+  assert.equal((await call('POST', `/api/auth/join/${link.token}`, { name: 'Ігор', email: 'bad-email', password: 'longpass1' })).status, 400);
+  const reg = await call('POST', `/api/auth/join/${link.token}`, { name: 'Ігор', email: 'igor@team.ua', password: 'longpass1', agencyName: 'Ігорева команда' });
+  assert.equal(reg.status, 201, JSON.stringify(reg.data));
+  assert.equal((await call('GET', `/api/auth/join/${link.token}`)).status, 404, 'one-time: used up');
+  const waiting = await call('POST', '/api/auth/login', { email: 'igor@team.ua', password: 'longpass1' });
+  assert.equal(waiting.status, 403);
+  assert.match(waiting.data.error, /не підтверджено/);
+  const pend = (await call('GET', '/api/admin/registrations', undefined, 'adminR')).data.pending.find((u) => u.email === 'igor@team.ua');
+  assert.equal(pend.role, 'owner');
+  assert.equal((await call('POST', `/api/admin/users/${pend.id}/approve`, {}, 'adminR')).status, 200);
+  await login('igor', 'igor@team.ua', 'longpass1');
+  assert.equal((await call('GET', '/api/licenses', undefined, 'igor')).data.licenses.length, 3, 'the licenses of the link are issued on approval');
+
+  // the team lead's link for operators
+  const tl = (await call('GET', '/api/operators/link', undefined, 'igor')).data.link;
+  const opInfo = (await call('GET', `/api/auth/join/${tl.token}`)).data;
+  assert.equal(opInfo.kind, 'operator');
+  assert.equal(opInfo.agencyName, 'Ігорева команда');
+  for (const [n, e] of [['Оля', 'olya@team.ua'], ['Чужий', 'stranger@x.com']]) {
+    assert.equal((await call('POST', `/api/auth/join/${tl.token}`, { name: n, email: e, password: 'longpass1' })).status, 201);
+  }
+  assert.equal((await call('POST', `/api/auth/join/${tl.token}`, { name: 'Ще', email: 'olya@team.ua', password: 'longpass1' })).status, 400, 'email taken');
+  const ops = (await call('GET', '/api/operators', undefined, 'igor')).data.operators;
+  const olya = ops.find((o) => o.email === 'olya@team.ua');
+  const stranger = ops.find((o) => o.email === 'stranger@x.com');
+  assert.ok(olya.pending && stranger.pending);
+  await call('POST', `/api/operators/${stranger.id}/reject`, {}, 'igor');
+  await call('POST', `/api/operators/${olya.id}/approve`, {}, 'igor');
+  assert.equal((await call('POST', '/api/auth/login', { email: 'stranger@x.com', password: 'longpass1' })).status, 401, 'rejected = removed');
+  await login('olya', 'olya@team.ua', 'longpass1');
+  // a pending person cannot get profiles
+  await call('POST', `/api/auth/join/${tl.token}`, { name: 'Петро', email: 'petro@team.ua', password: 'longpass1' });
+  const petro = (await call('GET', '/api/operators', undefined, 'igor')).data.operators.find((o) => o.email === 'petro@team.ua');
+  assert.equal((await call('POST', '/api/profiles', { name: 'X', operator_id: petro.id }, 'igor')).status, 400);
+  // the link leaked → a new one; the old stops working at once
+  const tl2 = (await call('POST', '/api/operators/link/reset', {}, 'igor')).data.link;
+  assert.notEqual(tl2.token, tl.token);
+  assert.equal((await call('GET', `/api/auth/join/${tl.token}`)).status, 404);
+  assert.equal((await call('GET', `/api/auth/join/${tl2.token}`)).status, 200);
+  // the admin sees and controls everything: Petro waits in the admin's list too
+  assert.ok((await call('GET', '/api/admin/registrations', undefined, 'adminR')).data.pending.some((u) => u.email === 'petro@team.ua'));
+  await call('POST', `/api/admin/users/${petro.id}/reject`, {}, 'adminR');
+  assert.ok(!(await call('GET', '/api/operators', undefined, 'igor')).data.operators.some((o) => o.email === 'petro@team.ua'));
+});
+
+test('control panel: caps of the admin win, remote stop, blocking, overview and the team card', async () => {
+  await login('adminC', 'root@test', 'rootpass123');
+  const a = (await call('POST', '/api/admin/agencies', { name: 'Violet', ownerName: 'I', ownerEmail: 'owner@violet', ownerPassword: 'ownerpass1', licenses: 3, days: 30 }, 'adminC')).data;
+  await login('violet', 'owner@violet', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'violet')).data.sites[0];
+  await call('POST', '/api/operators', { name: 'Op A', email: 'opa@violet', password: 'opapass1' }, 'violet');
+  // caps
+  assert.equal((await call('PUT', `/api/admin/agencies/${a.id}/control`, { caps: { dailyMax: 50, minDelayFloor: 60, maxOperators: 1, maxProfiles: 2 }, ai: { model: 'claude-haiku-5-5', variants: 2 } }, 'adminC')).status, 200);
+  assert.equal((await call('POST', '/api/operators', { name: 'Op B', email: 'opb@violet', password: 'opbpass1' }, 'violet')).status, 400, 'max operators');
+  const p1 = (await call('POST', '/api/profiles', { name: 'P1', site_id: site.id, license_id: 'auto', daily_limit: 300, min_delay: 10, max_delay: 20 }, 'violet')).data;
+  await call('POST', '/api/profiles', { name: 'P2', site_id: site.id }, 'violet');
+  assert.equal((await call('POST', '/api/profiles', { name: 'P3', site_id: site.id }, 'violet')).status, 400, 'max profiles');
+  await login('violetBot', 'owner@violet', 'ownerpass1', 'bot');
+  const cfg = (await call('GET', `/api/bot/profiles/${p1.id}/config`, undefined, 'violetBot')).data;
+  assert.equal(cfg.limits.dailyLimit, 50);
+  assert.ok(cfg.limits.minDelay >= 60 && cfg.limits.maxDelay >= 60);
+  // the team cannot lift the caps or switch the model
+  await call('PUT', '/api/settings', { settings: { caps: { dailyMax: 0 }, ai: { model: 'claude-opus-5-5' } } }, 'violet');
+  assert.equal(getSettings(db, a.id).caps.dailyMax, 50);
+  assert.equal(getSettings(db, a.id).ai.model, 'claude-haiku-5-5');
+  // remote stop: a bot started before the stop stops; a new start works again
+  const startedAt = Date.now() - 60000;
+  assert.equal((await call('POST', `/api/bot/profiles/${p1.id}/heartbeat`, { state: 'running', startedAt, now: Date.now() }, 'violetBot')).data.stop, false);
+  await call('POST', `/api/admin/agencies/${a.id}/stop-bots`, {}, 'adminC');
+  assert.equal((await call('POST', `/api/bot/profiles/${p1.id}/heartbeat`, { state: 'running', startedAt, now: Date.now() }, 'violetBot')).data.stop, true);
+  assert.equal((await call('POST', `/api/bot/profiles/${p1.id}/heartbeat`, { state: 'running', startedAt: Date.now() + 1000, now: Date.now() }, 'violetBot')).data.stop, false);
+  // the card and the overview
+  const card = (await call('GET', `/api/admin/agencies/${a.id}/card`, undefined, 'adminC')).data;
+  assert.equal(card.caps.maxProfiles, 2);
+  assert.equal(card.ai.model, 'claude-haiku-5-5');
+  assert.ok(card.people.some((u) => u.email === 'owner@violet' && u.devices >= 2));
+  const ov = (await call('GET', '/api/admin/overview', undefined, 'adminC')).data;
+  assert.ok(ov.totals.agencies >= 1 && ov.teams.some((t) => t.id === a.id));
+  // blocking a person signs them out everywhere at once
+  const owner = card.people.find((u) => u.role === 'owner');
+  await call('POST', `/api/admin/users/${owner.id}/block`, {}, 'adminC');
+  assert.equal((await call('GET', '/api/bot/profiles', undefined, 'violetBot')).status, 401);
+  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@violet', password: 'ownerpass1' })).status, 403);
+  await call('POST', `/api/admin/users/${owner.id}/unblock`, {}, 'adminC');
+  const pw = (await call('POST', `/api/admin/users/${owner.id}/password`, {}, 'adminC')).data;
+  await login('violet', 'owner@violet', pw.password);
+  assert.equal((await call('GET', '/api/admin/overview', undefined, 'violet')).status, 403, 'a team lead never sees the admin panel');
+});
+
+test('prompts: each operator their own prompt and tricks, used for their profiles; AI use counted per person', async () => {
+  await login('adminP', 'root@test', 'rootpass123');
+  await call('POST', '/api/admin/agencies', { name: 'Peony', ownerName: 'P', ownerEmail: 'owner@peony', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'adminP');
+  await login('peony', 'owner@peony', 'ownerpass1');
+  const site = (await call('GET', '/api/sites', undefined, 'peony')).data.sites[0];
+  const op = (await call('POST', '/api/operators', { name: 'Maryna', email: 'maryna@peony', password: 'marynapass' }, 'peony')).data;
+  await login('maryna', 'maryna@peony', 'marynapass');
+  const p = (await call('POST', '/api/profiles', { name: 'Sofia', interests: 'books', site_id: site.id }, 'maryna')).data;
+  await call('PUT', '/api/settings', { settings: { ai: { apiKey: 'sk-ant-team-key-123456' } } }, 'peony');
+  await call('PUT', '/api/prompts/team', { prompt: 'TEAM PROMPT for {her_name}: write an opener.' }, 'peony');
+  assert.equal((await call('PUT', '/api/prompts/team', { prompt: 'x' }, 'maryna')).status, 403, 'only the team lead changes the team prompt');
+  await call('PUT', '/api/prompts/mine', { prompt: 'MARYNA PROMPT for {her_name}: short and playful.', examples: [{ text: 'Hi {name}! Guess which book I am reading now? Hint: it has a dragon.' }, 'too short'] }, 'maryna');
+  let seen = null;
+  setAiClientFactory((key) => ({ beta: { messages: { create: async (req) => { seen = { ...req, key }; return { stop_reason: 'end_turn', model: req.model, usage: { input_tokens: 120, output_tokens: 40 }, content: [{ type: 'text', text: 'Hello {name}! I just finished a novel with a dragon in it. What are you reading lately?' }] }; } } } }));
+  const gen = await call('POST', `/api/profiles/${p.id}/invites/generate`, {}, 'maryna');
+  assert.equal(gen.status, 201, JSON.stringify(gen.data));
+  assert.equal(seen.key, 'sk-ant-team-key-123456', 'the team key');
+  assert.match(seen.system, /^MARYNA PROMPT for Sofia/, 'her operator’s own prompt');
+  assert.match(seen.messages[0].content, /got replies[\s\S]*Guess which book/, 'her tricks as examples');
+  assert.doesNotMatch(seen.messages[0].content, /too short/);
+  // the team lead's own profile still uses the team prompt
+  const own = (await call('POST', '/api/profiles', { name: 'Lera', site_id: site.id }, 'peony')).data;
+  await call('POST', `/api/profiles/${own.id}/invites/generate`, {}, 'peony');
+  assert.match(seen.system, /^TEAM PROMPT for Lera/);
+  setAiClientFactory(null);
+  // who used the key how much
+  const usage = (await call('GET', '/api/settings', undefined, 'peony')).data.usage;
+  assert.equal(usage.find((u) => u.user_id === op.id)?.calls, 1);
+  // "what works": everyone of the team, mine marked
+  const pr = (await call('GET', '/api/prompts', undefined, 'maryna')).data;
+  assert.equal(pr.mine.examples.length, 1);
+  assert.ok(pr.people.some((x) => x.me && x.promptSource === 'own'));
+  assert.ok(pr.people.some((x) => x.role === 'owner' && x.promptSource === 'team'));
+});
+
+test('code stripping keeps strings, templates and regexes intact', () => {
+  const src = [
+    '/** doc */',
+    'const a = "// not a comment"; // a comment',
+    "const b = 'it''s'.length; /* inline */ const c = `x ${a + `y // ${1}`} /* kept */`;",
+    'const re = /\\/\\*[^/]*\\//g; const d = 4 / 2 / 1;',
+    'function f() { return /ab+c/i.test("abbc"); }',
+    '',
+    '',
+    '    const e = [1, 2].map((x) => x / 2);',
+  ].join('\n');
+  const out = stripJs(src);
+  assert.doesNotMatch(out, /\/\*\* doc|; \/\/ a comment|inline/);
+  assert.match(out, /"\/\/ not a comment"/);
+  assert.match(out, /`x \$\{a \+ `y \/\/ \$\{1\}`\} \/\* kept \*\/`/);
+  assert.match(out, /\/\\\/\\\*\[\^\/\]\*\\\/\/g/);
+  assert.doesNotMatch(out, /\n\n/);
+  assert.doesNotThrow(() => new vm.Script(out.replace("'it''s'", "'its'")));
 });

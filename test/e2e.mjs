@@ -28,6 +28,21 @@ async function api(method, url, body, token) {
   return data;
 }
 
+/** Reads a STORE-only zip (what the server makes) into { name: Buffer }. */
+function unzip(buf) {
+  const out = {};
+  let i = 0;
+  while (buf.readUInt32LE(i) === 0x04034b50) {
+    const size = buf.readUInt32LE(i + 18);
+    const nameLen = buf.readUInt16LE(i + 26);
+    const extra = buf.readUInt16LE(i + 28);
+    out[buf.slice(i + 30, i + 30 + nameLen).toString()] = buf.slice(i + 30 + nameLen + extra, i + 30 + nameLen + extra + size);
+    i += 30 + nameLen + extra + size;
+  }
+  return out;
+}
+const goHash = (pg, key) => pg.evaluate((k) => { location.hash = `#/${k}`; }, key);
+
 // same hash as demo-site/demo.js, to know which demo men will "reply"
 function hash(s) { let h = 2166136261; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return h >>> 0; }
 
@@ -65,12 +80,21 @@ try {
   } }, owner);
   log('data ready');
 
-  // ---------- browser with the extension ----------
+  // ---------- browser with the extension: the copy people really get (downloaded from the panel, marked, no comments) ----------
+  const zipRes = await fetch(`${BASE}/api/extension/download`, { headers: { authorization: `Bearer ${owner}` } });
+  if (!zipRes.ok) fail(`extension download: ${zipRes.status}`);
+  const extDir = path.join(tmp, 'ext');
+  for (const [name, data] of Object.entries(unzip(Buffer.from(await zipRes.arrayBuffer())))) {
+    fs.mkdirSync(path.dirname(path.join(extDir, name)), { recursive: true });
+    fs.writeFileSync(path.join(extDir, name), data);
+  }
+  const botDir = path.join(extDir, 'agency-bot');
+  if (/\/\*\*/.test(fs.readFileSync(path.join(botDir, 'background.js'), 'utf8'))) fail('the downloaded bot still has comments');
   context = await chromium.launchPersistentContext(path.join(tmp, 'profile'), {
     channel: 'chromium',
     headless: true,
     viewport: { width: 1360, height: 900 },
-    args: [`--disable-extensions-except=${path.join(ROOT, 'extension')}`, `--load-extension=${path.join(ROOT, 'extension')}`],
+    args: [`--disable-extensions-except=${botDir}`, `--load-extension=${botDir}`],
   });
   context.on('weberror', (e) => consoleErrors.push(`pageerror: ${e.error().message}`));
   const sw = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
@@ -105,8 +129,8 @@ try {
   await page.screenshot({ path: path.join(OUT, '04-profile-form.png') });
   await page.keyboard.press('Escape');
 
-  for (const [hash, file] of [['licenses', '05-licenses'], ['operators', '06-operators'], ['sites', '07-sites'], ['settings', '08-settings'], ['extension', '09-extension']]) {
-    await page.click(`a[href="#/${hash}"]`);
+  for (const [hash, file] of [['licenses', '05-licenses'], ['team', '06-operators'], ['sites', '07-sites'], ['settings', '08-settings'], ['extension', '09-extension'], ['prompts', '09b-prompts']]) {
+    await goHash(page, hash);
     await page.waitForSelector('.page-head h1');
     await sleep(200);
     await page.screenshot({ path: path.join(OUT, `${file}.png`), fullPage: true });
@@ -653,14 +677,19 @@ try {
   const mariaServer = (await api('GET', `/api/stats/messages?profile_id=${maria.id}&limit=200`, null, owner)).messages;
   for (const id of Object.keys(wSent['5000000002'])) if (!mariaServer.some((m) => m.man_id === id && m.status === 'sent')) fail(`server: ${id} not under Maria`);
   await popup.screenshot({ path: path.join(OUT, '30-popup-rotate.png') });
+  // ⏹ from the control panel: the running bot stops by itself within ~30 s (its next heartbeat)
+  const roseId = (await api('GET', '/api/auth/me', null, owner)).user.agencyId;
+  const tStop = Date.now();
+  await api('POST', `/api/admin/agencies/${roseId}/stop-bots`, {}, admin);
+  do { await sleep(1000); st = await readState(); } while (st.status !== 'stopped' && Date.now() - tStop < 75000);
+  if (st.status !== 'stopped' || !/Бота зупинили з панелі/.test(st.log.map((l) => l.text).join('\n'))) fail(`remote stop did not stop the bot: ${st.status} ${st.message}`);
+  log(`remote stop ok: the bot stopped ${Math.round((Date.now() - tStop) / 1000)} s after ⏹ in the control panel`);
   await sitePage.bringToFront();
   await sitePage.click('.her-switch');
   await sleep(300);
   await sitePage.screenshot({ path: path.join(OUT, '31-desk-women.png') });
   await sitePage.click('.her-switch');
   await popup.bringToFront();
-  await popup.click('#stop');
-  await popup.waitForFunction(async () => (await chrome.storage.local.get('state')).state.status === 'stopped', null, { timeout: 30000 });
   // the safety: a chat of another woman is never written in
   await sitePage.click('.chat-item >> nth=0');
   const wrongHer = await popup.evaluate(async ({ tid }) => {
@@ -695,7 +724,7 @@ try {
   if (overflow) fail('horizontal scroll on mobile dashboard');
 
   await page.setViewportSize({ width: 1360, height: 900 });
-  await page.click('a[href="#/setup"]');
+  await goHash(page, 'setup');
   await page.waitForSelector('.setup-steps > li');
   await page.selectOption('.setup select', String(anna.id)); // Anna went through the whole way (Kate never ran a test)
   await page.waitForFunction(() => document.querySelectorAll('.setup-steps > li.done').length === 6, null, { timeout: 10000 }).catch(() => {});
@@ -726,9 +755,68 @@ try {
   await page.fill('#l-email', 'admin@e2e');
   await page.fill('#l-pass', 'admin12345');
   await page.click('button[type=submit]');
-  await page.waitForSelector('.page-head h1');
+  await page.waitForSelector('.page-head h1:has-text("Пульт")');
   await sleep(300);
-  await page.screenshot({ path: path.join(OUT, '15-admin-agencies.png') });
+  await page.screenshot({ path: path.join(OUT, '15-admin-overview.png'), fullPage: true });
+  await page.click('a[href="#/agencies"]');
+  await page.waitForSelector('td:has-text("Rose Agency")');
+  await page.screenshot({ path: path.join(OUT, '15b-admin-agencies.png') });
+  await page.click('td:has-text("Rose Agency")');
+  await page.waitForSelector('.people-table');
+  await page.screenshot({ path: path.join(OUT, '15c-admin-team.png'), fullPage: true });
+  // the bot copy taken for this run is listed with its mark
+  await page.click('a[href="#/devices"]');
+  await page.waitForSelector('text=Копії бота');
+  if (!(await page.locator('td code').count())) fail('downloaded copy of the bot not listed');
+  await page.screenshot({ path: path.join(OUT, '15d-admin-devices.png'), fullPage: true });
+  log('control panel ok: overview, teams, team card, devices and copies');
+
+  // ---------- registration by link: admin → team lead → operator, each approved ----------
+  await page.click('a[href="#/registrations"]');
+  await page.click('button:has-text("+ Запросити тімліда")');
+  await page.fill('.modal input[name=note]', 'Новий тімлід');
+  await page.click('.modal button:has-text("Створити посилання")');
+  await page.waitForSelector('.modal textarea.access-text');
+  const leadUrl = /(http\S+#\/join\/\S+)/.exec(await page.inputValue('.modal textarea.access-text'))[1];
+  await page.keyboard.press('Escape');
+  const jp = await context.newPage();
+  const join = async (url, name, email, team) => {
+    await jp.goto(url);
+    await jp.waitForSelector('#j-name');
+    await jp.fill('#j-name', name);
+    if (team) await jp.fill('#j-agencyName', team);
+    await jp.fill('#j-email', email);
+    await jp.fill('#j-password', 'joinpass1');
+    await jp.fill('#j-password2', 'joinpass1');
+    await jp.click('button[type=submit]');
+    await jp.waitForSelector('text=Заявку надіслано');
+  };
+  await join(leadUrl, 'Тарас', 'taras@e2e', 'Команда Тараса');
+  await jp.screenshot({ path: path.join(OUT, '33-join-done.png') });
+  await page.reload();
+  await page.waitForSelector('.pending-row:has-text("Тарас")');
+  await page.click('.pending-row:has-text("Тарас") button:has-text("Підтвердити")');
+  await page.waitForSelector('.pending-row:has-text("Тарас")', { state: 'detached' });
+  await page.click('.nav-foot button:has-text("Вийти")');
+  await page.fill('#l-email', 'taras@e2e');
+  await page.fill('#l-pass', 'joinpass1');
+  await page.click('button[type=submit]');
+  await page.waitForSelector('.page-head h1');
+  await goHash(page, 'team');
+  await page.waitForSelector('.link-box input');
+  await join(await page.inputValue('.link-box input'), 'Ліна', 'lina@e2e');
+  await page.reload();
+  await page.waitForSelector('.pending-row:has-text("Ліна")');
+  await page.screenshot({ path: path.join(OUT, '34-team-pending.png') });
+  await page.click('.pending-row:has-text("Ліна") button:has-text("Підтвердити")');
+  await page.waitForSelector('td:has-text("Ліна")');
+  await jp.close();
+  log('registration by link ok: admin invited a team lead, approved; the lead invited an operator, approved');
+  await page.click('.nav-foot button:has-text("Вийти")');
+  await page.fill('#l-email', 'admin@e2e');
+  await page.fill('#l-pass', 'admin12345');
+  await page.click('button[type=submit]');
+  await page.waitForSelector('.page-head h1:has-text("Пульт")');
   await page.click('a[href="#/memory"]');
   await page.waitForSelector('.memory-list, .page-head h1:has-text("Пам’ять ШІ")');
   await page.fill('input[name=lesson]', 'Mention one concrete hobby and ask about his weekend.');

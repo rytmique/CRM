@@ -42,10 +42,14 @@ export default async function dashboard(main, { user, navigate }) {
   const periodBtns = [7, 14, 30].map((d) => h('button.seg', { onclick: () => { days = d; load(); } }, `${d} днів`));
 
   async function load() {
-    const [st, onb] = await Promise.all([
+    const [st, onb, me] = await Promise.all([
       get(`/api/stats/overview?days=${days}`),
       !hidden() ? get('/api/stats/setup').catch(() => null) : Promise.resolve(null),
+      user.role === 'owner' ? get('/api/auth/me').catch(() => null) : Promise.resolve(null),
     ]);
+    const pendingN = me?.user?.pendingCount || 0;
+    const pendingBanner = pendingN ? h('a.alert.info.link-alert', { href: '#/team' },
+      h('b', `👋 Нові реєстрації в команду: ${pendingN}`), ' — підтвердіть або відхиліть у розділі «Команда» →') : null;
     const onboarding = setupBanner(onb, navigate, () => { try { localStorage.setItem(HIDE_KEY, '1'); } catch { /* ignore */ } load(); });
     periodBtns.forEach((b, i) => b.classList.toggle('on', [7, 14, 30][i] === days));
     const op = user.role === 'operator';
@@ -80,20 +84,28 @@ export default async function dashboard(main, { user, navigate }) {
       r.chat_url ? h('a.btn.sm', { href: r.chat_url, target: '_blank', rel: 'noopener' }, 'Чат') : null))) : empty('Відповідей поки немає. Щойно чоловік відповість — він з’явиться тут, а жінка отримає сповіщення.');
 
     const operators = !op && st.operators.length ? h('section.card',
-      h('h3', `Оператори за ${days} дн`),
+      h('h3', `Команда за ${days} дн`),
       h('div.table-wrap', h('table.table', h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Сьогодні'), h('th.num', 'Інвайтів'), h('th.num', 'Відповідей'), h('th.num', 'Конверсія'))),
         h('tbody', st.operators.map((o) => h('tr', h('td', o.name), h('td.num', fmtInt(o.sent_today)), h('td.num', fmtInt(o.sent_period)), h('td.num', fmtInt(o.replied_period)),
           h('td.num', o.sent_period ? fmtPct(o.replied_period / o.sent_period) : '—'))))))) : null;
 
+    // The team lead: the team first; the full list of profiles (30–50 of them) folded away.
+    const body = op ? [
+      h('div.grid-main',
+        h('section.card', h('h3', 'Мої анкети'), h('div.table-wrap', profTable)),
+        h('section.card', h('h3', 'Останні відповіді'), replies)),
+    ] : [
+      h('div.grid-main', operators || h('section.card', h('h3', 'Команда'), empty('Ще ніхто не працював. Запросіть операторів у розділі «Команда».')),
+        h('section.card', h('h3', 'Останні відповіді'), replies)),
+      h('details.card.fold', h('summary', h('b', `Усі анкети (${st.profiles.length})`), h('span.small.muted', ' — бот, сьогодні, конверсія')), h('div.table-wrap', profTable)),
+    ];
     page.replaceChildren(...[
-      h('div.page-head', h('h1', 'Дашборд'), h('div.seg-group', { role: 'group', 'aria-label': 'Період' }, periodBtns)),
+      h('div.page-head', h('h1', 'Головна'), h('div.seg-group', { role: 'group', 'aria-label': 'Період' }, periodBtns)),
+      pendingBanner,
       onboarding,
       tiles,
       charts,
-      h('div.grid-main',
-        h('section.card', h('h3', 'Анкети'), h('div.table-wrap', profTable)),
-        h('section.card', h('h3', 'Останні відповіді'), replies)),
-      operators,
+      ...body,
     ].filter(Boolean)); // DOM replaceChildren would print "null"
   }
 

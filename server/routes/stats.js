@@ -58,7 +58,7 @@ export default function statsRoutes(db) {
         COALESCE(SUM(m.status = 'sent' AND m.replied_at IS NOT NULL), 0) AS replied_period,
         COALESCE(SUM(m.status = 'sent' AND m.day = ?), 0) AS sent_today
       FROM users u LEFT JOIN messages m ON m.operator_id = u.id AND m.day >= ?
-      WHERE u.agency_id = ? AND u.role IN ('operator','owner')
+      WHERE u.agency_id = ? AND u.role IN ('operator','owner') AND u.pending = 0
       GROUP BY u.id HAVING sent_period > 0 OR u.role = 'operator'
       ORDER BY sent_period DESC`).all(today, from, u.agencyId);
 
@@ -104,7 +104,7 @@ export default function statsRoutes(db) {
       if (String(s.base_url).includes('/demo-site/')) return false;
       try { const c = JSON.parse(s.config || '{}'); return Boolean(c.card && c.cardId && c.messageInput); } catch { return false; }
     });
-    const operators = db.prepare("SELECT COUNT(*) AS n FROM users WHERE agency_id = ? AND role = 'operator'").get(u.agencyId).n;
+    const operators = db.prepare("SELECT COUNT(*) AS n FROM users WHERE agency_id = ? AND role = 'operator' AND pending = 0").get(u.agencyId).n;
     const t = now();
     const licensed = db.prepare(`SELECT COUNT(*) AS n FROM profiles p JOIN licenses l ON l.profile_id = p.id
       WHERE p.agency_id = ? AND l.status = 'active' AND (l.expires_at IS NULL OR l.expires_at > ?)`).get(u.agencyId, t).n;
