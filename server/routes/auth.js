@@ -10,7 +10,7 @@ import { createAgency } from './admin.js';
 import { getSettings } from '../services.js';
 import { sendTelegram } from '../telegram.js';
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL = /^[^\s@]+@[^\s@]+$/; // like the logins made by hand (owner@test is fine too)
 
 /** Which copy of the bot logs in: a switched-off copy never; with the platform switch on — only copies downloaded from the panel. */
 function checkBuild(db, u, build) {
