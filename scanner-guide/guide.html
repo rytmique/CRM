@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сканер сайту — як встановити й запустити</title>
+<style>
+  body { margin: 0; background: #121014; color: #f2eef4; font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 18px 60px; }
+  h1 { font-size: 26px; margin: 0 0 6px; } h2 { margin: 34px 0 12px; font-size: 21px; color: #ff8fb4; }
+  .lead { color: #b8b0bf; margin: 0 0 18px; }
+  ol { padding-left: 22px; display: grid; gap: 16px; } li b { color: #fff; }
+  .card { background: #1c1920; border: 1px solid #2e2934; border-radius: 12px; padding: 14px 16px; margin: 10px 0; }
+  code, kbd { background: #2b2631; border: 1px solid #3a3440; border-radius: 6px; padding: 1px 7px; font: 15px ui-monospace, Consolas, monospace; color: #ffd8e6; }
+  img { max-width: 100%; border: 1px solid #2e2934; border-radius: 10px; display: block; margin-top: 10px; }
+  .mock { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: #fff; color: #202124; border-radius: 10px; padding: 12px 14px; margin-top: 10px; font: 14px Roboto, Arial, sans-serif; }
+  .tog { width: 36px; height: 14px; background: #8ab4f8; border-radius: 7px; position: relative; } .tog::after { content: ''; position: absolute; right: -2px; top: -3px; width: 20px; height: 20px; border-radius: 50%; background: #1a73e8; }
+  .gbtn { border: 1px solid #dadce0; border-radius: 4px; padding: 6px 12px; color: #1a73e8; font-weight: 500; }
+  .ok { color: #69db7c; } .warn { color: #ffc078; }
+  .big { font-size: 19px; }
+</style></head>
+<body><main>
+  <h1>🔍 Сканер сайту</h1>
+  <p class="lead">Сканер тихо записує, як влаштований ваш сайт, поки ви працюєте. <b>Нічого не натискає, нічого не змінює, нікому не заважає</b> (і іншим ботам теж). Імен, текстів, фото й паролів не записує.</p>
+
+  <h2>1. Встановити (один раз, 2 хвилини)</h2>
+  <ol>
+    <li>Розпакуйте цей архів: правою кнопкою по ньому → <b>«Видобути все…»</b>. З’явиться папка <code>site-scanner</code>. Покладіть її туди, де вона лишиться (наприклад, «Документи»). Не видаляйте до кінця тесту.</li>
+    <li>Відкрийте Chrome і в адресному рядку наберіть <code>chrome://extensions</code> → <kbd>Enter</kbd>.<br>
+      <span class="warn">Opera:</span> <code>opera://extensions</code> · <span class="warn">Edge:</span> <code>edge://extensions</code></li>
+    <li>Праворуч угорі увімкніть <b>«Режим розробника»</b>:
+      <div class="mock"><span>Режим розробника</span><span class="tog"></span></div></li>
+    <li>Натисніть <b>«Завантажити розпаковане»</b> і виберіть папку <code>site-scanner</code>:
+      <div class="mock"><span class="gbtn">Завантажити розпаковане</span><span class="gbtn">Запакувати розширення</span><span class="gbtn">Оновити</span></div></li>
+    <li>Щоб значок був під рукою: натисніть пазл 🧩 праворуч від адресного рядка → 📌 біля <b>Site Scanner</b>.</li>
+  </ol>
+
+  <h2>2. На початку зміни — одна кнопка</h2>
+  <ol>
+    <li>Відкрийте свій сайт і увійдіть, як завжди.</li>
+    <li>Натисніть значок сканера → <b class="big">🔍 Вивчити сайт</b>.
+      <img src="popup-1-start.png" alt="Кнопка «Вивчити сайт»"></li>
+    <li><b>Усе.</b> Працюйте як завжди, хоч усю ніч. На значку з’явиться <code>REC</code>.
+      <img src="popup-2-recording.png" alt="Іде запис"></li>
+  </ol>
+  <div class="card">
+    <p class="ok">✓ Можна: закривати це вікно, перемикати вкладки й вікна, перезавантажувати сторінку, вимикати й вмикати браузер, працювати з іншим ботом.</p>
+    <p class="ok">✓ Якщо комп’ютер заснув або вимкнувся — просто відкрийте сайт знову: запис продовжиться сам.</p>
+    <p class="warn">✗ Не натискайте «Почати заново» і не видаляйте папку до того, як скачаєте звіт.</p>
+  </div>
+
+  <h2>3. Зранку — скачати звіт</h2>
+  <ol>
+    <li>Значок сканера → <b class="big">📦 Скачати звіт</b>. Відкриється сторінка, звіт збереться сам (до хвилини) і скачається в «Завантаження».
+      <img src="report-page.png" alt="Звіт готовий"></li>
+    <li>Надішліть файл <code>scan-report-….zip</code> у Telegram. Готово 🙌</li>
+  </ol>
+  <p class="lead">Що в звіті: як влаштовані сторінки й кнопки, що відбувається після дій, які запити робить сайт — без вмісту. Імена, листування, ID, фото, адреси з ID, паролі й cookies не записуються або замінюються заглушками. Звіт збирається на вашому комп’ютері й нікуди сам не відправляється.</p>
+</main></body></html>

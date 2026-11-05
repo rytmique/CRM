@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="uk">
+<head><meta charset="utf-8"><title>Site Scanner</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header><img src="icon32.png" alt="" width="18" height="18"><b>Вивчення сайту</b><span id="ver" class="muted"></span></header>
+  <main>
+    <section id="idle" hidden>
+      <p class="lead">Відкрийте свій сайт у цій вкладці й натисніть кнопку. Далі працюйте як завжди — сканер тихо запише, як влаштований сайт.</p>
+      <p id="site" class="site"></p>
+      <button id="start" class="primary big">🔍 Вивчити сайт</button>
+      <p id="idle-note" class="note"></p>
+      <ul class="facts">
+        <li>Нічого не натискає і не змінює на сайті</li>
+        <li>Не записує імен, текстів, фото, паролів</li>
+        <li>Не заважає іншим розширенням</li>
+      </ul>
+    </section>
+    <section id="rec" hidden>
+      <div class="status"><span class="dot"></span><b id="rec-title">Іде запис</b><span id="rec-time" class="muted"></span></div>
+      <p id="rec-site" class="site"></p>
+      <div class="grid">
+        <div><b id="s-states">0</b><span>екранів</span></div>
+        <div><b id="s-events">0</b><span>дій</span></div>
+        <div><b id="s-net">0</b><span>типів запитів</span></div>
+      </div>
+      <p class="note">Працюйте як завжди. Можна закривати це вікно, перемикати вкладки, перезапускати браузер — запис продовжиться сам.</p>
+      <button id="report" class="primary big">📦 Скачати звіт</button>
+      <div class="row"><button id="stop">⏹ Зупинити запис</button></div>
+      <ul id="recent" class="recent"></ul>
+    </section>
+    <section id="stopped" hidden>
+      <div class="status"><span class="dot off"></span><b>Запис зупинено</b><span id="st-time" class="muted"></span></div>
+      <button id="report2" class="primary big">📦 Скачати звіт</button>
+      <div class="row"><button id="resume">▶ Продовжити запис</button><button id="reset" class="ghost">🗑 Почати заново</button></div>
+    </section>
+    <p id="error" class="error" role="alert"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

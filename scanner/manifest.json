@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Site Scanner — вивчення сайту",
+  "short_name": "Site Scanner",
+  "version": "1.0.0",
+  "description": "Тихо записує, як влаштований сайт, поки оператор працює. Нічого не натискає і не змінює. Звіт без особистих даних.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "unlimitedStorage", "scripting", "tabs", "alarms", "idle", "webRequest"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Site Scanner", "default_popup": "popup.html", "default_icon": { "16": "icon16.png", "32": "icon32.png" } },
+  "icons": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" }
+}
