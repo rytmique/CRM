@@ -66,7 +66,7 @@ export default async function adminAgencies(main, { navigate }) {
   async function load() {
     const [{ agencies }, health] = await Promise.all([get('/api/admin/agencies'), get('/api/health')]);
     const backupBtn = h('button.btn', { title: 'Уся база одним файлом', onclick: () => downloadBackup(backupBtn) }, '⬇ Бекап');
-    page.replaceChildren(
+    page.replaceChildren(...[ // (DOM replaceChildren would print «null» for the missing alert)
       health.persistentStorage === false ? h('div.alert.err', { role: 'alert' },
         h('b', '⚠ Диск не підключено — після наступного оновлення всі дані зникнуть.'),
         h('div', 'Railway → твій сервіс → правий клік → Attach Volume → шлях /data. Потім зайди сюди знову.')) : null,
@@ -93,7 +93,7 @@ export default async function adminAgencies(main, { navigate }) {
             if (!(await confirmDialog(`Згенерувати новий пароль для керівника «${a.name}»? Старий перестане діяти.`, { ok: 'Згенерувати' }))) return;
             const r = await post(`/api/admin/agencies/${a.id}/reset-owner`);
             accessModal({ title: `Новий доступ: ${a.name}`, email: r.email, password: r.password });
-          }) }, 'Новий пароль')))))) : empty('Команд ще немає. Натисни «+ Запросити тімліда» — він сам зареєструється за посиланням.')));
+          }) }, 'Новий пароль')))))) : empty('Команд ще немає. Натисни «+ Запросити тімліда» — він сам зареєструється за посиланням.'))].filter(Boolean));
   }
 
   function openForm() {

@@ -17,7 +17,7 @@ export default async function adminAgency(main, { navigate }) {
     const a = c.agency;
     const tabs = [['people', `Люди (${c.people.length})`], ['caps', 'План і ліміти'], ['ai', 'ШІ'], ['devices', 'Пристрої']];
     const panel = { people: peoplePanel, caps: capsPanel, ai: aiPanel, devices: devicesPanel }[tab](c);
-    page.replaceChildren(
+    page.replaceChildren(...[ // (DOM replaceChildren would print «null» for missing parts)
       h('div.page-head',
         h('h1', h('a.muted', { href: '#/agencies', title: 'Усі команди' }, '← '), a.name, ' ', a.active ? badge('працює', 'ok') : badge('призупинена', 'err'),
           a.solo ? ' ' : null, a.solo ? badge('соло', 'info') : null),
@@ -44,7 +44,7 @@ export default async function adminAgency(main, { navigate }) {
       c.link ? h('div.link-box', h('span.small.muted', 'Посилання для операторів цієї команди:'), h('input', { value: `${location.origin}/#/join/${c.link.token}`, readonly: true }),
         h('button.btn.sm', { onclick: () => copy(`${location.origin}/#/join/${c.link.token}`) }, 'Скопіювати')) : null,
       h('div.tabs-row', { role: 'tablist' }, tabs.map(([k, label]) => h(`button${k === tab ? '.on' : ''}`, { role: 'tab', 'aria-selected': k === tab, onclick: () => { tab = k; load(); } }, label))),
-      panel);
+      panel].filter(Boolean));
   }
 
   /** A solo operator whose team came too: move them in with profiles, sites and numbers. */

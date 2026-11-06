@@ -112,13 +112,13 @@ function modesCard(conf, reload) {
     reload();
   }).catch(() => {}));
   return h('section.card', h('h3', '⚙ Що робить бот за зміну'),
-    h('label.check', chanceOn, h('b', '🎯 Шанс'), ' — лист-інвайт з фото кожному, кому ще не писали'),
+    h('label.check', chanceOn, h('span', h('b', '🎯 Шанс'), ' — лист-інвайт з фото кожному, кому ще не писали')),
     h('div.pair', field('Як часто', every), h('label.check', online, 'Лише тим, хто онлайн')),
-    h('label.check', acOn, h('b', '💬 Аллчат'), ' — повідомлення на тему розмови в постійні чати'),
+    h('label.check', acOn, h('span', h('b', '💬 Аллчат'), ' — повідомлення на тему розмови в постійні чати')),
     h('div.pair', field('Скільки разів', perNight), field('Кому', who)),
     h('div.pair', field('«Замовк» — мовчить годин', silent), field('Пауза між повідомленнями, год', gap)),
     h('p.small.muted', 'Бот ніколи не пише туди, де чоловік чекає відповіді, і не відкриває непрочитані — відповідає жива людина.'),
-    h('label.check', auto, '🔒 Бот сам продовжує розмову після відповіді', conf.autoReplyOpen ? null : h('span.small.muted', ' — скоро')),
+    h('label.check', auto, h('span', '🔒 Бот сам продовжує розмову після відповіді', conf.autoReplyOpen ? null : h('span.small.muted', ' — скоро'))),
     h('label.check', reports, '📲 Звіт у Telegram після кожної розсилки'),
     h('p.small.muted', 'Фото для «Шансу» — у картці анкети (позначка «🎯 Шанс»). Робочі години й темп — як у сценарії сайту.'),
     save);
