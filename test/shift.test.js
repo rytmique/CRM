@@ -98,11 +98,18 @@ test('night shift: «Шанс», «Аллчат», reports, start/stop and stats
   assert.deepEqual(robert.actions[0].files.map((x) => x.name), ['chance.png']);
   const sent = await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: robert, ok: true, text: robert.text, mode: 'chance' }, 'bot');
   assert.equal(sent.status, 200);
-  const row = db.prepare('SELECT mode, night FROM messages WHERE profile_id = ? AND man_id = ?').get(p.id, '700001');
+  const row = db.prepare('SELECT mode, night, stage, next_at FROM messages WHERE profile_id = ? AND man_id = ?').get(p.id, '700001');
   assert.equal(row.mode, 'chance');
+  assert.equal(row.stage, 'done', 'no scenario follow-ups after a «Шанс» letter («Аллчат» does that)');
+  assert.equal(row.next_at, null);
   assert.ok(row.night, 'the night is stored');
   const again = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', candidates: [{ id: '700001', name: 'Robert', online: true }] }, 'bot');
   assert.equal(again.data.allowed.length, 0, 'never the same man twice');
+
+  // he answers the letter: a person replies; no scenario reminders are scheduled
+  await call('POST', `/api/bot/profiles/${p.id}/replies`, { men: [{ id: '700001', name: 'Robert', text: 'Hi Kate!' }] }, 'bot');
+  const replied = db.prepare('SELECT stage, bonus_left, next_at FROM messages WHERE profile_id = ? AND man_id = ?').get(p.id, '700001');
+  assert.deepEqual([replied.stage, replied.bonus_left, replied.next_at], ['replied', 0, null]);
 
   // ---- «Аллчат» ----
   const man = { id: '800001', name: 'Thomas' };

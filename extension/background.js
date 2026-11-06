@@ -968,7 +968,8 @@ async function shiftLoop(ctx, rotate) {
       did = true;
     }
     if (stopRequested) break;
-    if (ctx.cfg.scenario.followups) await processDue(ctx).catch((e) => log(`Повторні: ${e.message}`, 'warn'));
+    // follow-ups of the site's hints (if any) — only where the bot can reach a man again (his page or search by ID)
+    if (ctx.cfg.scenario.followups && (site.manUrl || site.findInput)) await processDue(ctx).catch((e) => log(`Повторні: ${e.message}`, 'warn'));
     if (site.taskItem && !ctx.limitReached) await processTasks(ctx);
     if (did) await checkInbox(site, ctx.profileId);
     const next = Math.min(...[ch.on && site.chanceItem && !ctx.limitReached ? ctx.nextChance : Infinity,

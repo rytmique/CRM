@@ -451,9 +451,10 @@ export default function botRoutes(db, cfg) {
     const validInvite = inviteId && db.prepare('SELECT 1 FROM invites WHERE id = ? AND profile_id = ?').get(inviteId, p.id) ? inviteId : null;
     const site = siteOf(p);
     const scenario = profileScenario(db, p, site);
-    const next = ok ? after(scenario, 0, t) : { stage: 'active', next_at: null };
-    const features = manFeatures(man, siteHost(site, configOf(site)));
     const mode = MODES.includes(req.body?.mode) ? req.body.mode : '';
+    // a «Шанс» letter has no scenario follow-ups: quiet dialogs are picked up by «Аллчат» (never both)
+    const next = !ok ? { stage: 'active', next_at: null } : mode === 'chance' ? { stage: 'done', next_at: null } : after(scenario, 0, t);
+    const features = manFeatures(man, siteHost(site, configOf(site)));
     const written = db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
         step, stage, next_at, man_url, last_at, man_info, features, mode, night)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)
@@ -512,7 +513,8 @@ export default function botRoutes(db, cfg) {
       const mood = classifyReply(man.text);
       if (mood === 'negative') negative++;
       else if (m.replied_at == null) { try { learnReply(db, JSON.parse(m.features || '[]')); } catch { /* old row */ } }
-      const bonus = mood === 'negative' ? 0 : Math.min(MAX_BONUS, m.bonus_left + afterReply.attempts);
+      // after a «Шанс» letter a live person answers, and «Аллчат» wakes the talk up if he goes quiet — no scenario reminders on top
+      const bonus = mood === 'negative' || m.mode === 'chance' ? 0 : Math.min(MAX_BONUS, m.bonus_left + afterReply.attempts);
       db.prepare(`UPDATE messages SET replied_at = COALESCE(replied_at, ?), reply_day = COALESCE(reply_day, ?), replies = replies + 1, last_reply_at = ?,
           reply_text = ?, reply_mood = ?, stage = 'replied', bonus_left = ?, next_at = ?, fails = 0 WHERE id = ?`)
         .run(t, day, t, man.text, mood, bonus, bonus > 0 ? t + afterReply.silenceHours * HOUR : null, m.id);
