@@ -23,7 +23,7 @@ const CODE_KEYS = new Set(['c', 'css', 'altCss', 'xp', 'path', 'added', 'inciden
   'browser', 'tz', 'lang', 'charset', 'mode', 'type', 'vis', 's', 'st', 'dir', 'version', 'why', 'role', 'from_file']);
 const allowWord = (w) => {
   const l = w.toLowerCase();
-  return M.DICT.has(l) || M.TECH.has(l) || OURS.has(l) || ROLES.has(l) || /^[a-z]{1,3}$/.test(l) || /^~[0-9a-f]{4}$/.test(w) || /^h-[0-9a-f]{6}$/.test(w)
+  return M.DICT.has(l) || M.TECH.has(l) || OURS.has(l) || ROLES.has(l) || /^[a-z]{1,2}$/.test(l) || /^~[0-9a-f]{4}$/.test(w) || /^h-[0-9a-f]{6}$/.test(w)
     || /^[a-p]{32}$/.test(w) || /^aria$/.test(l); // extension IDs (not personal) and attribute names
 };
 const found = new Map();
@@ -34,13 +34,20 @@ const flag = (w, where) => {
   if (f.where.size < 4) f.where.add(where);
 };
 /** Every word of a text; joined tokens (anna_k, michael-smith, a@b.c) are split and checked part by part. */
+let PREFIXES = null; // every start of an interface / technical word: a text cut to a box ends with «Sen…» or «mes…»
+const isPrefix = (w) => {
+  if (!PREFIXES) { PREFIXES = new Set(); for (const d of [...M.DICT, ...M.TECH]) for (let k = 1; k <= d.length; k++) PREFIXES.add(d.slice(0, k)); }
+  return PREFIXES.has(w.toLowerCase());
+};
 function checkWords(text, where) {
   const t = String(text).replace(/\[(W|w|текст \d+|тел|email|url|x|адреса)\]/g, ' ');
   for (const tok of t.split(/[\s,;!?"'`|+«»()]+/)) {
+    if (/^[\p{L}]+…$/u.test(tok)) { const w = tok.slice(0, -1); if (w.length >= 2 && !allowWord(w) && !isPrefix(w)) flag(w, where); continue; }
     for (const part of tok.split(/[-_.:/=#@\[\]>~*&?%]+/)) {
       if (!part || /^[0-9a-f]{4,8}$/i.test(part)) continue; // ~hash parts
-      if (/[a-z][A-Z]|\d[A-Za-z]|[A-Za-z]\d/.test(part)) continue; // ChatList, k2L3m, v2 — code
-      for (const w of part.match(/[\p{L}][\p{L}'’]*/gu) || []) if (w.length >= 2 && !allowWord(w)) flag(w, where);
+      // ChatList, anna1990, dialogAnnaSmith: each word on its own (a name glued to code is still a name); random code (k2L3m) has no 2+ letter words
+      const words = /[a-z][A-Z]|\d[A-Za-z]|[A-Za-z]\d/.test(part) ? part.match(/[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+/g) || [] : part.match(/[\p{L}][\p{L}'’]*/gu) || [];
+      for (const w of words) if (w.length >= (words.length > 1 ? 4 : 2) && !allowWord(w)) flag(w, where);
     }
   }
 }

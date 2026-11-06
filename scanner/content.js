@@ -54,7 +54,12 @@
   }
 
   // ---------------- page structure ----------------
-  const route = () => M.maskUrl(location.href, cfg.siteDomains);
+  // a blank / srcdoc frame (a chat widget the site builds in place) has no address of its own: the page around it + «frame»
+  const WEB = /^https?:$/.test(location.protocol);
+  const route = () => {
+    if (WEB) return M.maskUrl(location.href, cfg.siteDomains);
+    try { return `${M.maskUrl(parent.location.href, cfg.siteDomains)} frame`; } catch { return 'frame'; }
+  };
   const cls = (el) => {
     const c = typeof el.className === 'string' ? el.className : el.getAttribute?.('class') || '';
     // style variants (hover:…, md:…, z-[1], !mt-0) say nothing about what an element is — and were a fifth of the report
@@ -643,7 +648,8 @@
     // an iframe from another site is recorded only when it sits inside the operator's site
     const anc = [...(location.ancestorOrigins || [])].map((o) => { try { return new URL(o).hostname; } catch { return ''; } });
     if (!ours(host) && !(anc.length && anc.some(ours))) { teardown(); return; }
-    if (location.protocol !== 'http:' && location.protocol !== 'https:') { teardown(); return; }
+    // non-web addresses only for frames inside the site (about:blank / srcdoc widgets, covered by matchOriginAsFallback)
+    if (!WEB && (TOP || !/^(about|blob|data):$/.test(location.protocol))) { teardown(); return; }
     if (!TOP && (innerWidth < 200 || innerHeight < 120)) { teardown(); return; } // tiny / hidden frames: counters, pixels, ads
     cfg = scan;
     if (TOP) {

@@ -52,6 +52,31 @@ async function saveMeta() {
 }
 setInterval(saveMeta, 5000);
 
+// repeat views of known screens (up to 5000 counters): a record of their own, written at most every 30 s — not inside meta,
+// which is written every 5 s
+let seenRec = null;
+let seenDirty = false;
+let seenSavedAt = 0;
+async function getSeen() {
+  if (seenRec) return seenRec;
+  const rec = (await DB.get('meta', 'seen').catch(() => null)) || { k: 'seen', map: {}, n: 0 };
+  const m = await getMeta();
+  if (m.seen) { // recorded by 1.2.0 inside meta: move it out
+    for (const [k, v] of Object.entries(m.seen)) if (!rec.map[k] && rec.n < 5000) { rec.map[k] = v; rec.n++; }
+    delete m.seen; delete m.seenN;
+    touchMeta();
+    seenDirty = true;
+  }
+  seenRec ||= rec;
+  return seenRec;
+}
+async function saveSeen() {
+  if (!seenDirty || !seenRec) return;
+  seenDirty = false;
+  seenSavedAt = Date.now();
+  await DB.put('meta', seenRec).catch(() => { seenDirty = true; });
+}
+
 async function tabNo(tabId) {
   const m = await getMeta();
   if (tabId == null || tabId < 0) return 0;
@@ -123,8 +148,7 @@ async function storeState(st, tab, frameId) {
   }
   const perRoute = m.routes[st.route] || 0;
   if (m.full || m.states >= CAP.states || perRoute >= CAP.perRoute) {
-    m.overflow++;
-    m.routes[st.route] = perRoute; // known route, too many variants of it
+    m.overflow++; // only a counter: new addresses (every new profile) must not grow the settings once the limit is reached
     touchMeta();
     return;
   }
@@ -147,15 +171,15 @@ async function storeState(st, tab, frameId) {
 
 /** Repeat views of known screens: only counters (kept in meta, merged into the screens in the report). */
 async function seen(msg) {
-  const m = await getMeta();
-  m.seen ||= {};
+  const s = await getSeen();
   for (const [sig, n, last] of msg.list || []) {
-    let c = m.seen[sig];
-    if (!c) { if ((m.seenN || 0) >= 5000) continue; m.seenN = (m.seenN || 0) + 1; c = m.seen[sig] = [0, 0]; } // a page of endless shapes cannot bloat the settings
+    let c = s.map[sig];
+    if (!c) { if (s.n >= 5000) continue; s.n++; c = s.map[sig] = [0, 0]; } // a page of endless shapes cannot bloat it
     c[0] += n;
     c[1] = Math.max(c[1], last);
   }
-  touchMeta();
+  seenDirty = true;
+  if (Date.now() - seenSavedAt > 30000) await saveSeen();
 }
 
 async function storeEvents(list, tab, top, dropped) {
@@ -292,6 +316,7 @@ chrome.alarms.onAlarm.addListener(safe('alarm', async (a) => {
     m.ticks++;
     touchMeta();
     await saveMeta();
+    await saveSeen();
     await flushNet();
   } else if (a.name === 'probe') {
     const tabs = await chrome.tabs.query({ url: sitePatterns(scan) }).catch(() => []);
@@ -342,7 +367,7 @@ async function handle(msg, sender) {
     case 'resume': return resume();
     case 'stop': return stop();
     case 'reset': return reset();
-    case 'flush': await flushNet(); await saveMeta(); return { ok: true };
+    case 'flush': await flushNet(); await saveMeta(); await saveSeen(); return { ok: true };
     default: return { ok: false, error: 'unknown' };
   }
 }
@@ -403,7 +428,7 @@ async function stop() {
   await setScan({ ...scan, scanning: false, stoppedAt: Date.now() });
   await unregisterRecorder();
   await incident('stop');
-  const m = await getMeta(); m.stoppedAt = Date.now(); touchMeta(); await saveMeta();
+  const m = await getMeta(); m.stoppedAt = Date.now(); touchMeta(); await saveMeta(); await saveSeen();
   chrome.action.setBadgeText({ text: '■' });
   return { ok: true };
 }
@@ -412,6 +437,8 @@ async function reset() {
   await stop();
   await DB.clearAll();
   meta = null;
+  seenRec = null;
+  seenDirty = false;
   await chrome.storage.local.remove('scan');
   scanCache = null;
   chrome.action.setBadgeText({ text: '' });
@@ -422,12 +449,12 @@ async function status() {
   const scan = await getScan();
   const m = await getMeta();
   const [states, events, incidents, probes, net] = await Promise.all(['states', 'events', 'incidents', 'probes', 'net'].map((s) => DB.count(s).catch(() => 0)));
-  const last = [];
-  await DB.each('incidents', (v) => { last.push(v); if (last.length > 30) last.shift(); }).catch(() => {});
+  // the popup asks every 3 s: only the newest incidents, never the whole night's list
+  const last = await DB.last('incidents', 8).catch(() => []);
   return {
     ok: true, scanning: Boolean(scan?.scanning), has: Boolean(scan?.siteDomains), startedAt: m.startedAt || scan?.startedAt, stoppedAt: scan?.stoppedAt,
     states, events, incidents, probes, net, overflow: m.overflow, dropped: m.dropped, full: m.full, usage: m.usage, ext: m.ext.length,
-    recent: last.slice(-8), version: VERSION, sites: scan?.siteDomains || [],
+    recent: last, version: VERSION, sites: scan?.siteDomains || [],
   };
 }
 

@@ -6,7 +6,7 @@ import base64, json, os, re, shutil, sys, zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 shots, out = sys.argv[1], sys.argv[2]
 os.makedirs(out, exist_ok=True)
-ver = json.load(open(os.path.join(ROOT, 'scanner', 'manifest.json')))['version']
+ver = json.load(open(os.path.join(ROOT, 'scanner', 'manifest.json'), encoding='utf-8'))['version']
 guide = open(os.path.join(ROOT, 'scanner-guide', 'guide.html'), encoding='utf-8').read()
 
 def inline(m):

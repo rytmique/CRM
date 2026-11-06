@@ -2,7 +2,9 @@
 // Kept: words of an interface (buttons, tabs, hints) from the dictionary below. Everything else becomes [w] / [W],
 // numbers become #, long texts become [текст N]. Used by the page recorder, the background and the report.
 (() => {
-  if (self.__scanMask) return;
+  // after a scanner update the page may still hold the old version's helpers (same isolated world): replace them
+  const V = (() => { try { return chrome.runtime.getManifest().version; } catch { return '0'; } })();
+  if (self.__scanMask?.v === V) return;
 
   const WORDS = `
 a about account add id after again ago all also am an and answer answers any app apply are as at attach attachment attachments audio available away
@@ -63,6 +65,15 @@ slider spinbutton status strong subscript superscript switch tab tablist tabpane
 range color datetime local reset polite assertive both inline step location mixed vertical horizontal ascending descending
 translations task tasks hint hints limits quota correspondence intro invite invites invitation invitations icebreaker icebreakers template templates mass mailing
 broadcast queue seen organizations organization completion completions sync updates batch self private presence heartbeat keepalive longpoll pusher centrifugo signalr socketio
+picker holder scroller viewport pane panes trigger handle actions action controls control area zone section layout loader spinner skeleton indicator mark marker
+popover scroll smiles replies quote bubble bubbles own incoming outgoing mine timestamp actionbar bottombar topbar statusbar tabbar searchbar sendbar inputbar
+uploader dropzone chip chips pill tag tags output shell screen route router outlet layer layers stack tray dock drawer sheet slot slots entry entries tile tiles
+cells line lines logo brand desc description meta extra misc common shared global core base util utils helper helpers
+usr cfg cta hdr ftr lst itm fld txt lbl sel opt pos bar bot div sub sup pre alt req res err dlg win cnt ctr evt fmt grp idx inp len lnk loc mod obj pkg prv pub
+rec ref reg rel std str svc sys tmp tpl url uri utl var ver vid wrp xhr dom jsx tsx old del put pop dot fab pin gap raw run tip faq bio age sex zip tel dob ads cmd
+ctx doc env ext fav fix fwd gfx hex inc ini int kbd lng mob msk nfo opn pgn qty rpc rss rtc sdk seo sms ssr tos tts txn ugc ttl kpi chk clr cls cmp cnf cur dsc
+dst exp fbk flt fnt frm hdn hid hlp hov ldr lim lvl mnu mrk nxt ovr pag pct pnl prc prf prg prm pwd rdy rgb rmv scr shw sld slt spn srt stl swp tbl tgl thm trk
+trn upd usd eur uah vol wgt wiz
 `.split(/\s+/).filter(Boolean));
 
   /** One part of a value / URL segment: interface and technical words stay, numbers → #, anything else → ~hash (a username stays hidden but repeats are visible). */
@@ -70,7 +81,7 @@ broadcast queue seen organizations organization completion completions sync upda
     if (!p) return p;
     if (/^\d+$/.test(p)) return '#';
     const l = p.toLowerCase();
-    if (DICT.has(l) || TECH.has(l) || (/^[a-z]{1,3}$/.test(l))) return p.replace(/\d+/g, '#');
+    if (DICT.has(l) || TECH.has(l) || (/^[a-z]{1,2}$/.test(l))) return p.replace(/\d+/g, '#');
     if (/^[a-z]+\d+$/i.test(p) && TECH.has(p.replace(/\d+$/, '').toLowerCase())) return p.replace(/\d+/g, '#'); // v2, h1, col3
     return `~${fnv(l).slice(0, 4)}`;
   };
@@ -125,8 +136,9 @@ broadcast queue seen organizations organization completion completions sync upda
   const maskId = (id) => String(id).split(/([-_.:]+)/).map((p, i) => {
     if (i % 2 || !p) return p;
     if (/^\d+$/.test(p)) return '#';
-    if (/\d/.test(p) || /[a-z][A-Z]/.test(p)) return p.replace(/\d{2,}/g, '#'); // code-like: digits inside, camelCase
-    return maskPart(p);
+    if ((!/\d/.test(p) && !/[a-z][A-Z]/.test(p)) || !/^[A-Za-z\d]+$/.test(p)) return maskPart(p);
+    // code-like (chatInput, r5e, anna1990, dialogAnnaSmith): every word of it on its own, a single digit stays (v2, h1)
+    return p.match(/[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]|\d+/g).map((w) => (/^\d$/.test(w) ? w : /^\d+$/.test(w) ? '#' : maskPart(w))).join('');
   }).join('').slice(0, 60);
 
   const KNOWN_HOSTS = /(^|\.)(google|gstatic|googleapis|googletagmanager|google-analytics|doubleclick|recaptcha|hcaptcha|cloudflare|cloudflareinsights|jsdelivr|unpkg|cdnjs|sentry|sentry-cdn|intercom|facebook|fbcdn|yandex|hotjar|clarity|stripe|paypal|onesignal|pusher|firebaseio|firebase|amplitude|mixpanel|segment|zendesk|tawk|jivosite)\.[a-z.]+$/i;
@@ -188,5 +200,5 @@ broadcast queue seen organizations organization completion completions sync upda
     return [out, fixes];
   }
 
-  self.__scanMask = { DICT, TECH, maskText, maskValue, maskName, maskId, maskHost, maskUrl, maskToken, regDomain, scrub, len, fnv };
+  self.__scanMask = { v: V, DICT, TECH, maskText, maskValue, maskName, maskId, maskHost, maskUrl, maskToken, regDomain, scrub, len, fnv };
 })();

@@ -170,6 +170,9 @@ const ROLE_COLOR = { messageInput: '#4dabf7', sendButton: '#51cf66', translateBu
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /** A screen as boxes: what is where and what the scanner thinks it is. No pictures, no texts beyond the masked ones. */
+/** Text cut to a box: at a word boundary when it can, always with «…» (a cut word is a piece of a masked word, not a new one). */
+const fit = (t, max) => { if (t.length <= max) return t; const cut = t.slice(0, max); const sp = cut.lastIndexOf(' '); return `${sp > 2 ? cut.slice(0, sp) : cut}…`; };
+
 function wireframe(s, roles) {
   const st = s.state;
   const W = st.vw || 1280; const H = Math.max(st.vh || 800, 400);
@@ -184,7 +187,7 @@ function wireframe(s, roles) {
     if (!role && rects.length > 700) return;
     rects.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${role ? `${ROLE_COLOR[role] || '#fff'}33` : 'none'}" stroke="${role ? ROLE_COLOR[role] || '#fff' : '#3a3440'}" stroke-width="${role ? 2 : 0.6}"/>`);
     if (role) rects.push(`<text x="${x + 3}" y="${y + 12}" fill="${ROLE_COLOR[role] || '#fff'}" font-size="11" font-family="sans-serif" font-weight="700">${esc(role)}</text>`);
-    else if (n.tx && w > 30 && h >= 10 && rects.length < 1400) rects.push(`<text x="${x + 2}" y="${y + Math.min(h - 2, 11)}" fill="#8b8494" font-size="9" font-family="sans-serif">${esc(clean(n.tx).slice(0, Math.max(3, Math.floor(w / 6))))}</text>`);
+    else if (n.tx && w > 30 && h >= 10 && rects.length < 1400) rects.push(`<text x="${x + 2}" y="${y + Math.min(h - 2, 11)}" fill="#8b8494" font-size="9" font-family="sans-serif">${esc(fit(clean(n.tx), Math.max(3, Math.floor(w / 6))))}</text>`);
   });
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"><rect width="100%" height="100%" fill="#141217"/>`
     + `<text x="8" y="${H - 8}" fill="#6c6474" font-size="12" font-family="sans-serif">${esc(clean(s.route))} · бачили ${s.count}×</text>${rects.join('')}</svg>`;
@@ -225,7 +228,8 @@ async function build() {
     events.sort((a, b) => a.t - b.t); // actions with an effect are stored a few seconds later
     netlog.sort((a, b) => a.t - b.t);
     // repeat views of known screens are counted separately (small) — add them to the screens
-    for (const st of states) { const c = meta.seen?.[st.sig]; if (c) { st.count += c[0]; st.last = Math.max(st.last, c[1]); } }
+    const seenMap = (await DB.get('meta', 'seen').catch(() => null))?.map || meta.seen || {}; // (inside meta before 1.2.1)
+    for (const st of states) { const c = seenMap[st.sig]; if (c) { st.count += c[0]; st.last = Math.max(st.last, c[1]); } }
     s(`Прочитано: екранів ${states.length}, дій ${events.length}, запитів ${netlog.length}`);
 
     s = step('Розпізнаю, що де на сайті…');

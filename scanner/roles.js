@@ -1,7 +1,8 @@
 // Guesses what each element of a recorded page state is (message box, Send, chat list, hints…), with a score 0–1.
 // Works only on the masked snapshot, so it runs the same in the page (hourly probe) and in the report.
 (() => {
-  if (self.__scanRoles) return;
+  const V = (() => { try { return chrome.runtime.getManifest().version; } catch { return '0'; } })();
+  if (self.__scanRoles?.v === V) return; // an older version left in the page by an update is replaced
 
   const KW = {
     msg: /messag|write|type a|typing|chat|msg|reply|compose|english|text|повідом|напиш|напис|сообщ|українськ|english|translat/i,
@@ -35,8 +36,10 @@
   const lower = (x) => String(x || '').toLowerCase();
 
   /** Text of a node for matching: classes, id, role, attribute values, own masked text. */
+  // the input type / mode is HTML, not a hint: «type=text» is every field, «type=submit» is every form button
+  const NOT_HINTS = new Set(['type', 'inputmode', 'autocomplete']);
   function features(n) {
-    const attrs = n.a ? Object.entries(n.a).map(([k, v]) => `${k}=${v}`).join(' ') : '';
+    const attrs = n.a ? Object.entries(n.a).filter(([k]) => !NOT_HINTS.has(k)).map(([k, v]) => `${k}=${v}`).join(' ') : '';
     return { cls: lower(`${(n.c || []).join(' ')} ${n.id || ''}`), attrs: lower(attrs), text: lower(n.tx || ''), all: lower(`${(n.c || []).join(' ')} ${n.id || ''} ${n.r || ''} ${attrs} ${n.tx || ''}`) };
   }
 
@@ -162,6 +165,8 @@
         const isTab = n.r === 'tab' || /(^|[\s_-])tabs?([\s_-]|$)/.test(F.cls);
         const btn = (role, re, label) => { if (re.test(t)) add(role, i, base + 4 + (vis ? 1 : 0) + (y > vh * 0.45 && role === 'sendButton' ? 1 : 0) - (role === 'letterButton' && isTab ? 2 : 0), [label]); };
         btn('sendButton', KW.send, 'слово «надіслати»');
+        // a submit button without words: a weak hint, never for search / login forms
+        if (n.a?.type === 'submit' && !KW.send.test(t) && !KW.notMsg.test(t)) add('sendButton', i, base + 1 + (vis ? 1 : 0), ['кнопка форми']);
         btn('translateButton', KW.translate, 'слово «перекласти»');
         btn('attach', KW.attach, 'фото / файл / скрепка');
         btn('letterButton', KW.letter, 'лист / конверт');
@@ -249,5 +254,5 @@
     return out;
   }
 
-  self.__scanRoles = { classify, aggregate, ROLE_NAMES, KW };
+  self.__scanRoles = { v: V, classify, aggregate, ROLE_NAMES, KW };
 })();

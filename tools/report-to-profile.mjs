@@ -28,6 +28,12 @@ if (fs.existsSync(stDir)) {
     if (!line.trim()) continue;
     const st = JSON.parse(line);
     if (st.state?.n?.length) out.push({ roles: self.__scanRoles.classify(st.state).roles, route: st.route, count: st.count });
+    else if (st.state?.light) {
+      // stored without elements (the space budget was used up): keep what was recognised when it was recorded
+      const { flags, ...best } = st.state.best || st.best || {};
+      void flags;
+      out.push({ roles: Object.fromEntries(Object.entries(best).map(([k, v]) => [k, [{ ...v, tg: '?', why: [] }]])), route: st.route, count: st.count });
+    }
   }
   if (out.length) sum.roles = self.__scanRoles.aggregate(out);
 }
@@ -46,7 +52,8 @@ for (const [role, key] of Object.entries(MAP)) {
   const best = list[0];
   if (!best) { check.push(`✗ ${key}: сканер не знайшов (${role})`); continue; }
   // several candidates that are all good → join them (the bot takes the first visible)
-  const good = list.filter((c) => c.confidence >= Math.max(0.5, best.confidence - 0.15)).slice(0, 3).map((c) => c.css[0]);
+  // (the best one always goes in, even when unsure — it is marked «?» below instead of becoming an empty setting)
+  const good = list.filter((c, i) => i === 0 || c.confidence >= Math.max(0.5, best.confidence - 0.15)).slice(0, 3).map((c) => c.css[0]);
   config[key] = [...new Set(good)].join(', ');
   conf[key] = best.confidence;
   if (best.confidence < 0.7) check.push(`? ${key} = ${config[key]} — впевненість ${Math.round(best.confidence * 100)}%`);

@@ -92,5 +92,18 @@
     });
   }
 
-  self.__scanDb = { open, get, put, add, count, clearAll, trim, update, each, STORES: Object.keys(STORES) };
+  /** The newest `n` records of a store, oldest first — without reading the whole store. */
+  async function last(store, n) {
+    const db = await open();
+    const tx = db.transaction(store);
+    const out = [];
+    await new Promise((res, rej) => {
+      const c = tx.objectStore(store).openCursor(null, 'prev');
+      c.onsuccess = (e) => { const cur = e.target.result; if (!cur || out.length >= n) { res(); return; } out.push(cur.value); cur.continue(); };
+      c.onerror = () => rej(c.error);
+    });
+    return out.reverse();
+  }
+
+  self.__scanDb = { open, get, put, add, count, clearAll, trim, update, each, last, STORES: Object.keys(STORES) };
 })();

@@ -140,3 +140,65 @@ test('the envelope that opens a letter beats the «Letters» tab of the chat lis
   const { roles } = R.classify({ n: nodes, vw: 1280, vh: 860 });
   assert.equal(roles.letterButton[0].css[0], 'button[aria-label="Letter"]');
 });
+
+test('short names and names glued to code never pass (eva, anna1990, dialogAnnaSmith)', () => {
+  for (const name of ['eva', 'ann', 'kim', 'amy', 'bob']) {
+    assert.ok(!M.maskToken(name).includes(name), name);
+    assert.ok(!M.maskUrl(`https://ex.com/profile/${name}`, ['ex.com']).includes(name), name);
+    assert.ok(!M.maskId(`chat-${name}`).includes(name), name);
+  }
+  for (const id of ['chat-anna1990', 'dialogAnnaSmith', 'user-AnnaK', 'thread_OlenaK2']) assert.ok(!/anna|smith|olena/i.test(M.maskId(id)), id);
+  // code stays readable: abbreviations, camelCase of code words, single digits
+  for (const id of ['btn', 'msg', 'chatInput', 'emojiPickerBtn', 'sendBtn2', 'r5e', 'v2', 'h1']) assert.equal(M.maskId(id), id, id);
+  assert.equal(M.maskId('user-500000001'), 'user-#');
+});
+
+test('an old copy of the helpers left in the page by an update is replaced', () => {
+  const ctx = vm.createContext({});
+  ctx.self = ctx;
+  ctx.self.__scanMask = { maskText: () => 'old' }; // 1.1.0 had no maskId and no version mark
+  ctx.self.__scanRoles = { classify: () => 'old' };
+  for (const f of ['dict.js', 'roles.js']) vm.runInContext(fs.readFileSync(path.join(HERE, '..', f), 'utf8'), ctx);
+  assert.equal(typeof ctx.self.__scanMask.maskId, 'function');
+  assert.notEqual(ctx.self.__scanRoles.classify({ n: [] }), 'old');
+});
+
+test('«type=text» / «type=submit» are not hints: a search form is not the chat', () => {
+  const nodes = [
+    { p: -1, d: 0, tg: 'html' },
+    { p: 0, d: 1, tg: 'body' },
+    { p: 1, d: 2, tg: 'input', a: { type: 'text' }, b: [400, 20, 300, 30], v: 1 },
+    { p: 1, d: 2, tg: 'button', a: { type: 'submit', 'aria-label': 'Search' }, b: [710, 20, 30, 30], v: 1 },
+    { p: 1, d: 2, tg: 'textarea', a: { placeholder: 'Write a message' }, b: [400, 700, 500, 80], v: 1 },
+    { p: 1, d: 2, tg: 'button', a: { type: 'submit' }, b: [910, 740, 40, 40], v: 1 },
+  ];
+  const { roles } = R.classify({ n: nodes, vw: 1280, vh: 860 });
+  const plain = roles.messageInput.find((c) => c.tg === 'input');
+  assert.ok(!plain || !plain.why.some((w) => w.includes('повідомлення')), 'type=text gave the «message» bonus');
+  assert.equal(roles.messageInput[0].tg, 'textarea');
+  assert.ok(!roles.sendButton.some((c) => c.b[1] === 20), 'the search button became a Send candidate');
+  assert.ok(roles.sendButton[0].score <= 0.5, 'a wordless submit button is only a weak candidate');
+});
+
+test('report → bot settings: unsure roles are not empty, roles from light screens are kept', async () => {
+  const os = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-prof-'));
+  fs.mkdirSync(path.join(dir, 'states'));
+  const nodes = [
+    { p: -1, d: 0, tg: 'html' }, { p: 0, d: 1, tg: 'body' },
+    { p: 1, d: 2, tg: 'div', c: ['box'], s: 'ce', b: [400, 100, 100, 30], v: 0 }, // a weak, hidden typing place → low confidence
+  ];
+  const lines = [
+    { sig: 'a', route: 'SITE/chat', count: 3, state: { n: nodes, vw: 1280, vh: 860 } },
+    { sig: 'b', route: 'SITE/chat', count: 2, state: { n: [], light: 1, best: { letterButton: { score: 0.9, css: ['button.envelope'], xp: '/x' }, flags: {} } } },
+  ];
+  fs.writeFileSync(path.join(dir, 'states', 'part-01.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n'));
+  fs.writeFileSync(path.join(dir, 'summary.json'), JSON.stringify({ scan: {}, roles: {}, actions: [], texts: {} }));
+  const out = path.join(dir, 'draft.json');
+  execFileSync(process.execPath, [path.join(HERE, '..', '..', 'tools', 'report-to-profile.mjs'), dir, out], { stdio: 'pipe' });
+  const draft = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert.ok(draft.config.messageInput, `low confidence gave an empty setting: ${JSON.stringify(draft.config)}`);
+  assert.ok(draft.check.some((c) => c.startsWith('? messageInput')), 'an unsure setting is marked for checking');
+  assert.equal(draft.config.letterOpen, 'button.envelope', 'a role seen only on a light screen was lost');
+});
