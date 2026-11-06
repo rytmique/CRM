@@ -7,7 +7,7 @@ const M = self.__scanMask;
 const DB = self.__scanDb;
 const VERSION = chrome.runtime.getManifest().version;
 
-const CAP = { states: 900, perRoute: 60, stateBytes: 90e6, events: 150000, netlog: 120000, bytes: 1.5e9 };
+const CAP = { states: 900, perRoute: 60, perKind: 150, stateBytes: 90e6, events: 150000, netlog: 120000, bytes: 1.5e9 };
 const R = self.__scanRoles;
 const NET_SKIP_LOG = new Set(['image', 'font', 'media', 'stylesheet', 'imageset']);
 
@@ -111,6 +111,11 @@ async function ensureRunning(reason) {
 }
 
 // ---------------- storing what pages send ----------------
+let storedSigs = null; // signatures of the screens kept in the store, read once per wake-up
+async function stored() { if (!storedSigs) storedSigs = new Set(await DB.keys('states').catch(() => [])); return storedSigs; }
+// one page kind for the per-page limit: /profile/~a1b2 and /profile/~c3d4 are the same page about two men
+const routeKind = (r) => String(r || '').replace(/[^/?#&]*~[0-9a-f]{4}[^/?#&]*/g, '~');
+
 async function storeState(st, tab, frameId) {
   const m = await getMeta();
   const existing = await DB.get('states', st.sig).catch(() => null);
@@ -121,15 +126,19 @@ async function storeState(st, tab, frameId) {
     await DB.put('states', existing);
     return;
   }
+  // per page: 60 shapes of one address; 150 for one page kind (all men's profiles together), so they cannot eat the 900
+  const kind = routeKind(st.route);
+  m.kinds ||= {};
   const perRoute = m.routes[st.route] || 0;
-  if (m.full || m.states >= CAP.states || perRoute >= CAP.perRoute) {
-    m.overflow++;
-    m.routes[st.route] = perRoute; // known route, too many variants of it
+  const perKind = m.kinds[kind] || 0;
+  if (m.full || m.states >= CAP.states || perRoute >= CAP.perRoute || perKind >= CAP.perKind) {
+    m.overflow++; // over the limit: counted, nothing else kept (no new keys in the settings either)
     touchMeta();
     return;
   }
   m.states++;
   m.routes[st.route] = perRoute + 1;
+  m.kinds[kind] = perKind + 1;
   for (const id of st.foreign?.ext || []) if (!m.ext.includes(id)) m.ext.push(id);
   const size = JSON.stringify(st).length;
   m.stateBytes = (m.stateBytes || 0) + size;
@@ -143,13 +152,16 @@ async function storeState(st, tab, frameId) {
     m.lightStates = (m.lightStates || 0) + 1;
   }
   await DB.put('states', { sig: st.sig, route: st.route, top: st.top, frame: frameId || 0, first: st.t, last: st.t, count: 1, tabs: [tab], size, state: keep });
+  (await stored()).add(st.sig);
 }
 
 /** Repeat views of known screens: only counters (kept in meta, merged into the screens in the report). */
 async function seen(msg) {
   const m = await getMeta();
   m.seen ||= {};
+  const known = await stored();
   for (const [sig, n, last] of msg.list || []) {
+    if (!known.has(sig)) continue; // a screen that was over the limit: nothing to add the views to
     let c = m.seen[sig];
     if (!c) { if ((m.seenN || 0) >= 5000) continue; m.seenN = (m.seenN || 0) + 1; c = m.seen[sig] = [0, 0]; } // a page of endless shapes cannot bloat the settings
     c[0] += n;
@@ -412,6 +424,7 @@ async function reset() {
   await stop();
   await DB.clearAll();
   meta = null;
+  storedSigs = null;
   await chrome.storage.local.remove('scan');
   scanCache = null;
   chrome.action.setBadgeText({ text: '' });
@@ -422,8 +435,7 @@ async function status() {
   const scan = await getScan();
   const m = await getMeta();
   const [states, events, incidents, probes, net] = await Promise.all(['states', 'events', 'incidents', 'probes', 'net'].map((s) => DB.count(s).catch(() => 0)));
-  const last = [];
-  await DB.each('incidents', (v) => { last.push(v); if (last.length > 30) last.shift(); }).catch(() => {});
+  const last = await DB.last('incidents', 8).catch(() => []); // only the newest ones: the journal grows all night
   return {
     ok: true, scanning: Boolean(scan?.scanning), has: Boolean(scan?.siteDomains), startedAt: m.startedAt || scan?.startedAt, stoppedAt: scan?.stoppedAt,
     states, events, incidents, probes, net, overflow: m.overflow, dropped: m.dropped, full: m.full, usage: m.usage, ext: m.ext.length,

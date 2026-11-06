@@ -162,6 +162,26 @@ try {
   const wsLog = (await readAll('netlog')).filter((r) => r.ty === 'websocket');
   ok('живий канал сайту (websocket) записано', wsOpen && wsLog.some((r) => r.st === 101 && r.u.startsWith('ws://SITE/socket/chat?')), JSON.stringify(wsLog[0] || {}).slice(0, 120));
 
+  // 5d. a chat in windows without an address of their own (srcdoc / built by a script): recorded as «page [frame]»
+  const wid = await ctx.newPage();
+  await wid.goto(`${SITE}/fx/widget.html`);
+  await sleep(3000);
+  await wid.frameLocator('#w1').locator('textarea').click();
+  await wid.keyboard.type('Robert, private text 4455', { delay: 5 });
+  await wid.frameLocator('#w1').locator('.w-send').click();
+  await wid.frameLocator('#w2').locator('.box-input').click();
+  await wid.keyboard.type('Natalia secret', { delay: 5 });
+  await wid.frameLocator('#w2').locator('.box-send').click();
+  await sleep(11000); // the effect window of the last click (4 s) + the page's 5-second send-out
+  await msg({ type: 'flush' });
+  const frameStates = (await readAll('states')).filter((s) => !s.top && s.route.endsWith('[frame]'));
+  const frameEv = (await readAll('events')).filter((e) => (e.r || '').endsWith('[frame]'));
+  const frameJson = JSON.stringify([frameStates, frameEv]);
+  ok('чат у вбудованому вікні без адреси записано (обидва вікна)', frameStates.length >= 2 && frameStates.some((s) => s.state.n.some((n) => n.tg === 'textarea')) && frameStates.some((s) => s.state.n.some((n) => (n.s || '').includes('ce'))),
+    `екранів ${frameStates.length}: ${[...new Set(frameStates.map((s) => s.route))].join(', ')}`);
+  ok('дії у вбудованому вікні записано, без текстів', frameEv.some((e) => e.ty === 'type') && frameEv.some((e) => e.ty === 'click') && !/Robert|Natalia|4455|private|secret/.test(frameJson), `${frameEv.length} дій`);
+  await wid.close();
+
   // 6. report while recording: recording goes on
   const evBefore = (await msg({ type: 'status' })).events;
   const r1 = await report();

@@ -54,7 +54,11 @@
   }
 
   // ---------------- page structure ----------------
-  const route = () => M.maskUrl(location.href, cfg.siteDomains);
+  // a window built inside the page without an address of its own (about:blank / srcdoc / blob — chat widgets do this):
+  // its address is the page around it + [frame]
+  const BUILT_IN = !TOP && /^(about|blob):$/.test(location.protocol);
+  const hostPage = () => { try { return parent.location.href; } catch { return document.referrer || ''; } };
+  const route = () => (BUILT_IN ? `${M.maskUrl(hostPage(), cfg.siteDomains)} [frame]` : M.maskUrl(location.href, cfg.siteDomains));
   const cls = (el) => {
     const c = typeof el.className === 'string' ? el.className : el.getAttribute?.('class') || '';
     // style variants (hover:…, md:…, z-[1], !mt-0) say nothing about what an element is — and were a fifth of the report
@@ -643,7 +647,7 @@
     // an iframe from another site is recorded only when it sits inside the operator's site
     const anc = [...(location.ancestorOrigins || [])].map((o) => { try { return new URL(o).hostname; } catch { return ''; } });
     if (!ours(host) && !(anc.length && anc.some(ours))) { teardown(); return; }
-    if (location.protocol !== 'http:' && location.protocol !== 'https:') { teardown(); return; }
+    if (location.protocol !== 'http:' && location.protocol !== 'https:' && !(BUILT_IN && anc.length && ours(anc[0]))) { teardown(); return; }
     if (!TOP && (innerWidth < 200 || innerHeight < 120)) { teardown(); return; } // tiny / hidden frames: counters, pixels, ads
     cfg = scan;
     if (TOP) {

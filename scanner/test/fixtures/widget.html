@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>widget</title></head>
+<body>
+<!-- A chat inside windows that have no address of their own: one from srcdoc, one built by a script in an empty frame. -->
+<h1 class="page-title">Messages</h1>
+<iframe id="w1" style="width:420px;height:320px;border:1px solid #ccc" srcdoc="<!doctype html><body><div class='w-chat'><div class='w-msg'>Hello Robert</div><textarea class='w-input' placeholder='Write a message'></textarea><button class='w-send'>Send</button></div></body>"></iframe>
+<iframe id="w2" style="width:420px;height:320px;border:1px solid #ccc"></iframe>
+<script>
+  const d = document.getElementById('w2').contentDocument;
+  d.body.innerHTML = '<div class="box-chat"><div class="box-line">Hi Natalia</div><div class="box-input" contenteditable="true" aria-label="Message"></div><button class="box-send" aria-label="Send">➤</button></div>';
+</script>
+</body></html>

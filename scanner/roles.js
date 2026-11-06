@@ -6,7 +6,7 @@
   const KW = {
     msg: /messag|write|type a|typing|chat|msg|reply|compose|english|text|повідом|напиш|напис|сообщ|українськ|english|translat/i,
     notMsg: /search|find|пошук|поиск|знайти|найти|login|email|password|пароль|subject|тема|\bid\b/i,
-    send: /\bsend\b|submit|надіслати|надішліть|відправити|отправить|отправь|➤|➢|✈/i,
+    send: /\bsend\b|надіслати|надішліть|відправити|отправить|отправь|➤|➢|✈/i, // not "submit": every login / search form has one
     translate: /translat|перекла|перевод|перевест/i,
     attach: /attach|clip|upload|\bphoto|\bimage|picture|\bvideo|\baudio|voice|camera|media|gallery|\bfile|фото|відео|видео|аудіо|аудио|скрепк|вклад|📎/i,
     letter: /letter|mail|envelope|лист|письм|✉/i,
@@ -37,7 +37,9 @@
   /** Text of a node for matching: classes, id, role, attribute values, own masked text. */
   function features(n) {
     const attrs = n.a ? Object.entries(n.a).map(([k, v]) => `${k}=${v}`).join(' ') : '';
-    return { cls: lower(`${(n.c || []).join(' ')} ${n.id || ''}`), attrs: lower(attrs), text: lower(n.tx || ''), all: lower(`${(n.c || []).join(' ')} ${n.id || ''} ${n.r || ''} ${attrs} ${n.tx || ''}`) };
+    // the same without type=…: every one-line field says type=text, which is not a hint of a message box
+    const named = n.a ? Object.entries(n.a).filter(([k]) => k !== 'type').map(([k, v]) => `${k}=${v}`).join(' ') : '';
+    return { cls: lower(`${(n.c || []).join(' ')} ${n.id || ''}`), attrs: lower(attrs), named: lower(named), text: lower(n.tx || ''), all: lower(`${(n.c || []).join(' ')} ${n.id || ''} ${n.r || ''} ${attrs} ${n.tx || ''}`) };
   }
 
   const isClickable = (n) => ['button', 'a', 'summary', 'label'].includes(n.tg) || n.r === 'button' || n.r === 'tab' || n.r === 'menuitem' || n.r === 'link' || (n.a && ('onclick' in n.a || n.a.tabindex === '0'));
@@ -51,23 +53,25 @@
     const hasNum = new Array(nodes.length).fill(false);
     const hasName = new Array(nodes.length).fill(false);
     const hasLong = new Array(nodes.length).fill(false);
+    const hasMsgBox = new Array(nodes.length).fill(false); // a textarea / typing box somewhere inside
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
       if (['img', 'picture', 'svg', 'canvas', 'video'].includes(n.tg) || /avatar|photo|pic|image|img/i.test((n.c || []).join(' '))) hasImg[i] = true;
       if (/#/.test(n.tx || '')) hasNum[i] = true;
       if (/\[W\]/.test(n.tx || '')) hasName[i] = true;
       if (/\[текст/.test(n.tx || '')) hasLong[i] = true;
+      if (n.tg === 'textarea' || (n.s || '').includes('ce')) hasMsgBox[i] = true;
       const p = n.p;
-      if (p >= 0) { hasImg[p] ||= hasImg[i]; hasNum[p] ||= hasNum[i]; hasName[p] ||= hasName[i]; hasLong[p] ||= hasLong[i]; }
+      if (p >= 0) { hasImg[p] ||= hasImg[i]; hasNum[p] ||= hasNum[i]; hasName[p] ||= hasName[i]; hasLong[p] ||= hasLong[i]; hasMsgBox[p] ||= hasMsgBox[i]; }
     }
-    return { nodes, kids, hasImg, hasNum, hasName, hasLong, vw: snap.vw || 1280, vh: snap.vh || 800, f: nodes.map(features), tw: utilityPage(nodes) };
+    return { nodes, kids, hasImg, hasNum, hasName, hasLong, hasMsgBox, vw: snap.vw || 1280, vh: snap.vh || 800, f: nodes.map(features), tw: utilityPage(nodes) };
   }
 
   // ids a framework makes anew on every load (React useId «_r_5e_» / «:r1:», MUI, Ember, Headless UI…) or masked ones: useless to the bot
   const stableId = (id) => Boolean(id) && !/[#~[\]\s]/.test(id) && !/\d/.test(id) && !/(^|[-_:])_?r_[0-9a-z]*_?$|:r[0-9a-z]*:|«r/i.test(id);
   // utility CSS (Tailwind-like): variants (hover:…, md:…, z-[1], !mt-0, group/btn) everywhere; plain utilities (flex, w-full, gap-2)
   // only on pages that are mostly built from them — elsewhere "left-msgs" or "top-bar" are the site's own names
-  const UTIL_EXACT = new Set('flex grid block inline inline-block inline-flex inline-grid hidden contents relative absolute fixed sticky static group peer truncate italic uppercase lowercase capitalize visible invisible container isolate grow shrink underline antialiased transform transition border rounded shadow outline-none select-none pointer-events-none cursor-pointer overflow-hidden overflow-auto whitespace-nowrap break-words sr-only not-sr-only'.split(' '));
+  const UTIL_EXACT = new Set('flex grid block inline inline-block inline-flex inline-grid hidden contents relative absolute fixed sticky static group peer truncate italic uppercase lowercase capitalize visible invisible container isolate grow shrink underline antialiased transform transition border rounded shadow outline-none select-none pointer-events-none cursor-pointer overflow-hidden overflow-auto whitespace-nowrap break-words sr-only not-sr-only border-t border-b border-l border-r border-x border-y box-border box-content'.split(' '));
   const UTIL_RE = /^-?(m|p)[trblxyse]?-[\w.]+$|^-?(w|h|min-w|min-h|max-w|max-h|size|gap|gap-x|gap-y|space-x|space-y|text|bg|border|border-[trblxy]|rounded|rounded-[trbl]{1,2}|shadow|items|justify|content|self|place-items|place-content|z|top|left|right|bottom|inset|inset-x|inset-y|overflow|overflow-x|overflow-y|font|leading|tracking|opacity|cursor|select|transition|duration|ease|delay|animate|flex|basis|order|col|row|col-span|row-span|grid-cols|grid-rows|divide|ring|outline|whitespace|break|line-clamp|aspect|object|pointer-events|translate-x|translate-y|rotate|scale|origin|fill|stroke|from|to|via|decoration|list|appearance|resize|scroll|snap|touch|will-change|backdrop|blur|drop-shadow|shrink|grow|float|clear|align|indent|columns|box|accent|caret|overscroll|start|end)-([\d./]+|px|full|auto|screen|min|max|fit|none|xs|sm|base|md|lg|xl|\dxl|center|start|end|between|around|evenly|stretch|baseline|col|row|wrap|nowrap|reverse|col-reverse|row-reverse|hidden|visible|scroll|clip|inherit|current|transparent|white|black|normal|medium|semibold|bold|light|thin|tight|snug|relaxed|loose|wide|wider|widest|left|right|justify|top|bottom|middle|sans|serif|mono|ellipsis|y|x|both|contain|cover|primary|secondary|muted|accent|danger|success|warning|[a-z]+-\d{2,3}(\/\d+)?)$/;
   const variant = (c) => /[:[\]!/@]/.test(c);
   const utilityPage = (nodes) => {
@@ -124,6 +128,20 @@
     'chatList', 'chatItem', 'unreadMark', 'tab', 'chatHeader', 'messageBubble', 'hintItem', 'counter', 'herCurrent', 'herSwitch', 'searchInput',
     'onlineMark', 'modal', 'danger'];
 
+  /** Inside a search box / search form (a few levels up)? */
+  function inSearch(P, i) {
+    for (let j = P.nodes[i].p, k = 0; j >= 0 && k < 4; j = P.nodes[j].p, k++) {
+      const a = P.nodes[j];
+      if (a.r === 'search' || ((a.tg === 'form' || k < 2) && KW.search.test(P.f[j].cls + P.f[j].attrs))) return true;
+    }
+    return false;
+  }
+  /** The nearest form around node i, or -1. */
+  function formOf(P, i) {
+    for (let j = P.nodes[i].p, k = 0; j >= 0 && k < 10; j = P.nodes[j].p, k++) if (P.nodes[j].tg === 'form') return j;
+    return -1;
+  }
+
   function classify(snap) {
     const P = prepare(snap);
     const { nodes, vw, vh } = P;
@@ -142,10 +160,14 @@
       if (n.tg === 'textarea' || s.includes('ce') || (n.tg === 'input' && ['text', '', undefined].includes(n.a?.type))) {
         let sc = n.tg === 'textarea' || s.includes('ce') ? 4 : 1;
         if (vis) sc += 1; else sc -= 2;
-        if (KW.msg.test(F.attrs + F.cls)) { sc += 2; why.push('слова «повідомлення» в атрибутах'); }
+        if (KW.msg.test(F.named + F.cls)) { sc += 2; why.push('слова «повідомлення» в атрибутах'); }
         if (KW.notMsg.test(F.attrs + F.cls)) { sc -= 4; why.push('схоже на пошук / тему'); }
+        const searching = inSearch(P, i);
+        if (searching) { sc -= 4; why.push('усередині пошуку'); }
         if (y > vh * 0.45) sc += 1;
         if (w > 200) sc += 1;
+        // a plain one-line field is never taken for the message box on its looks alone (search, filters, forms)
+        if (n.tg === 'input' && !KW.msg.test(F.named + F.cls)) sc = Math.min(sc, 3);
         add('messageInput', i, sc, why);
         if (n.tg === 'input' && KW.search.test(F.attrs + F.cls)) add('searchInput', i, 6, ['слова пошуку']);
       }
@@ -161,7 +183,12 @@
         // a «Letters» tab of the chat list is not the envelope button that opens a letter to this man
         const isTab = n.r === 'tab' || /(^|[\s_-])tabs?([\s_-]|$)/.test(F.cls);
         const btn = (role, re, label) => { if (re.test(t)) add(role, i, base + 4 + (vis ? 1 : 0) + (y > vh * 0.45 && role === 'sendButton' ? 1 : 0) - (role === 'letterButton' && isTab ? 2 : 0), [label]); };
-        btn('sendButton', KW.send, 'слово «надіслати»');
+        if (!inSearch(P, i)) btn('sendButton', KW.send, 'слово «надіслати»');
+        // a form's submit button is Send only in a form that has a message box — not login, not search
+        if (n.a?.type === 'submit' && !KW.send.test(t)) {
+          const f = formOf(P, i);
+          if (f >= 0 && P.hasMsgBox[f] && !inSearch(P, i)) add('sendButton', i, base + 3 + (vis ? 1 : 0), ['кнопка форми з полем повідомлення']);
+        }
         btn('translateButton', KW.translate, 'слово «перекласти»');
         btn('attach', KW.attach, 'фото / файл / скрепка');
         btn('letterButton', KW.letter, 'лист / конверт');

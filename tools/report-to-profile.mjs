@@ -28,6 +28,11 @@ if (fs.existsSync(stDir)) {
     if (!line.trim()) continue;
     const st = JSON.parse(line);
     if (st.state?.n?.length) out.push({ roles: self.__scanRoles.classify(st.state).roles, route: st.route, count: st.count });
+    else if (st.state?.light) {
+      // a screen kept without its elements (the space for full screens was used up): what was recognised on it while recording
+      const { flags, ...best } = st.state.best || {}; void flags;
+      out.push({ roles: Object.fromEntries(Object.entries(best).map(([k, v]) => [k, [{ ...v, tg: '?', why: [] }]])), route: st.route, count: st.count });
+    }
   }
   if (out.length) sum.roles = self.__scanRoles.aggregate(out);
 }
@@ -46,9 +51,11 @@ for (const [role, key] of Object.entries(MAP)) {
   const best = list[0];
   if (!best) { check.push(`✗ ${key}: сканер не знайшов (${role})`); continue; }
   // several candidates that are all good → join them (the bot takes the first visible)
-  const good = list.filter((c) => c.confidence >= Math.max(0.5, best.confidence - 0.15)).slice(0, 3).map((c) => c.css[0]);
-  config[key] = [...new Set(good)].join(', ');
+  const good = list.filter((c) => c.confidence >= Math.max(0.5, best.confidence - 0.15)).slice(0, 3).map((c) => c.css?.[0]).filter(Boolean);
   conf[key] = best.confidence;
+  // not sure enough: no address at all (an empty one would look "set" to the bot) — the best guess goes to the check list
+  if (!good.length) { check.push(`✗ ${key}: не впевнений (${Math.round(best.confidence * 100)}%) — найкращий кандидат ${best.css?.[0] || '?'}, перевірити вручну`); continue; }
+  config[key] = [...new Set(good)].join(', ');
   if (best.confidence < 0.7) check.push(`? ${key} = ${config[key]} — впевненість ${Math.round(best.confidence * 100)}%`);
 }
 // buttons the bot may press in scenarios

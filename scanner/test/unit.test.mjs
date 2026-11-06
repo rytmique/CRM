@@ -140,3 +140,26 @@ test('the envelope that opens a letter beats the «Letters» tab of the chat lis
   const { roles } = R.classify({ n: nodes, vw: 1280, vh: 860 });
   assert.equal(roles.letterButton[0].css[0], 'button[aria-label="Letter"]');
 });
+
+test('a login / search form is not a chat: its field is not the message box, its submit is not Send', () => {
+  const nodes = [
+    { p: -1, d: 0, tg: 'html' },
+    { p: 0, d: 1, tg: 'body' },
+    { p: 1, d: 2, tg: 'form', c: ['login-form'], b: [400, 500, 400, 200], v: 1 },
+    { p: 2, d: 3, tg: 'input', a: { type: 'text', name: 'user' }, b: [420, 520, 360, 30], v: 1 },
+    { p: 2, d: 3, tg: 'button', a: { type: 'submit' }, tx: 'Sign in', b: [420, 600, 120, 36], v: 1 },
+    { p: 1, d: 2, tg: 'form', a: { role: 'search' }, r: 'search', b: [0, 0, 300, 40], v: 1 },
+    { p: 5, d: 3, tg: 'input', a: { type: 'text', placeholder: 'Write a name' }, b: [0, 0, 250, 40], v: 1 },
+    { p: 5, d: 3, tg: 'button', a: { type: 'submit', 'aria-label': 'Send' }, b: [250, 0, 50, 40], v: 1 },
+    { p: 1, d: 2, tg: 'form', c: ['composer'], b: [400, 700, 600, 100], v: 1 },
+    { p: 8, d: 3, tg: 'textarea', a: { placeholder: 'Your text' }, b: [400, 700, 500, 80], v: 1 },
+    { p: 8, d: 3, tg: 'button', c: ['go'], a: { type: 'submit' }, b: [910, 740, 40, 40], v: 1 },
+  ];
+  const { roles } = R.classify({ n: nodes, vw: 1280, vh: 860 });
+  assert.equal(roles.messageInput[0].tg, 'textarea');
+  assert.ok(!roles.messageInput.some((c) => c.i === 3 && c.score >= 0.5), 'the login field is not a message box');
+  assert.ok(!roles.messageInput.some((c) => c.i === 6 && c.score >= 0.3), 'a field inside search is not a message box');
+  assert.ok(!roles.sendButton.some((c) => c.i === 4), 'the login submit is not Send');
+  assert.ok(!roles.sendButton.some((c) => c.i === 7), 'the search submit is not Send');
+  assert.equal(roles.sendButton[0].i, 10, 'the submit of the form with the message box is Send');
+});
