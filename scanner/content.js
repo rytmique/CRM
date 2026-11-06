@@ -57,7 +57,8 @@
   const route = () => M.maskUrl(location.href, cfg.siteDomains);
   const cls = (el) => {
     const c = typeof el.className === 'string' ? el.className : el.getAttribute?.('class') || '';
-    return c.split(/\s+/).filter(Boolean).slice(0, 8).map(M.maskName);
+    // style variants (hover:…, md:…, z-[1], !mt-0) say nothing about what an element is — and were a fifth of the report
+    return c.split(/\s+/).filter((x) => x && !/[:[\]!]/.test(x) && x.length <= 60).slice(0, 8).map(M.maskName);
   };
   const sig = (el) => `${el.tagName}.${cls(el).join('.')}`;
   /**
@@ -155,10 +156,17 @@
       if (k > 1) n.k = k;
       if (rep) n.rep = rep;
       const i = nodes.push(n) - 1;
-      if (foreignEls.has(el)) { n.f = 1; foreign++; continue; }
+      if (foreignEls.has(el)) {
+        // another extension's element: what it is and where, never what is inside
+        n.f = 1; foreign++;
+        const fc = cls(el).slice(0, 3); if (fc.length) n.c = fc;
+        if (el.id) n.id = M.maskId(el.id);
+        const fr = el.getBoundingClientRect(); if (fr.width || fr.height) n.b = [Math.round(fr.x), Math.round(fr.y), Math.round(fr.width), Math.round(fr.height)];
+        continue;
+      }
       const c = cls(el);
       if (c.length) n.c = c;
-      if (el.id) n.id = M.maskName(el.id);
+      if (el.id) n.id = M.maskId(el.id);
       const a = {};
       for (const name of ATTRS) {
         if (!el.hasAttribute?.(name)) continue;
@@ -353,10 +361,11 @@
     el = pick || start;
     const r = el.getBoundingClientRect();
     const d = { tg: el.tagName.toLowerCase(), c: cls(el).slice(0, 5), b: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] };
-    if (el.id) d.id = M.maskName(el.id);
+    if (el.id) d.id = M.maskId(el.id);
     const role = el.getAttribute('role');
     if (role) d.r = role;
-    for (const a of ['type', 'name', 'title', 'aria-label', 'placeholder']) { const v = el.getAttribute(a); if (v) (d.a ||= {})[a] = M.maskValue(v); }
+    for (const a of ['type', 'name', 'title', 'aria-label', 'placeholder', 'data-testid', 'data-test', 'data-qa']) { const v = el.getAttribute(a); if (v) (d.a ||= {})[a] = M.maskValue(v); }
+    if (el.tagName === 'A' && el.getAttribute('href')) d.href = M.maskUrl(el.href, cfg.siteDomains);
     if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && !el.isContentEditable) {
       const m = M.maskText(textSample(el, 300));
       if (m) d.tx = m.t;
@@ -609,9 +618,10 @@
       const best = {};
       for (const [role, list] of Object.entries(roles)) {
         if (!list[0]) continue;
-        let live = null;
-        try { live = document.querySelectorAll(list[0].css[0]).length; } catch { /* custom syntax */ }
-        best[role] = { score: list[0].score, css: list[0].css[0], live };
+        // how many elements each of the first three addresses finds right now: over a night this shows which ones stay valid
+        const count = (sel) => { try { return document.querySelectorAll(sel).length; } catch { return null; } };
+        const alts = list[0].css.slice(0, 3);
+        best[role] = { score: list[0].score, css: alts[0], live: count(alts[0]), altCss: alts.slice(1).map((c) => [c, count(c)]) };
       }
       reply({ route: s.route, vis: document.visibilityState, best, flags, nodes: s.total });
     } catch (e) {

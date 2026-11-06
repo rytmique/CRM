@@ -10,5 +10,10 @@
   <button class="btn-write" type="button">Write</button>
   <button class="btn-like" type="button" aria-label="Like">♥</button>
 </main>
-<script>document.querySelector('.name').textContent = decodeURIComponent(location.pathname.split('/').pop());</script>
+<script>
+  const who = decodeURIComponent(location.pathname.split('/').pop());
+  document.querySelector('.name').textContent = who;
+  document.querySelector('main').id = `profile-${who}`; // some sites put the username into ids — it must not reach the report
+  document.querySelector('.btn-write').setAttribute('data-testid', 'write-button');
+</script>
 </body></html>

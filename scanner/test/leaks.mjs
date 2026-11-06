@@ -19,7 +19,7 @@ const OURS = new Set(['site', 'rec', 'w', 'текст', 'тел', 'email', 'url'
   'textbox', 'listbox', 'menuitem', 'menubar', 'tablist', 'tabpanel', 'combobox', 'checkbox', 'radio', 'presentation', 'region', 'banner', 'navigation', 'complementary',
   'main', 'img', 'heading', 'listitem', 'group', 'log', 'status', 'tooltip', 'separator', 'article', 'feed', 'grid', 'gridcell', 'treeitem', 'searchbox', 'spinbutton']);
 // keys whose values are code, not text: class names, ids, selectors, tags, types, our own enums
-const CODE_KEYS = new Set(['c', 'id', 'css', 'xp', 'path', 'added', 'incidents', 'tg', 'ty', 'kind', 'k', 'key', 'it', 'fw', 'sig', 'reason', 'm', 'err', 'inner', 'pos', 'note',
+const CODE_KEYS = new Set(['c', 'css', 'altCss', 'xp', 'path', 'added', 'incidents', 'tg', 'ty', 'kind', 'k', 'key', 'it', 'fw', 'sig', 'reason', 'm', 'err', 'inner', 'pos', 'note',
   'browser', 'tz', 'lang', 'charset', 'mode', 'type', 'vis', 's', 'st', 'dir', 'version', 'why', 'role', 'from_file']);
 const allowWord = (w) => {
   const l = w.toLowerCase();

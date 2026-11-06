@@ -94,3 +94,49 @@ test('roles: a chat box, Send, a translate button and a chat list are recognised
   assert.equal(roles.translateButton[0].css[0], 'button.translate-btn');
   assert.equal(roles.chatItem[0].css[0], 'div.chat-row');
 });
+
+test('ids: code and interface words stay, names in ids become a hash', () => {
+  assert.equal(M.maskId('chat-input-file-upload-bottom'), 'chat-input-file-upload-bottom');
+  assert.equal(M.maskId('messageList'), 'messageList');
+  assert.equal(M.maskId('user-500000001'), 'user-#');
+  assert.match(M.maskId('chat-anna_k'), /^chat-~[0-9a-f]{4}_k$/);
+  for (const name of ['michael', 'svetlana', 'oksana']) assert.ok(!M.maskId(`profile-${name}`).includes(name), name);
+});
+
+test('standard HTML words (roles, input types) and API words are not hidden', () => {
+  for (const w of ['textbox', 'menuitem', 'listbox', 'listitem', 'navigation', 'checkbox', 'radio', 'combobox', 'tablist', 'tabpanel', 'dialog', 'option', 'switch']) assert.equal(M.maskValue(w), w, w);
+  for (const w of ['task', 'tasks', 'invite', 'template', 'translations', 'heartbeat', 'presence', 'queue']) assert.equal(M.maskToken(w), w, w);
+});
+
+test('addresses for the bot: stable ones first, generated ids and utility classes never', () => {
+  const tw = Array.from({ length: 30 }, (_, k) => ({ p: 1, d: 2, tg: 'div', c: ['flex', 'items-center', `hover:bg-x${k}`], b: [0, k * 10, 100, 10], v: 1 }));
+  const nodes = [
+    { p: -1, d: 0, tg: 'html' },
+    { p: 0, d: 1, tg: 'body' },
+    ...tw,
+    { p: 1, d: 2, tg: 'div', id: 'composer', c: ['relative', 'flex'], b: [400, 680, 600, 120], v: 1 },
+    { p: 32, d: 3, tg: 'div', c: ['tiptap', 'ProseMirror'], s: 'ce', a: { 'data-testid': 'chat-input', 'aria-label': 'Write a message' }, b: [410, 700, 500, 60], v: 1 },
+    { p: 32, d: 3, tg: 'button', id: '_r_5eo_', c: ['flex', 'w-full', 'group/btn'], a: { 'aria-label': 'Send message', 'data-testid': 'chat-input-send' }, b: [920, 720, 32, 32], v: 1 },
+    { p: 32, d: 3, tg: 'button', id: '_r_5eu_', c: ['flex', 'h-7', 'rounded-lg'], a: { 'aria-label': 'Attach a file' }, b: [410, 760, 32, 32], v: 1 },
+    { p: 32, d: 3, tg: 'button', id: ':r9:', c: ['flex', 'shrink-0'], tx: '', b: [880, 760, 32, 32], v: 1, cs: { cur: 1 }, a: { title: 'Translate' } },
+  ];
+  const { roles } = R.classify({ n: nodes, vw: 1280, vh: 860 });
+  assert.equal(roles.sendButton[0].css[0], 'button[data-testid="chat-input-send"]');
+  assert.equal(roles.messageInput[0].css[0], 'div[data-testid="chat-input"]');
+  assert.equal(roles.attach[0].css[0], 'button[aria-label="Attach a file"]');
+  const all = Object.values(roles).flat().flatMap((c) => [...c.css, c.xp]).join(' ');
+  assert.ok(!/_r_5e|:r9:/.test(all), 'a generated id was offered as an address');
+  assert.ok(!/\.(flex|w-full|h-7|shrink-0|rounded-lg)\b/.test(all), 'a utility class was offered as an address');
+  assert.ok(roles.sendButton[0].xp.startsWith('//*[@id="composer"]'), roles.sendButton[0].xp);
+});
+
+test('the envelope that opens a letter beats the «Letters» tab of the chat list', () => {
+  const nodes = [
+    { p: -1, d: 0, tg: 'html' },
+    { p: 0, d: 1, tg: 'body' },
+    { p: 1, d: 2, tg: 'div', c: ['Tabs_tab__c7D8e'], r: 'tab', a: { role: 'tab' }, tx: 'Letters', b: [10, 20, 80, 30], v: 1, cs: { cur: 1 } },
+    { p: 1, d: 2, tg: 'button', c: ['Icon_btn__q3W4e'], a: { 'aria-label': 'Letter' }, b: [900, 20, 32, 32], v: 1 },
+  ];
+  const { roles } = R.classify({ n: nodes, vw: 1280, vh: 860 });
+  assert.equal(roles.letterButton[0].css[0], 'button[aria-label="Letter"]');
+});

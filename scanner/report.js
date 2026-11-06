@@ -68,7 +68,9 @@ async function zip(files) {
 
 // ---------------- analysis ----------------
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-const descKey = (d) => (d ? `${d.tg}${d.c?.length ? `.${d.c.slice(0, 2).join('.')}` : ''}${d.r ? `[role=${d.r}]` : ''}${d.ext ? '[ext]' : ''}${d.tx && d.tx.length < 40 ? ` «${d.tx}»` : ''}` : '?');
+// what tells this button from its look-alikes: a test label or its (masked) label — on utility-CSS sites all buttons share classes
+const descMark = (d) => { const t = d.a?.['data-testid'] || d.a?.['data-test'] || d.a?.['data-qa']; if (t) return `[testid=${t}]`; const l = d.a?.['aria-label'] || d.a?.title; return l && l.length < 40 ? `[label=${l}]` : ''; };
+const descKey = (d) => (d ? `${d.tg}${d.c?.length ? `.${d.c.slice(0, 2).join('.')}` : ''}${d.r ? `[role=${d.r}]` : ''}${descMark(d)}${d.ext ? '[ext]' : ''}${d.tx && d.tx.length < 40 ? ` «${d.tx}»` : ''}` : '?');
 
 function botAnalysis(events) {
   const clicks = events.filter((e) => e.ty === 'click');
@@ -301,7 +303,8 @@ async function build() {
     s = step('Пакую архів (і перевіряю кожен файл)…');
     const blob = await zip(files);
     step(fixes ? `Перевірено: додатково приховано ${fixes} підозрілих фрагментів` : 'Перевірено: особистих даних не знайдено', 'ok');
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{4})$/, '$1-$2');
+    const nowL = new Date(); const p2 = (x) => String(x).padStart(2, '0'); // the operator's own clock in the file name
+    const stamp = `${nowL.getFullYear()}${p2(nowL.getMonth() + 1)}${p2(nowL.getDate())}-${p2(nowL.getHours())}${p2(nowL.getMinutes())}`;
     const name = `scan-report-${stamp}.zip`;
     const url = URL.createObjectURL(blob);
     const a = $('dl');

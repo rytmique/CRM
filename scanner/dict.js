@@ -56,6 +56,13 @@ primary secondary success warning danger error info muted text title subtitle na
 online offline away busy typing attach attachment attachments video audio voice sticker stickers emoji smile camera gallery album albums story stories
 token tokens cursor offset limit order query since after before version session sessions callback redirect return target source medium campaign utm term
 root frame frames iframe host widget widgets embed popup overlay portal chunk sw worker manifest robots sitemap favicon
+alert alertdialog application article banner blockquote caption cell checkbox columnheader combobox complementary contentinfo definition deletion dialog
+directory document emphasis feed figure generic grid gridcell group heading insertion listbox listitem log marquee math menu menubar menuitem menuitemcheckbox
+menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar searchbox separator
+slider spinbutton status strong subscript superscript switch tab tablist tabpanel term textbox timer toolbar tooltip tree treegrid treeitem
+range color datetime local reset polite assertive both inline step location mixed vertical horizontal ascending descending
+translations task tasks hint hints limits quota correspondence intro invite invites invitation invitations icebreaker icebreakers template templates mass mailing
+broadcast queue seen organizations organization completion completions sync updates batch self private presence heartbeat keepalive longpoll pusher centrifugo signalr socketio
 `.split(/\s+/).filter(Boolean));
 
   /** One part of a value / URL segment: interface and technical words stay, numbers → #, anything else → ~hash (a username stays hidden but repeats are visible). */
@@ -111,6 +118,16 @@ root frame frames iframe host widget widgets embed popup overlay portal chunk sw
 
   /** Class names / ids: site code, but numbers inside can be user IDs. */
   const maskName = (c) => String(c).replace(/\d{2,}/g, '#').slice(0, 60);
+  /**
+   * Element id: code parts stay (chatInput, r5e, v2), interface / technical words stay (chat-input-send), any other word
+   * becomes ~hash — an id like "chat-anna_k" must not carry a name into the report.
+   */
+  const maskId = (id) => String(id).split(/([-_.:]+)/).map((p, i) => {
+    if (i % 2 || !p) return p;
+    if (/^\d+$/.test(p)) return '#';
+    if (/\d/.test(p) || /[a-z][A-Z]/.test(p)) return p.replace(/\d{2,}/g, '#'); // code-like: digits inside, camelCase
+    return maskPart(p);
+  }).join('').slice(0, 60);
 
   const KNOWN_HOSTS = /(^|\.)(google|gstatic|googleapis|googletagmanager|google-analytics|doubleclick|recaptcha|hcaptcha|cloudflare|cloudflareinsights|jsdelivr|unpkg|cdnjs|sentry|sentry-cdn|intercom|facebook|fbcdn|yandex|hotjar|clarity|stripe|paypal|onesignal|pusher|firebaseio|firebase|amplitude|mixpanel|segment|zendesk|tawk|jivosite)\.[a-z.]+$/i;
 
@@ -171,5 +188,5 @@ root frame frames iframe host widget widgets embed popup overlay portal chunk sw
     return [out, fixes];
   }
 
-  self.__scanMask = { DICT, TECH, maskText, maskValue, maskName, maskHost, maskUrl, maskToken, regDomain, scrub, len, fnv };
+  self.__scanMask = { DICT, TECH, maskText, maskValue, maskName, maskId, maskHost, maskUrl, maskToken, regDomain, scrub, len, fnv };
 })();

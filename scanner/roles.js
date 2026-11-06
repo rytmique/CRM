@@ -60,32 +60,59 @@
       const p = n.p;
       if (p >= 0) { hasImg[p] ||= hasImg[i]; hasNum[p] ||= hasNum[i]; hasName[p] ||= hasName[i]; hasLong[p] ||= hasLong[i]; }
     }
-    return { nodes, kids, hasImg, hasNum, hasName, hasLong, vw: snap.vw || 1280, vh: snap.vh || 800, f: nodes.map(features) };
+    return { nodes, kids, hasImg, hasNum, hasName, hasLong, vw: snap.vw || 1280, vh: snap.vh || 800, f: nodes.map(features), tw: utilityPage(nodes) };
   }
 
-  /** CSS candidates for node i (best first) and an XPath. */
+  // ids a framework makes anew on every load (React useId «_r_5e_» / «:r1:», MUI, Ember, Headless UI…) or masked ones: useless to the bot
+  const stableId = (id) => Boolean(id) && !/[#~[\]\s]/.test(id) && !/\d/.test(id) && !/(^|[-_:])_?r_[0-9a-z]*_?$|:r[0-9a-z]*:|«r/i.test(id);
+  // utility CSS (Tailwind-like): variants (hover:…, md:…, z-[1], !mt-0, group/btn) everywhere; plain utilities (flex, w-full, gap-2)
+  // only on pages that are mostly built from them — elsewhere "left-msgs" or "top-bar" are the site's own names
+  const UTIL_EXACT = new Set('flex grid block inline inline-block inline-flex inline-grid hidden contents relative absolute fixed sticky static group peer truncate italic uppercase lowercase capitalize visible invisible container isolate grow shrink underline antialiased transform transition border rounded shadow outline-none select-none pointer-events-none cursor-pointer overflow-hidden overflow-auto whitespace-nowrap break-words sr-only not-sr-only'.split(' '));
+  const UTIL_RE = /^-?(m|p)[trblxyse]?-[\w.]+$|^-?(w|h|min-w|min-h|max-w|max-h|size|gap|gap-x|gap-y|space-x|space-y|text|bg|border|border-[trblxy]|rounded|rounded-[trbl]{1,2}|shadow|items|justify|content|self|place-items|place-content|z|top|left|right|bottom|inset|inset-x|inset-y|overflow|overflow-x|overflow-y|font|leading|tracking|opacity|cursor|select|transition|duration|ease|delay|animate|flex|basis|order|col|row|col-span|row-span|grid-cols|grid-rows|divide|ring|outline|whitespace|break|line-clamp|aspect|object|pointer-events|translate-x|translate-y|rotate|scale|origin|fill|stroke|from|to|via|decoration|list|appearance|resize|scroll|snap|touch|will-change|backdrop|blur|drop-shadow|shrink|grow|float|clear|align|indent|columns|box|accent|caret|overscroll|start|end)-([\d./]+|px|full|auto|screen|min|max|fit|none|xs|sm|base|md|lg|xl|\dxl|center|start|end|between|around|evenly|stretch|baseline|col|row|wrap|nowrap|reverse|col-reverse|row-reverse|hidden|visible|scroll|clip|inherit|current|transparent|white|black|normal|medium|semibold|bold|light|thin|tight|snug|relaxed|loose|wide|wider|widest|left|right|justify|top|bottom|middle|sans|serif|mono|ellipsis|y|x|both|contain|cover|primary|secondary|muted|accent|danger|success|warning|[a-z]+-\d{2,3}(\/\d+)?)$/;
+  const variant = (c) => /[:[\]!/@]/.test(c);
+  const utilityPage = (nodes) => {
+    let withCls = 0; let util = 0;
+    for (const n of nodes) { if (!n.c?.length) continue; withCls++; if (n.c.some((c) => variant(c) || UTIL_EXACT.has(c))) util++; }
+    return withCls > 20 && util / withCls > 0.35;
+  };
+  const meaningful = (P, c) => !c.includes('#') && c.length < 40 && !variant(c) && !/^(active|selected|open|show|hover|focus|on|is-|has-)/.test(c)
+    && !(P.tw && (UTIL_EXACT.has(c) || UTIL_RE.test(c)));
+  const testSel = (n) => { for (const a of ['data-testid', 'data-test', 'data-qa', 'data-test-id', 'data-cy']) { const v = n.a?.[a]; if (v && !/[#[\]~"]/.test(v) && v.length < 60) return `[${a}="${v}"]`; } return null; };
+
+  /** CSS candidates for node i (most stable first) and an XPath. */
   function selectors(P, i) {
     const { nodes } = P;
     const n = nodes[i];
     const own = [];
-    if (n.id && !n.id.includes('#')) own.push(`#${cssEsc(n.id)}`);
-    const cls = (n.c || []).filter((c) => !c.includes('#') && c.length < 40 && !/^(active|selected|open|show|hover|focus|on|is-|has-)/.test(c));
     const attrSel = (a) => { const v = n.a?.[a]; return v && !/[#[\]~]/.test(v) && v.length < 40 ? `${n.tg}[${a}="${v.replace(/"/g, '\\"')}"]` : null; };
-    for (const a of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name', 'title', 'placeholder']) { const x = attrSel(a); if (x) own.push(x); }
+    const ts = testSel(n);
+    if (ts) own.push(`${n.tg}${ts}`); // test labels: made for automation, the same in every language
+    if (stableId(n.id)) own.push(`#${cssEsc(n.id)}`);
+    for (const a of ['name', 'aria-label', 'title', 'placeholder']) { const x = attrSel(a); if (x) own.push(x); }
+    const cls = (n.c || []).filter((c) => meaningful(P, c));
     if (cls[0]) own.push(`${n.tg}.${cssEsc(cls[0])}`);
     if (cls[1]) own.push(`${n.tg}.${cssEsc(cls[0])}.${cssEsc(cls[1])}`);
-    { const x = attrSel('role'); if (x) own.push(x); }
-    if (!own.length) own.push(n.tg);
+    const role = attrSel('role');
+    if (role) own.push(role);
+    // nothing of its own (an icon button in a utility-CSS page): the nearest ancestor that has a stable handle + the tag
+    if (own.length <= (role ? 1 : 0)) {
+      for (let j = n.p, k = 0; j >= 0 && k < 8; j = nodes[j].p, k++) {
+        const a = nodes[j];
+        const h = testSel(a) || (stableId(a.id) ? `#${cssEsc(a.id)}` : null) || ((a.c || []).filter((c) => meaningful(P, c))[0] ? `${a.tg}.${cssEsc((a.c || []).filter((c) => meaningful(P, c))[0])}` : null);
+        if (h) { own.push(`${h} ${role || n.tg}`); break; }
+      }
+    }
+    if (!own.length) { const u = (n.c || []).find((c) => !c.includes('#') && !variant(c)); own.push(u ? `${n.tg}.${cssEsc(u)}` : n.tg); }
     const p = n.p >= 0 ? nodes[n.p] : null;
-    const pc = p && (p.c || []).find((c) => !c.includes('#'));
-    const css = [...own];
+    const pc = p && (p.c || []).find((c) => meaningful(P, c));
+    const css = [...new Set(own)];
     if (pc) css.push(`.${cssEsc(pc)} > ${own[own.length - 1]}`);
-    // XPath from the same-tag sibling index of each ancestor
+    // XPath from the same-tag sibling index of each ancestor, anchored at the nearest stable id
     const chain = [];
     for (let j = i; j >= 0 && chain.length < 30; j = nodes[j].p) {
       const x = nodes[j];
-      chain.unshift(x.id && !x.id.includes('#') ? `*[@id="${x.id}"]` : `${x.tg}${x.k > 1 ? `[${x.k}]` : ''}`);
-      if (x.id && !x.id.includes('#')) break;
+      chain.unshift(stableId(x.id) ? `*[@id="${x.id}"]` : `${x.tg}${x.k > 1 ? `[${x.k}]` : ''}`);
+      if (stableId(x.id)) break;
       if (x.p < 0) break;
     }
     const xp = chain[0]?.startsWith('*[@id') ? `//${chain.join('/')}` : `/${chain.join('/')}`;
@@ -131,7 +158,9 @@
       if (isClickable(n) || n.cs?.cur || n.tg === 'svg' || n.tg === 'i') {
         const base = isClickable(n) ? 2 : n.cs?.cur ? 1 : 0;
         const t = F.all;
-        const btn = (role, re, label) => { if (re.test(t)) add(role, i, base + 4 + (vis ? 1 : 0) + (y > vh * 0.45 && role === 'sendButton' ? 1 : 0), [label]); };
+        // a «Letters» tab of the chat list is not the envelope button that opens a letter to this man
+        const isTab = n.r === 'tab' || /(^|[\s_-])tabs?([\s_-]|$)/.test(F.cls);
+        const btn = (role, re, label) => { if (re.test(t)) add(role, i, base + 4 + (vis ? 1 : 0) + (y > vh * 0.45 && role === 'sendButton' ? 1 : 0) - (role === 'letterButton' && isTab ? 2 : 0), [label]); };
         btn('sendButton', KW.send, 'слово «надіслати»');
         btn('translateButton', KW.translate, 'слово «перекласти»');
         btn('attach', KW.attach, 'фото / файл / скрепка');
