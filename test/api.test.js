@@ -8,6 +8,7 @@ import { personalize } from '../server/personalize.js';
 import { buildZip } from '../server/zip.js';
 import { optimizeProfile, pickInvite, inviteStats, refreshMemory, memoryLines } from '../server/learning.js';
 import { getSettings } from '../server/services.js';
+import { feeFor, DEFAULT_TIERS, referralReward } from '../server/billing.js';
 import vm from 'node:vm';
 import { stripJs } from '../server/strip.js';
 
@@ -944,11 +945,17 @@ test('payment for the bot: % of the operator earnings, a bigger sum → a bigger
   vera = rep.rows[0];
   assert.equal(rep.rows.length, 1, 'an operator sees only themself');
   assert.equal(vera.estimated, false);
-  assert.equal(vera.pct, 10);
+  // by steps: 1000 × 5 % + 2000 × 7 % + 500 × 10 % = 240 → 6.86 % in effect
+  assert.equal(vera.pct, 6.86);
   // not counting idle off: the whole sum
   await call('PATCH', `/api/admin/agencies/${ag.id}`, { billing: { prorate: false } }, 'admin10');
   vera = (await call('GET', `/api/billing?month=${month}`, undefined, 'vera')).data.rows[0];
   assert.equal(vera.share, 1);
+  assert.equal(vera.fee, 240);
+  // the old way (the whole sum at the % of the tier it reaches) is still there for an agency that wants it
+  await call('PATCH', `/api/admin/agencies/${ag.id}`, { billing: { mode: 'whole' } }, 'admin10');
+  vera = (await call('GET', `/api/billing?month=${month}`, undefined, 'vera')).data.rows[0];
+  assert.equal(vera.pct, 10);
   assert.equal(vera.fee, 350);
   assert.equal((await call('PUT', '/api/billing/earnings', { month, amount: 10, operator_id: 1 }, 'vera')).status, 403, 'not for others');
   // the admin sees what each agency owes
@@ -1146,4 +1153,60 @@ test('bot updates: the server tells the newest version; a minimum version stops 
   // versions compare as numbers
   assert.equal(cmpVersion('1.10.0', '1.9.9'), 1);
   assert.equal(cmpVersion('', '1.0.0'), -1);
+});
+
+test('steps 5 % / 7.5 % and the referral program: a team or a solo operator by a personal link, 10 % for 6 months, discount first', async () => {
+  // the default deal: the first 5 000 at 5 %, above at 7.5 % — no jump at the threshold
+  assert.equal(Math.round(feeFor(DEFAULT_TIERS, 5000) * 100) / 100, 250);
+  assert.equal(Math.round(feeFor(DEFAULT_TIERS, 5100) * 100) / 100, 257.5);
+  assert.equal(Math.round(feeFor(DEFAULT_TIERS, 10655) * 100) / 100, 674.13);
+  await login('adminF', 'root@test', 'rootpass123');
+  const a = (await call('POST', '/api/admin/agencies', { name: 'Fern', ownerName: 'F', ownerEmail: 'owner@fern', ownerPassword: 'ownerpass1', licenses: 5 }, 'adminF')).data;
+  await login('fern', 'owner@fern', 'ownerpass1');
+  const op = (await call('POST', '/api/operators', { name: 'Dana', email: 'dana@fern', password: 'danapass1' }, 'fern')).data;
+  await login('dana', 'dana@fern', 'danapass1');
+  // an operator's personal link brings a solo operator from another team
+  const mine = (await call('GET', '/api/billing/referrals', undefined, 'dana')).data;
+  assert.equal(mine.pct, 10);
+  const info = (await call('GET', `/api/auth/join/r-${mine.code}`)).data;
+  assert.equal(info.referral, true);
+  assert.equal(info.referrer, 'Dana');
+  assert.equal((await call('POST', `/api/auth/join/r-${mine.code}`, { name: 'Solo Sam', email: 'sam@solo', password: 'sampass12', solo: true })).status, 201);
+  assert.equal((await call('GET', '/api/billing/referrals', undefined, 'dana')).data.waiting.length, 1);
+  const pend = (await call('GET', '/api/admin/registrations', undefined, 'adminF')).data.pending.find((u) => u.email === 'sam@solo');
+  assert.equal(pend.referrer_name, 'Dana');
+  assert.equal(pend.solo, 1);
+  await call('POST', `/api/admin/users/${pend.id}/approve`, {}, 'adminF');
+  await login('sam', 'sam@solo', 'sampass12');
+  assert.equal((await call('GET', '/api/profiles', undefined, 'sam')).data.plan.profiles, 20, 'a solo gets a roomy plan');
+  // Sam earns 6 000 this month → pays 250 + 1 000 × 7.5 % = 325; Dana gets 10 % = 32.5
+  const samId = (await call('GET', '/api/auth/me', undefined, 'sam')).data.user.id;
+  const samAgency = (await call('GET', '/api/auth/me', undefined, 'sam')).data.user.agencyId;
+  const month = new Date().toISOString().slice(0, 7);
+  await call('PATCH', `/api/admin/agencies/${samAgency}`, { billing: { prorate: false } }, 'adminF');
+  await call('PATCH', `/api/admin/agencies/${a.id}`, { billing: { prorate: false } }, 'adminF');
+  await call('PUT', '/api/billing/earnings', { month, amount: 6000 }, 'sam');
+  const samRow = (await call('GET', `/api/billing?month=${month}`, undefined, 'sam')).data.rows.find((r) => r.user_id === samId);
+  assert.equal(samRow.fee, 325);
+  // Dana earned 200 → her fee 10; the reward 32.5 takes it to 0, 22.5 is paid out
+  await call('PUT', '/api/billing/earnings', { month, amount: 200 }, 'dana');
+  const dana = (await call('GET', `/api/billing?month=${month}`, undefined, 'dana')).data.rows[0];
+  assert.deepEqual([dana.fee, dana.refReward, dana.refDiscount, dana.toPay, dana.refPayout], [10, 32.5, 10, 0, 22.5]);
+  const report = (await call('GET', `/api/admin/referrals?month=${month}`, undefined, 'adminF')).data.rows.find((r) => r.user_id === op.id);
+  assert.deepEqual([report.reward, report.discount, report.payout], [32.5, 10, 22.5]);
+  // the 7th month after the start: nothing any more
+  const later = new Date(); later.setMonth(later.getMonth() + 6);
+  const r7 = referralReward(db, op.id, later.toISOString().slice(0, 7), getSettings);
+  assert.equal(r7.total, 0);
+  // later Sam's whole team comes: the admin moves Sam in with profiles and numbers
+  const site = (await call('GET', '/api/sites', undefined, 'sam')).data.sites[0];
+  await call('POST', '/api/profiles', { name: 'Gala', site_id: site.id }, 'sam');
+  assert.equal((await call('POST', `/api/admin/agencies/${a.id}/merge`, { into: samAgency }, 'adminF')).status, 400, 'only a team of one moves');
+  assert.equal((await call('POST', `/api/admin/agencies/${samAgency}/merge`, { into: a.id }, 'adminF')).status, 200);
+  await login('sam2', 'sam@solo', 'sampass12');
+  const me = (await call('GET', '/api/auth/me', undefined, 'sam2')).data.user;
+  assert.deepEqual([me.agencyId, me.role], [a.id, 'operator']);
+  assert.ok((await call('GET', '/api/profiles', undefined, 'fern')).data.profiles.some((x) => x.name === 'Gala'), 'his profile is in the team now');
+  // a link that does not exist
+  assert.equal((await call('GET', '/api/auth/join/r-nosuchcode')).status, 404);
 });

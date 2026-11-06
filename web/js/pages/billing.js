@@ -1,4 +1,4 @@
-import { h, busy, toast, modal, badge, fmtInt, safe } from '../ui.js';
+import { h, busy, toast, modal, badge, fmtInt, safe, copy } from '../ui.js';
 import { get, put } from '../api.js';
 
 const money = (x, cur) => `${(Math.round((x || 0) * 100) / 100).toLocaleString('uk-UA', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} ${cur}`;
@@ -17,9 +17,38 @@ export function monthOptions() {
 }
 export const monthName = (m) => new Date(`${m}-15T12:00:00Z`).toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' });
 
-export function tiersText(tiers, cur) {
-  if (tiers.length === 1) return `${tiers[0].pct}%`;
-  return tiers.map((t, i) => (i === 0 ? `до ${fmtInt(tiers[1].from)} ${cur} — ${t.pct}%` : `від ${fmtInt(t.from)} ${cur} — ${t.pct}%`)).join(' · ');
+/** "5% до 5 000 $ · 7,5% з того, що вище" (steps) or the old "whole sum at its tier". */
+export function tiersText(tiers, cur, mode = 'marginal') {
+  const n = (x) => String(x).replace('.', ',');
+  if (tiers.length === 1) return `${n(tiers[0].pct)}%`;
+  if (mode === 'marginal') {
+    return tiers.map((t, i) => (i === 0 ? `${n(t.pct)}% до ${fmtInt(tiers[1].from)} ${cur}` : `${n(t.pct)}% з того, що вище ${fmtInt(t.from)} ${cur}`)).join(' · ');
+  }
+  return tiers.map((t, i) => (i === 0 ? `до ${fmtInt(tiers[1].from)} ${cur} — ${n(t.pct)}%` : `від ${fmtInt(t.from)} ${cur} — ${n(t.pct)}% на всю суму`)).join(' · ');
+}
+
+/** 🎁 The referral card: my link, the message to send, who I brought and what it gives me this month. */
+function referralCard(ref, cur) {
+  const url = `${location.origin}/#/join/r-${ref.code}`;
+  const message = `Привіт! Є бот для операторів на сайтах знайомств: сам пише новим чоловікам у людському темпі, а ти працюєш з тими, хто відповів.\nРеєструйся за моїм посиланням (і командою, і соло — сам по собі):\n${url}\nНалаштування бота на твоєму сайті — безкоштовно.`;
+  const active = ref.reward.teams.filter((t) => t.active);
+  return h('section.card.stack',
+    h('h3', '🎁 Рефералка'),
+    h('p.small.muted', `Приведи команду або оператора, що працює сам, — отримуй ${ref.pct}% від їхніх оплат за бота ${ref.months} місяців. Спершу це знижка з твоєї оплати, а що лишиться — виплата грошима. Їм — налаштування бота безкоштовно.`),
+    h('div.link-box', h('input', { value: url, readonly: true, 'aria-label': 'Реферальне посилання', onclick: (e) => e.target.select() }),
+      h('button.btn.primary', { onclick: () => copy(message) }, 'Скопіювати повідомлення'),
+      h('button.btn', { onclick: () => copy(url) }, 'Лише посилання')),
+    ref.reward.teams.length || ref.waiting.length ? h('table.table',
+      h('thead', h('tr', h('th', 'Кого привів'), h('th', 'Стан'), h('th.num', 'Платять за місяць'), h('th.num', `Тобі ${ref.pct}%`))),
+      h('tbody',
+        ...ref.waiting.map((w) => h('tr', h('td', w.name, w.solo ? ' ' : null, w.solo ? badge('соло', 'info') : null), h('td', badge('чекає підтвердження', 'warn')), h('td.num', '—'), h('td.num', '—'))),
+        ...ref.reward.teams.map((t) => h('tr',
+          h('td', t.name, t.solo ? ' ' : null, t.solo ? badge('соло', 'info') : null),
+          h('td', t.active ? badge(`місяць ${t.monthNo} з ${ref.months}`, 'ok') : t.monthNo > ref.months ? badge('бонус завершено', 'muted') : badge('ще не почалось', 'muted')),
+          h('td.num', money(t.fee, cur)),
+          h('td.num', h('b', money(t.reward, cur)))))))
+      : h('p.small.muted', 'Ще нікого. Скинь посилання знайомим тімлідам і операторам.'),
+    active.length ? h('p', h('b', `Цього місяця тобі: ${money(ref.reward.total, cur)}`)) : null);
 }
 
 /** "Оплата за бота": owner — every operator; operator — themself. */
@@ -29,7 +58,12 @@ export default async function billingPage(main, { user }) {
   main.replaceChildren(page);
   let month = monthOptions()[0];
 
-  async function load() { render(await get(`/api/billing?month=${month}`)); }
+  let ref = null;
+  async function load() {
+    const [rep, r] = await Promise.all([get(`/api/billing?month=${month}`), get(`/api/billing/referrals?month=${month}`).catch(() => null)]);
+    ref = r;
+    render(rep);
+  }
 
   function enterEarnings(row, cur) {
     const amount = h('input', { type: 'number', min: 0, step: '0.01', value: row.estimated ? '' : row.earnings, placeholder: `напр. ${Math.round(row.earnings) || 1000}` });
@@ -61,7 +95,7 @@ export default async function billingPage(main, { user }) {
     page.replaceChildren(...[
       h('div.page-head', h('h1', owner ? '💰 Оплата за бота' : '💰 Мій заробіток і бот'), sel),
       h('div.callout',
-        h('b', `Оплата за бота: ${tiersText(rep.billing.tiers, cur)} від заробітку оператора`),
+        h('b', `Оплата за бота: ${tiersText(rep.billing.tiers, cur, rep.billing.mode)} від заробітку оператора`),
         rep.billing.prorate ? ' — лише за час, коли бот реально працював (без простоїв, ночі, очікування й капчі).' : '.',
         ' До кінця місяця заробіток рахується ', h('b', 'орієнтовно'), ' за відповідями на інвайти; в кінці місяця оператор вводить точну суму.'),
       owner ? h('div.stat-row',
@@ -70,7 +104,7 @@ export default async function billingPage(main, { user }) {
         h('div', h('b', fmtInt(Math.round(rep.totals.activeHours))), h('span', 'годин роботи бота')),
         h('div', h('b', fmtInt(rep.totals.replies)), h('span', 'відповідей'))) : null,
       h('section.card.table-wrap', rows.length ? h('table.table',
-        h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Інвайтів'), h('th.num', 'Відповідей'), h('th.num', 'Бот працював'), h('th.num', 'Заробіток'), h('th.num', '%'), h('th.num', 'Оплата за бота'), h('th', ''))),
+        h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Інвайтів'), h('th.num', 'Відповідей'), h('th.num', 'Бот працював'), h('th.num', 'Заробіток'), h('th.num', '%'), h('th.num', 'Оплата за бота'), rep.totals.refDiscount ? h('th.num', '🎁 Знижка') : null, rep.totals.refDiscount ? h('th.num', 'До сплати') : null, h('th', ''))),
         h('tbody', rows.map((r) => h('tr',
           h('td', h('b', r.name), r.role === 'owner' ? h('div.small.muted', 'керівник') : null),
           h('td.num', fmtInt(r.sent)),
@@ -80,10 +114,13 @@ export default async function billingPage(main, { user }) {
             ? h('div.small.muted', `≈ орієнтовно: ${r.replies} × ${money(r.perReply, cur)}${r.perReplyLearned ? ' (з минулих місяців)' : ''}`)
             : h('div', badge('введено', 'ok'))),
           h('td.num', `${r.pct}%`),
-          h('td.num', h('b', money(r.fee, cur))),
+          h('td.num', rep.totals.refDiscount ? money(r.fee, cur) : h('b', money(r.fee, cur))),
+          rep.totals.refDiscount ? h('td.num', r.refDiscount ? `− ${money(r.refDiscount, cur)}` : '—') : null,
+          rep.totals.refDiscount ? h('td.num', h('b', money(r.toPay, cur)), r.refPayout ? h('div.small.muted', `+ виплата ${money(r.refPayout, cur)}`) : null) : null,
           h('td', h('button.btn.sm', { onclick: safe(() => enterEarnings(r, cur)) }, r.estimated ? 'Ввести заробіток' : '✎'))))))
         : h('p.muted', 'Ще немає операторів, які запускали бота.')),
-      h('p.small.muted', `Як рахується: заробіток × % зі шкали${rep.billing.prorate ? ' × частка часу, коли бот реально працював, від годин його графіка за місяць (Сайти → ⚙ Сценарій)' : ''}. Шкалу % встановлює постачальник софту.`),
+      ref ? referralCard(ref, cur) : null,
+      h('p.small.muted', `Як рахується: ${rep.billing.mode === 'marginal' ? 'кожна частина заробітку за своїм % (як податок сходинками — без стрибка на порозі)' : 'заробіток × % зі шкали'}${rep.billing.prorate ? ' × частка часу, коли бот реально працював, від годин його графіка за місяць (Сайти → ⚙ Сценарій)' : ''}. Шкалу % встановлює постачальник софту.`),
     ].filter(Boolean));
   }
 

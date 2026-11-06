@@ -55,7 +55,8 @@ export default async function adminRegistrations(main) {
       h('div.page-head', h('h1', 'Реєстрації'), h('button.btn.primary', { onclick: () => inviteLeadForm(load) }, '+ Запросити тімліда')),
       h('section.card.stack', h('h3', `Чекають підтвердження: ${pending.length}`),
         pending.length ? h('div.pending-list', pending.map((u) => h('div.pending-row',
-          h('div.who', h('b', u.name), ' ', badge(u.role === 'owner' ? 'тімлід' : 'оператор', u.role === 'owner' ? 'accent' : 'info'),
+          h('div.who', h('b', u.name), ' ', badge(u.role === 'owner' ? (u.solo ? 'соло' : 'тімлід') : 'оператор', u.role === 'owner' ? 'accent' : 'info'),
+            u.referrer_name ? ' ' : null, u.referrer_name ? badge(`🎁 привів(ла): ${u.referrer_name}`, 'ok') : null,
             h('small', `${u.email} · ${u.agency_name || '—'}${u.link_note ? ` · «${u.link_note}»` : ''} · ${ago(u.created_at)}`)),
           h('button.btn.primary.sm', { onclick: safe(async () => { await post(`/api/admin/users/${u.id}/approve`); toast(`${u.name} підтверджено`); load(); }) }, '✓ Підтвердити'),
           h('button.btn.sm.danger.ghost', { onclick: safe(async () => {

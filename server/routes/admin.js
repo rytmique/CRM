@@ -99,6 +99,7 @@ export default function adminRoutes(db, cfg) {
       const b = { ...cur.billing };
       if (req.body.billing.tiers !== undefined) b.tiers = sanitizeTiers(req.body.billing.tiers);
       if (req.body.billing.prorate !== undefined) b.prorate = Boolean(req.body.billing.prorate);
+      if (req.body.billing.mode !== undefined) b.mode = req.body.billing.mode === 'whole' ? 'whole' : 'marginal';
       db.prepare('UPDATE agencies SET settings = ? WHERE id = ?').run(JSON.stringify(mergeSettings(cur, { billing: b })), id);
     }
     if (req.body?.active === false) {
@@ -175,7 +176,7 @@ export default function adminRoutes(db, cfg) {
     const month = validMonth(req.query.month) ? req.query.month : currentMonth('Europe/Kyiv');
     const agencies = db.prepare('SELECT id, name, active FROM agencies ORDER BY name COLLATE NOCASE').all().map((a) => {
       const settings = getSettings(db, a.id);
-      const rep = billingReport(db, { agencyId: a.id, month, settings });
+      const rep = billingReport(db, { agencyId: a.id, month, settings, getSettings });
       return { id: a.id, name: a.name, active: Boolean(a.active), ...rep.totals, estimated: rep.rows.some((x) => x.estimated && x.earnings > 0), billing: rep.billing, rows: rep.rows };
     });
     res.json({ month, agencies });

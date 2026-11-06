@@ -9,7 +9,8 @@ import { now, platformGet, platformSet, cmpVersion } from '../db.js';
 import { latestBotVersion } from '../version.js';
 import { bad, notFound, str, int, mergeSettings } from '../util.js';
 import { getSettings, today, BOT_ONLINE_MS, planOf } from '../services.js';
-import { ownerLink, operatorLink, pendingUsers, approveUser, rejectUser, stopBots, setUserActive, setPlan } from '../team.js';
+import { ownerLink, operatorLink, pendingUsers, approveUser, rejectUser, stopBots, setUserActive, setPlan, mergeSolo } from '../team.js';
+import { billingReport, referralReward, currentMonth, validMonth } from '../billing.js';
 
 const DAY = 86400000;
 const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
@@ -97,7 +98,10 @@ export default function pultRoutes(db) {
     const usage = db.prepare('SELECT COALESCE(SUM(calls),0) AS calls, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(output_tokens),0) AS output FROM ai_usage WHERE agency_id = ? AND day LIKE ?').get(a.id, `${month}%`);
     const link = db.prepare("SELECT token, uses FROM signup_links WHERE kind = 'operator' AND agency_id = ? AND active = 1 ORDER BY id DESC LIMIT 1").get(a.id);
     res.json({
-      agency: { id: a.id, name: a.name, active: Boolean(a.active), created_at: a.created_at },
+      agency: {
+        id: a.id, name: a.name, active: Boolean(a.active), created_at: a.created_at, solo: Boolean(a.solo),
+        referrer: a.referred_by ? db.prepare('SELECT u.name, x.name AS team FROM users u LEFT JOIN agencies x ON x.id = u.agency_id WHERE u.id = ?').get(a.referred_by) || null : null,
+      },
       caps: s.caps,
       defaults: s.defaults,
       ai: { model: s.ai.model, variants: s.ai.variants, autoOptimize: s.ai.autoOptimize !== false, sharedMemory: s.ai.sharedMemory !== false, platformKey: s.ai.platformKey !== false, teamKey: Boolean(s.ai.apiKey), platformKeySet: Boolean(process.env.ANTHROPIC_API_KEY), usage },
@@ -145,6 +149,29 @@ export default function pultRoutes(db) {
       setPlan(db, a.id, { profiles, until });
     }
     res.json({ ok: true });
+  });
+
+  /** A solo operator joins a real team (their profiles, sites and numbers go with them). */
+  r.post('/agencies/:id/merge', (req, res) => {
+    const a = agencyOr404(req.params.id);
+    const into = Number(req.body?.into);
+    mergeSolo(db, a.id, into);
+    res.json({ ok: true, into });
+  });
+
+  /** 🎁 Referral program: who brought whom, and what each person gets this month (discount first, the rest paid out). */
+  r.get('/referrals', (req, res) => {
+    const month = validMonth(req.query.month) ? req.query.month : currentMonth('Europe/Kyiv');
+    const people = db.prepare(`SELECT DISTINCT u.id, u.name, u.email, u.agency_id, x.name AS team FROM agencies a JOIN users u ON u.id = a.referred_by
+      LEFT JOIN agencies x ON x.id = u.agency_id`).all();
+    const rows = people.map((p) => {
+      const reward = referralReward(db, p.id, month, getSettings);
+      const own = p.agency_id ? billingReport(db, { agencyId: p.agency_id, month, settings: getSettings(db, p.agency_id), onlyUserId: p.id, refs: false }).rows[0] : null;
+      const fee = own?.fee || 0;
+      const discount = Math.round(Math.min(reward.total, fee) * 100) / 100;
+      return { user_id: p.id, name: p.name, email: p.email, team: p.team, teams: reward.teams, reward: reward.total, discount, payout: Math.round((reward.total - discount) * 100) / 100 };
+    }).sort((x, y) => y.reward - x.reward);
+    res.json({ month, rows, totals: { reward: rows.reduce((s, r2) => s + r2.reward, 0), payout: rows.reduce((s, r2) => s + r2.payout, 0) } });
   });
 
   /** Remote stop: every bot of the team stops within ~30 s (they can be started again). */

@@ -26,10 +26,25 @@ export async function renderJoin(root, token, { loggedIn, onDone }) {
     ...fields.map(([name, label, attrs]) => h('div.field', h('label', { for: `j-${name}` }, label), h(`input#j-${name}`, { name, ...attrs }))),
     err,
     h('button.btn.primary.block', { type: 'submit' }, 'Зареєструватися'));
+  // a referral link: a new team, or one operator working on their own ("solo")
+  const choice = info.referral ? h('div.seg-group.block-seg', { role: 'radiogroup', 'aria-label': 'Хто реєструється' },
+    h('button.seg.on', { type: 'button', 'data-v': 'team' }, '👥 Я тімлід — моя команда'),
+    h('button.seg', { type: 'button', 'data-v': 'solo' }, '🙋 Я працюю сам (соло)')) : null;
+  let solo = false;
+  choice?.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (!b) return;
+    solo = b.dataset.v === 'solo';
+    choice.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    form.querySelector('[name="agencyName"]').closest('.field').hidden = solo;
+  });
   card.replaceChildren(
     brand,
-    h('h2.center', owner ? 'Реєстрація команди' : `Реєстрація в команду${info.agencyName ? ` «${info.agencyName}»` : ''}`),
-    h('p.muted.center', owner ? 'Ви — керівник команди. Після реєстрації постачальник підтвердить доступ, і ви зможете додати своїх операторів.'
+    h('h2.center', info.referral ? 'Реєстрація' : owner ? 'Реєстрація команди' : `Реєстрація в команду${info.agencyName ? ` «${info.agencyName}»` : ''}`),
+    info.referral ? h('p.center', `🎁 Вас запросив(ла) ${info.referrer}. Налаштування бота на вашому сайті — безкоштовно.`) : null,
+    choice,
+    h('p.muted.center', info.referral ? 'Після реєстрації постачальник підтвердить доступ. Команда: потім додасте своїх операторів. Соло: працюєте самі зі своїми анкетами.'
+      : owner ? 'Ви — керівник команди. Після реєстрації постачальник підтвердить доступ, і ви зможете додати своїх операторів.'
       : 'Після реєстрації керівник команди підтвердить вас — і можна входити.'),
     loggedIn ? h('p.small.muted.center', 'Ви вже увійшли під іншим акаунтом — цю форму заповнює нова людина.') : null,
     form);
@@ -40,7 +55,7 @@ export async function renderJoin(root, token, { loggedIn, onDone }) {
     if (val('password') !== val('password2')) { err.textContent = 'Паролі не збігаються'; return; }
     try {
       await busy(form.querySelector('button[type=submit]'), () => post(`/api/auth/join/${encodeURIComponent(token)}`, {
-        name: val('name'), email: val('email'), password: val('password'), agencyName: val('agencyName'),
+        name: val('name'), email: val('email'), password: val('password'), agencyName: solo ? '' : val('agencyName'), solo,
       }));
       card.replaceChildren(brand, h('div.join-done',
         h('div.big-emoji', '✅'),

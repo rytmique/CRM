@@ -1,4 +1,4 @@
-import { h, field, input, busy, toast, badge, fmtInt, ago, copy, safe, confirmDialog, empty } from '../ui.js';
+import { h, field, input, busy, toast, badge, fmtInt, ago, copy, safe, confirmDialog, empty, modal } from '../ui.js';
 import { get, post, put, patch } from '../api.js';
 import { accessModal } from './admin-agencies.js';
 import { devicesTable } from './admin-devices.js';
@@ -19,7 +19,8 @@ export default async function adminAgency(main, { navigate }) {
     const panel = { people: peoplePanel, caps: capsPanel, ai: aiPanel, devices: devicesPanel }[tab](c);
     page.replaceChildren(
       h('div.page-head',
-        h('h1', h('a.muted', { href: '#/agencies', title: 'Усі команди' }, '← '), a.name, ' ', a.active ? badge('працює', 'ok') : badge('призупинена', 'err')),
+        h('h1', h('a.muted', { href: '#/agencies', title: 'Усі команди' }, '← '), a.name, ' ', a.active ? badge('працює', 'ok') : badge('призупинена', 'err'),
+          a.solo ? ' ' : null, a.solo ? badge('соло', 'info') : null),
         h('div.row-wrap',
           h('button.btn', { title: 'Усі боти команди зупиняться протягом ~30 с (їх можна запустити знову)', onclick: safe(async () => {
             if (!(await confirmDialog(`Зупинити всіх ботів команди «${a.name}»?`, { ok: 'Зупинити' }))) return;
@@ -32,6 +33,9 @@ export default async function adminAgency(main, { navigate }) {
             toast(a.active ? 'Команду призупинено' : 'Команду увімкнено');
             load();
           }) }, a.active ? 'Призупинити команду' : 'Увімкнути команду'))),
+      a.referrer || a.solo ? h('div.row-wrap',
+        a.referrer ? h('span.small.muted', `🎁 Привів(ла): ${a.referrer.name}${a.referrer.team ? ` (${a.referrer.team})` : ''} — отримує 10% від оплат цієї команди 6 місяців`) : null,
+        a.solo ? h('button.btn.sm', { onclick: safe(() => mergeInto(a)) }, '➜ Перенести в команду…') : null) : null,
       h('div.tiles',
         h('div.tile', h('span.tile-label', 'План команди'), h('b.tile-value', c.plan.profiles ? `${fmtInt(c.plan.used)} / ${fmtInt(c.plan.profiles)}` : '—'),
           h('span.tile-sub', !c.plan.profiles ? 'немає — бот не працює' : c.plan.until ? `активних анкет · до ${new Date(c.plan.until).toLocaleDateString('uk-UA')}` : 'активних анкет · без терміну')),
@@ -41,6 +45,24 @@ export default async function adminAgency(main, { navigate }) {
         h('button.btn.sm', { onclick: () => copy(`${location.origin}/#/join/${c.link.token}`) }, 'Скопіювати')) : null,
       h('div.tabs-row', { role: 'tablist' }, tabs.map(([k, label]) => h(`button${k === tab ? '.on' : ''}`, { role: 'tab', 'aria-selected': k === tab, onclick: () => { tab = k; load(); } }, label))),
       panel);
+  }
+
+  /** A solo operator whose team came too: move them in with profiles, sites and numbers. */
+  async function mergeInto(a) {
+    const { agencies } = await get('/api/admin/agencies');
+    const sel = h('select', { 'aria-label': 'Команда' }, agencies.filter((x) => x.id !== a.id).map((x) => h('option', { value: x.id }, x.name)));
+    const ok = h('button.btn.primary', 'Перенести');
+    const m = modal({
+      title: `Перенести «${a.name}» в команду`,
+      body: h('div.stack', h('p.small.muted', 'Людина стане оператором вибраної команди. Анкети, сайти, статистика й історія підуть з нею, а порожня соло-команда зникне.'), field('Команда', sel)),
+      actions: [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), ok],
+    });
+    ok.addEventListener('click', () => busy(ok, async () => {
+      await post(`/api/admin/agencies/${a.id}/merge`, { into: Number(sel.value) });
+      m.close();
+      toast('Перенесено');
+      location.hash = `#/agency?id=${sel.value}`;
+    }).catch(() => {}));
   }
 
   function peoplePanel(c) {

@@ -375,3 +375,4 @@ details.fold > summary::before { content: '▸ '; color: var(--muted); }
 details.fold[open] > summary::before { content: '▾ '; }
 details.fold[open] > summary { margin-bottom: 10px; }
 tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--surface-2); }
+.block-seg { display: flex; width: 100%; } .block-seg .seg { flex: 1; padding: 10px 8px; font-size: 14px; }

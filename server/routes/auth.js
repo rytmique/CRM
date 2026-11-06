@@ -5,7 +5,7 @@ import {
 } from '../auth.js';
 import { HttpError, bad, str, oneOf } from '../util.js';
 import { now, tx, platformGet } from '../db.js';
-import { activeLink } from '../team.js';
+import { activeLink, referrerByCode, setPlan } from '../team.js';
 import { createAgency } from './admin.js';
 import { getSettings } from '../services.js';
 import { sendTelegram } from '../telegram.js';
@@ -52,14 +52,24 @@ export default function authRoutes(db, cfg = {}) {
     const agency = l.agency_id ? db.prepare('SELECT name FROM agencies WHERE id = ?').get(l.agency_id) : null;
     return { kind: l.kind, agencyName: agency?.name || '', note: l.kind === 'owner' ? l.note : '' };
   };
+  // a personal referral link (#/join/r-<code>): a new team or a solo operator, brought by someone
+  const REF_PLAN = { team: 50, solo: 20 }; // profiles in the plan until the admin changes it
+  const referrerOf = (token) => (String(token).startsWith('r-') ? referrerByCode(db, String(token).slice(2)) : null);
+
   r.get('/join/:token', (req, res) => {
+    if (String(req.params.token).startsWith('r-')) {
+      const ref = referrerOf(req.params.token);
+      if (!ref) throw new HttpError(404, 'Посилання недійсне. Попросіть нове у того, хто його дав.');
+      return res.json({ kind: 'owner', referral: true, referrer: ref.name, agencyName: '' });
+    }
     const l = activeLink(db, req.params.token);
     if (!l) throw new HttpError(404, 'Посилання недійсне або вже вимкнене. Попросіть нове у того, хто його дав.');
     res.json(joinView(l));
   });
 
   r.post('/join/:token', joinLimiter, (req, res) => {
-    const l = activeLink(db, req.params.token);
+    const ref = referrerOf(req.params.token);
+    const l = ref ? { kind: 'owner', referral: true } : activeLink(db, req.params.token);
     if (!l) throw new HttpError(404, 'Посилання недійсне або вже вимкнене. Попросіть нове у того, хто його дав.');
     const name = str(req.body?.name, { required: true, field: 'ім’я', max: 120 });
     const email = str(req.body?.email, { required: true, field: 'email', max: 200 }).toLowerCase();
@@ -69,14 +79,20 @@ export default function authRoutes(db, cfg = {}) {
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw bad('Цей email уже зареєстрований. Увійдіть або попросіть керівника скинути пароль.');
     tx(db, () => {
       if (l.kind === 'owner') {
-        const agencyName = str(req.body?.agencyName, { max: 120 }) || `Команда ${name}`;
-        createAgency(db, cfg, { name: agencyName, ownerName: name, ownerEmail: email, ownerPassword: password, pending: true, signupLinkId: l.id });
+        const solo = Boolean(l.referral && req.body?.solo);
+        const agencyName = str(req.body?.agencyName, { max: 120 }) || (solo ? `Соло: ${name}` : `Команда ${name}`);
+        const agencyId = createAgency(db, cfg, { name: agencyName, ownerName: name, ownerEmail: email, ownerPassword: password, pending: true, signupLinkId: l.id ?? null });
+        if (l.referral) {
+          db.prepare('UPDATE agencies SET referred_by = ?, solo = ? WHERE id = ?').run(ref.id, solo ? 1 : 0, agencyId);
+          setPlan(db, agencyId, { profiles: solo ? REF_PLAN.solo : REF_PLAN.team });
+        }
       } else {
         db.prepare('INSERT INTO users (agency_id, role, name, email, pass_hash, created_at, pending, signup_link_id) VALUES (?,?,?,?,?,?,1,?)')
           .run(l.agency_id, 'operator', name, email, hashPassword(password), now(), l.id);
       }
-      db.prepare('UPDATE signup_links SET uses = uses + 1, active = CASE WHEN max_uses IS NOT NULL AND uses + 1 >= max_uses THEN 0 ELSE active END WHERE id = ?').run(l.id);
+      if (l.id) db.prepare('UPDATE signup_links SET uses = uses + 1, active = CASE WHEN max_uses IS NOT NULL AND uses + 1 >= max_uses THEN 0 ELSE active END WHERE id = ?').run(l.id);
     });
+    if (ref) notifyTeam(db, ref.agency_id, `🎁 За вашим посиланням зареєструвалась ${req.body?.solo ? 'соло-операторка/оператор' : 'нова команда'}: <b>${escapeHtml(name)}</b>. Після підтвердження ви отримуватимете 10% від її оплат 6 місяців.`);
     if (l.kind === 'operator') notifyTeam(db, l.agency_id, `👋 Нова реєстрація в команду: <b>${escapeHtml(name)}</b> (${escapeHtml(email)}).\nПідтвердіть або відхиліть у панелі → «Команда».`);
     res.status(201).json({ ok: true, pending: true });
   });

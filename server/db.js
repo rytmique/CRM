@@ -329,6 +329,10 @@ const MIGRATIONS = [
       (SELECT COUNT(*) FROM profiles p WHERE p.agency_id = agencies.id)), 'until', NULL))`],
   // which version of the bot a device runs (for updates)
   ['sessions', 'version', "TEXT NOT NULL DEFAULT ''"],
+  // referral program: each person's code; who brought a team; a one-person team ("solo")
+  ['users', 'ref_code', 'TEXT'],
+  ['agencies', 'referred_by', 'INTEGER'],
+  ['agencies', 'solo', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

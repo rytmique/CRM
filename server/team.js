@@ -102,7 +102,8 @@ export function rejectUser(db, userId) {
 
 /** Waiting registrations: of one team, or all of the platform. */
 export function pendingUsers(db, agencyId = null) {
-  return db.prepare(`SELECT u.id, u.name, u.email, u.role, u.agency_id, u.created_at, a.name AS agency_name, l.kind AS link_kind, l.note AS link_note
+  return db.prepare(`SELECT u.id, u.name, u.email, u.role, u.agency_id, u.created_at, a.name AS agency_name, l.kind AS link_kind, l.note AS link_note,
+      a.solo, (SELECT r.name FROM users r WHERE r.id = a.referred_by) AS referrer_name
     FROM users u LEFT JOIN agencies a ON a.id = u.agency_id LEFT JOIN signup_links l ON l.id = u.signup_link_id
     WHERE u.pending = 1 ${agencyId ? 'AND u.agency_id = ?' : ''} ORDER BY u.id DESC`).all(...(agencyId ? [agencyId] : []));
 }
@@ -116,4 +117,48 @@ export function stopBots(db, where, params) {
 export function setUserActive(db, userId, active) {
   db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active ? 1 : 0, userId);
   if (!active) destroyUserSessions(db, userId);
+}
+
+// ---------- referral program ----------
+const REF_ABC = 'abcdefghjkmnpqrstuvwxyz23456789';
+
+/** A person's own referral code (made on first use): their link brings new teams or solo operators. */
+export function refCode(db, userId) {
+  const u = db.prepare('SELECT ref_code FROM users WHERE id = ?').get(userId);
+  if (u?.ref_code) return u.ref_code;
+  for (;;) {
+    const code = Array.from(crypto.randomBytes(8), (b) => REF_ABC[b % REF_ABC.length]).join('');
+    if (!db.prepare('SELECT 1 FROM users WHERE ref_code = ?').get(code)) {
+      db.prepare('UPDATE users SET ref_code = ? WHERE id = ?').run(code, userId);
+      return code;
+    }
+  }
+}
+
+/** Who owns this referral code (only an approved, active team lead or operator). */
+export function referrerByCode(db, code) {
+  const u = db.prepare(`SELECT u.id, u.name, u.agency_id, a.name AS agency_name FROM users u JOIN agencies a ON a.id = u.agency_id
+    WHERE u.ref_code = ? AND u.pending = 0 AND u.active = 1 AND u.role IN ('owner','operator') AND a.active = 1`).get(String(code || ''));
+  return u || null;
+}
+
+/**
+ * Moves a solo operator (a team of one) into another team: profiles, sites, numbers and history go with them,
+ * they become an operator there, the empty solo team is removed.
+ */
+export function mergeSolo(db, fromId, intoId) {
+  if (fromId === intoId) throw bad('Це та сама команда');
+  const people = db.prepare('SELECT id FROM users WHERE agency_id = ?').all(fromId);
+  if (people.length !== 1) throw bad('Переносити можна лише команду з однієї людини (соло)');
+  if (!db.prepare('SELECT 1 FROM agencies WHERE id = ?').get(intoId)) throw notFound('Команду не знайдено');
+  const userId = people[0].id;
+  tx(db, () => {
+    for (const table of ['sites', 'profiles', 'messages', 'touches', 'scenario_templates', 'media', 'bot_activity', 'earnings', 'extension_builds']) {
+      db.prepare(`UPDATE ${table} SET agency_id = ? WHERE agency_id = ?`).run(intoId, fromId);
+    }
+    db.prepare('UPDATE OR IGNORE ai_usage SET agency_id = ? WHERE agency_id = ?').run(intoId, fromId);
+    db.prepare("UPDATE users SET agency_id = ?, role = 'operator' WHERE id = ?").run(intoId, userId);
+    db.prepare('DELETE FROM agencies WHERE id = ?').run(fromId);
+  });
+  return userId;
 }
