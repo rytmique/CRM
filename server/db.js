@@ -275,6 +275,52 @@ CREATE TABLE IF NOT EXISTS platform (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- «Аллчат»: messages the bot writes into running dialogs (on the topic of the talk), a few per man per night
+CREATE TABLE IF NOT EXISTS allchat_log (
+  id INTEGER PRIMARY KEY,
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  operator_id INTEGER,
+  man_id TEXT NOT NULL,
+  man_name TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'allchat',
+  night TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  ok INTEGER NOT NULL DEFAULT 1,
+  error TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL,
+  replied_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_allchat_man ON allchat_log(profile_id, man_id, night);
+CREATE INDEX IF NOT EXISTS idx_allchat_agency ON allchat_log(agency_id, night);
+
+-- one pass of a mode («Шанс» every N minutes, «Аллчат» a few times a night): what it did — for the report and Telegram
+CREATE TABLE IF NOT EXISTS passes (
+  id INTEGER PRIMARY KEY,
+  agency_id INTEGER NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  operator_id INTEGER,
+  mode TEXT NOT NULL,
+  night TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL,
+  seen INTEGER NOT NULL DEFAULT 0,
+  sent INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  info TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_passes_agency ON passes(agency_id, night);
+
+-- «Аллчат»: the last message of each dialog as the bot last saw it, and since when — "he is quiet" = it has not changed for hours
+CREATE TABLE IF NOT EXISTS dialogs (
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  man_id TEXT NOT NULL,
+  fp TEXT NOT NULL DEFAULT '',
+  fp_at INTEGER NOT NULL,
+  PRIMARY KEY (profile_id, man_id)
+);
 `;
 
 /** Columns added after the first release: [table, column, definition]. */
@@ -333,6 +379,14 @@ const MIGRATIONS = [
   ['users', 'ref_code', 'TEXT'],
   ['agencies', 'referred_by', 'INTEGER'],
   ['agencies', 'solo', 'INTEGER NOT NULL DEFAULT 0'],
+  // which mode wrote to him first (chance / hint / list): conversion per mode
+  ['messages', 'mode', "TEXT NOT NULL DEFAULT ''"],
+  // start from the panel / Telegram: the bot of this profile starts at its next check (stop uses stop_at)
+  ['profiles', 'start_at', 'INTEGER'],
+  // linking a person's Telegram to the platform bot: a one-time code
+  ['users', 'tg_code', 'TEXT'],
+  // the shift («night») a message was sent in: the stats per night and mode
+  ['messages', 'night', "TEXT NOT NULL DEFAULT ''"],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

@@ -184,5 +184,44 @@ export default function statsRoutes(db) {
     res.json({ messages: rows, total, page, pages: Math.max(1, Math.ceil(total / limit)) });
   });
 
+  /** Per night and mode: what the bot wrote, how many answered, the conversion; the AI used. Operators — their own profiles. */
+  r.get('/shift', (req, res) => {
+    const u = req.user;
+    const settings = getSettings(db, u.agencyId);
+    const n = int(req.query.nights, { min: 1, max: 60, field: 'ночей' }) || 7;
+    const scope = profileScope(u);
+    const nights = lastDays(n, settings.timezone);
+    const marks = nights.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT m.night, m.mode, COUNT(*) AS sent, SUM(m.replied_at IS NOT NULL) AS replies FROM messages m JOIN profiles p ON p.id = m.profile_id
+      WHERE ${scope.where} AND m.status = 'sent' AND m.night IN (${marks}) GROUP BY m.night, m.mode`).all(...scope.params, ...nights);
+    const chats = db.prepare(`SELECT a.night, COUNT(*) AS sent, SUM(a.replied_at IS NOT NULL) AS replies FROM allchat_log a JOIN profiles p ON p.id = a.profile_id
+      WHERE ${scope.where} AND a.ok = 1 AND a.night IN (${marks}) GROUP BY a.night`).all(...scope.params, ...nights);
+    const ai = u.role === 'operator'
+      ? db.prepare(`SELECT day, calls, input_tokens AS input, output_tokens AS output FROM ai_usage WHERE agency_id = ? AND user_id = ? AND day IN (${marks})`).all(u.agencyId, u.id, ...nights)
+      : db.prepare(`SELECT day, SUM(calls) AS calls, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM ai_usage WHERE agency_id = ? AND day IN (${marks}) GROUP BY day`).all(u.agencyId, ...nights);
+    const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
+    const out = nights.map((night) => {
+      const by = (mode) => rows.filter((x) => x.night === night && (mode ? x.mode === mode : x.mode !== 'chance')).reduce((a, x) => ({ sent: a.sent + x.sent, replies: a.replies + x.replies }), { sent: 0, replies: 0 });
+      const chance = by('chance');
+      const other = by('');
+      const ac = chats.find((x) => x.night === night) || { sent: 0, replies: 0 };
+      const g = ai.find((x) => x.day === night) || { calls: 0, input: 0, output: 0 };
+      const sent = chance.sent + other.sent + ac.sent;
+      const replies = chance.replies + other.replies + ac.replies;
+      return { night, chance: { ...chance, conv: pct(chance.replies, chance.sent) }, allchat: { sent: ac.sent, replies: ac.replies, conv: pct(ac.replies, ac.sent) },
+        other: { ...other, conv: pct(other.replies, other.sent) }, total: { sent, replies, conv: pct(replies, sent) }, ai: { calls: g.calls || 0, input: g.input || 0, output: g.output || 0 } };
+    });
+    // the latest night per profile (who works how)
+    const last = nights[nights.length - 1];
+    const prev = nights[nights.length - 2];
+    const profiles = db.prepare(`SELECT p.id, p.name, p.bot_state, p.bot_last_seen,
+        (SELECT COUNT(*) FROM messages m WHERE m.profile_id = p.id AND m.status = 'sent' AND m.mode = 'chance' AND m.night IN (?, ?)) AS chance,
+        (SELECT COUNT(*) FROM allchat_log a WHERE a.profile_id = p.id AND a.ok = 1 AND a.night IN (?, ?)) AS allchat,
+        (SELECT COUNT(*) FROM messages m WHERE m.profile_id = p.id AND m.replied_at IS NOT NULL AND m.night IN (?, ?)) + (SELECT COUNT(*) FROM allchat_log a WHERE a.profile_id = p.id AND a.replied_at IS NOT NULL AND a.night IN (?, ?)) AS replies
+      FROM profiles p WHERE ${scope.where} ORDER BY p.name LIMIT 200`).all(last, prev, last, prev, last, prev, last, prev, ...scope.params)
+      .map((p) => ({ ...p, online: Boolean(p.bot_last_seen && now() - p.bot_last_seen < BOT_ONLINE_MS) }));
+    res.json({ nights: out, profiles });
+  });
+
   return r;
 }

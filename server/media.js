@@ -12,7 +12,10 @@ const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'imag
   'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg',
   'audio/wav': 'wav', 'audio/webm': 'weba', 'application/pdf': 'pdf' };
 
-const steps = (json) => { try { const a = JSON.parse(json); return Array.isArray(a) ? a.filter((n) => Number.isInteger(n) && n > 0 && n <= 50) : []; } catch { return []; } };
+/** media.steps value for the photos of «Шанс» letters (none chosen → the photos of step 1). */
+export const CHANCE_STEP = 300;
+const stepOk = (n) => Number.isInteger(n) && ((n > 0 && n <= 50) || n === CHANCE_STEP);
+const steps = (json) => { try { const a = JSON.parse(json); return Array.isArray(a) ? a.filter(stepOk) : []; } catch { return []; } };
 export const publicMedia = (m) => ({ id: m.id, name: m.name, type: m.type, size: m.size, steps: steps(m.steps), created_at: m.created_at });
 
 export function listMedia(db, profileId) {
@@ -21,7 +24,7 @@ export function listMedia(db, profileId) {
 
 export function readSteps(v) {
   if (!Array.isArray(v)) throw bad('Вкажіть кроки, напр. [1, 2]');
-  return [...new Set(v.map(Number).filter((n) => Number.isInteger(n) && n > 0 && n <= 50))].sort((a, b) => a - b);
+  return [...new Set(v.map(Number).filter(stepOk))].sort((a, b) => a - b);
 }
 
 export function saveMedia(db, cfg, { agencyId, profileId, name, type, buf, steps: st = [1] }) {

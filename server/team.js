@@ -153,7 +153,7 @@ export function mergeSolo(db, fromId, intoId) {
   if (!db.prepare('SELECT 1 FROM agencies WHERE id = ?').get(intoId)) throw notFound('Команду не знайдено');
   const userId = people[0].id;
   tx(db, () => {
-    for (const table of ['sites', 'profiles', 'messages', 'touches', 'scenario_templates', 'media', 'bot_activity', 'earnings', 'extension_builds']) {
+    for (const table of ['sites', 'profiles', 'messages', 'touches', 'allchat_log', 'passes', 'scenario_templates', 'media', 'bot_activity', 'earnings', 'extension_builds']) {
       db.prepare(`UPDATE ${table} SET agency_id = ? WHERE agency_id = ?`).run(intoId, fromId);
     }
     db.prepare('UPDATE OR IGNORE ai_usage SET agency_id = ? WHERE agency_id = ?').run(intoId, fromId);

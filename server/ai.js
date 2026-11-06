@@ -319,6 +319,72 @@ export async function generateLetter({ profile, settings, memory = [] }) {
   return { text: out.text.slice(0, 3000), source: 'ai', model: out.model };
 }
 
+// ---------- «Аллчат»: a message on the topic of a running talk ----------
+const TOPIC_PROMPT = `You continue a running conversation of a woman with a man on an international dating site. She writes to him again because he has gone quiet. The last messages of their talk are given (oldest first; "Her:" is her, "Him:" is him). She reads and answers every reply herself.
+
+Write one short message from her that:
+- picks up the topic they last talked about: refer to something concrete from the talk in your own words, or take it one natural step further;
+- is warm, light and personal — never pushy, never reproachful about his silence, never "why don't you answer";
+- ends with one simple question that is easy to answer;
+- is 120-350 characters, plain text, with at most one emoji;
+- does not repeat her earlier messages and does not start with the same words as her last one.
+
+Never include contact details, links, other apps or messengers, requests for money or gifts, sexual content or promises to meet.
+
+Reply with the message text only: no quotes, no explanation.`;
+
+const TOPIC_TEMPLATES = [
+  'I was just thinking about what you told me last time 🙂 How did your day go today?',
+  'You know, our last talk made me smile. Tell me, what are you up to this evening?',
+  'I keep remembering our conversation. Did anything interesting happen since then?',
+  'Hi again! I wanted to continue our talk — what would you do on a perfect day off?',
+];
+const historyText = (history) => history.slice(-12).map((m) => `${m.mine ? 'Her' : 'Him'}: ${String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 400)}`).filter((l) => l.length > 6).join('\n');
+
+/** A template for when there is no AI key (or the AI is down): not the same as her last message. */
+export function templateTopic(history = [], seed = 0) {
+  const lastMine = [...history].reverse().find((m) => m.mine)?.text || '';
+  const options = TOPIC_TEMPLATES.filter((t) => t !== lastMine);
+  return { text: options[seed % options.length], source: 'template', model: null };
+}
+
+/** «Аллчат»: one message on the topic of their talk (history: [{mine, text}], oldest first). */
+export async function generateTopic({ profile, settings, history = [], seed = 0 }) {
+  const apiKey = keyFor(settings);
+  const talk = historyText(history);
+  if (!apiKey || !talk) return templateTopic(history, seed);
+  const language = profile.language || settings.ai.language || 'English';
+  const model = settings.ai.model || 'claude-opus-5-5';
+  const ask = (extra = '') => callClaude({ apiKey, model, system: TOPIC_PROMPT, language, profile, settings, max: 600,
+    instructions: `${settings.ai.instructions || ''}${extra}`.trim(), previous: talk, previousLabel: 'The last messages of their talk (oldest first):' });
+  let out = await ask();
+  if (FORBIDDEN.some((re) => re.test(out.text))) {
+    out = await ask('\nThe previous draft contained contact details, links or messenger names. Never include any of them.');
+    if (FORBIDDEN.some((re) => re.test(out.text))) return templateTopic(history, seed);
+  }
+  return { text: out.text.slice(0, 600), source: 'ai', model: out.model };
+}
+
+// ---------- 🔒 the bot answers his reply itself (locked: only when the platform admin opens it) ----------
+const REPLY_PROMPT = `You write the next message of a woman in her conversation with a man on an international dating site. He has just answered her. The last messages of their talk are given (oldest first; "Her:" is her, "Him:" is him).
+
+Write her answer to his last message: answer what he said or asked, add a small personal detail about her, and ask one natural question back. 150-450 characters, plain text, at most one emoji, the same language as the talk.
+
+Never include contact details, links, other apps or messengers, requests for money or gifts, sexual content or promises to meet.
+
+Reply with the message text only.`;
+
+export async function generateReply({ profile, settings, history = [] }) {
+  const apiKey = keyFor(settings);
+  const talk = historyText(history);
+  if (!apiKey || !talk) return null; // no template: without the AI a live person answers
+  const language = profile.language || settings.ai.language || 'English';
+  const out = await callClaude({ apiKey, model: settings.ai.model || 'claude-opus-5-5', system: REPLY_PROMPT, language, profile, settings, max: 800,
+    instructions: settings.ai.instructions, previous: talk, previousLabel: 'The last messages of their talk (oldest first):' });
+  if (FORBIDDEN.some((re) => re.test(out.text))) return null;
+  return { text: out.text.slice(0, 800), source: 'ai', model: out.model };
+}
+
 // ---------- his reply: keep going or leave him alone ----------
 const NEGATIVE = [
   /\bnot\s+(really\s+)?interested\b/i, /\bno\s+thanks?\b/i, /\bno,?\s+thank\s+you\b/i, /\b(stop|quit)\s+(writing|messaging|texting|sending)\b/i,

@@ -6,12 +6,13 @@ import {
   getSettings, profileSettings, planOf, accessFor, accessError, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
-import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter } from '../ai.js';
+import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter, generateTopic, templateTopic, generateReply } from '../ai.js';
+import { reportPass, shiftKey } from '../reports.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
 import { SITE_FIELDS, sanitizeSiteConfig, fillUrl, siteReady } from '../sites.js';
 import { profileScenario, followupSteps, filterReason, pickVariant, attempts, usesLetters } from '../scenario.js';
-import { filesForStep, mediaFile } from '../media.js';
+import { filesForStep, mediaFile, CHANCE_STEP } from '../media.js';
 import { scoreMen, manFeatures, hostOf, learnSent, learnReply, rankingState } from '../scoring.js';
 import { inviteStats, pickInvite, optimizeProfile, memoryLines } from '../learning.js';
 
@@ -22,6 +23,7 @@ export const REENGAGE_STEP = 100;
 /** followups.step that holds the AI letter (the site's mail section). */
 export const LETTER_STEP = 200;
 const MAX_BONUS = 100;
+const MODES = ['chance', 'hint', 'list', 'due', 'allchat'];
 
 /** API used by the browser extension (the bot). */
 export default function botRoutes(db, cfg) {
@@ -43,6 +45,7 @@ export default function botRoutes(db, cfg) {
       text: String(m.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500),
       info: String(m.info ?? '').replace(/\s+/g, ' ').trim().slice(0, 400),
       via: m.via === 'letter' ? 'letter' : m.via === 'chat' ? 'chat' : '',
+      online: m.online === true ? true : m.online === false ? false : null,
     };
   };
   const siteHost = (site, config) => hostOf(config?.searchUrl || site?.base_url || '');
@@ -177,7 +180,7 @@ export default function botRoutes(db, cfg) {
       }
       previous.push(have.get(step));
     }
-    if ((usesLetters(scenario) || JSON.parse(site.config || '{}').taskItem) && !have.has(LETTER_STEP)) {
+    if ((usesLetters(scenario) || JSON.parse(site.config || '{}').taskItem || settings.modes.chance.on) && !have.has(LETTER_STEP)) {
       let gen;
       try { gen = await generateLetter({ profile: p, settings, memory: memoryLines(db, settings) }); } catch { gen = templateLetter(p); }
       saveFollowup(db, { profileId: p.id, step: LETTER_STEP, text: gen.text, source: gen.source, model: gen.model });
@@ -209,6 +212,7 @@ export default function botRoutes(db, cfg) {
       },
       pending,
       ranking: { ...rankingState(db), manUrl: Boolean(JSON.parse(site.config || '{}').manUrl) },
+      modes: effectiveModes(settings),
     });
   }));
 
@@ -266,6 +270,16 @@ export default function botRoutes(db, cfg) {
     return { ranked, skipped };
   };
 
+  /** «Шанс»: her letter with the invite and the photos chosen for «Шанс» (none chosen → the photos of step 1). */
+  const chanceStep = (ctx, m) => {
+    const { features, ...man } = m;
+    const text = personalize(fillHer(ctx.followups.get(LETTER_STEP) || templateLetter(ctx.p).text, ctx.p), m);
+    let files = filesForStep(db, ctx.p.id, CHANCE_STEP);
+    if (!files.length) files = filesForStep(db, ctx.p.id, 1);
+    return { ...man, url: manUrl(ctx, m.id, m.url), step: 1, mode: 'chance', via: 'letter', text, invite_id: null,
+      actions: [{ do: 'message', via: 'letter', text, files }] };
+  };
+
   const firstStep = (ctx, m) => {
     const step = resolveStep(ctx, 0, m);
     const first = step.actions.find((a) => a.do === 'message');
@@ -278,12 +292,16 @@ export default function botRoutes(db, cfg) {
     const ctx = stepContext(p);
     if (!ctx.invite) throw new HttpError(409, 'У анкети немає активного інвайту');
     const list = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 300) : [];
-    const { ranked, skipped } = eligible(p, ctx, settings, list);
+    const chance = req.body?.mode === 'chance';
+    const { ranked: all, skipped } = eligible(p, ctx, settings, list);
+    // «Шанс» writes only to men who are online right now (if the team wants it so)
+    const ranked = chance && settings.modes.chance.onlineOnly ? all.filter((m) => m.online !== false) : all;
+    if (chance) skipped.offline = all.length - ranked.length;
     const hour = hourWindow(db, p.id, ctx.scenario.human.perHour);
     // Test mode in the extension never sends, so it is not bound by the daily limit.
     const cap = req.body?.test ? 5 : remaining;
     skipped.limit = Math.max(0, ranked.length - cap);
-    const allowed = ranked.slice(0, cap).map((m) => firstStep(ctx, m));
+    const allowed = ranked.slice(0, cap).map((m) => (chance ? chanceStep(ctx, m) : firstStep(ctx, m)));
     res.json({ allowed, remaining, skipped, hourLeft: hour.left, hourResetAt: hour.resetAt });
   });
 
@@ -435,19 +453,20 @@ export default function botRoutes(db, cfg) {
     const scenario = profileScenario(db, p, site);
     const next = ok ? after(scenario, 0, t) : { stage: 'active', next_at: null };
     const features = manFeatures(man, siteHost(site, configOf(site)));
+    const mode = MODES.includes(req.body?.mode) ? req.body.mode : '';
     const written = db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
-        step, stage, next_at, man_url, last_at, man_info, features)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)
+        step, stage, next_at, man_url, last_at, man_info, features, mode, night)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)
       ON CONFLICT(profile_id, man_id) DO UPDATE SET
         status = excluded.status, error = excluded.error, day = excluded.day, sent_at = excluded.sent_at,
         text = excluded.text, invite_id = excluded.invite_id, operator_id = excluded.operator_id,
         man_name = excluded.man_name, man_age = excluded.man_age, man_country = excluded.man_country,
         step = 1, stage = excluded.stage, next_at = excluded.next_at, man_url = excluded.man_url, last_at = excluded.last_at,
-        man_info = excluded.man_info, features = excluded.features
+        man_info = excluded.man_info, features = excluded.features, mode = excluded.mode, night = excluded.night
       WHERE messages.status = 'failed'`)
       .run(p.agency_id, p.id, req.user.id, p.site_id, man.id, man.name, man.age, man.country, validInvite,
-        str(req.body?.text, { max: 2000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t,
-        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features));
+        str(req.body?.text, { max: 3000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t,
+        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features), mode, shiftKey(t, settings.timezone, scenario.human));
     if (ok && written.changes) learnSent(db, features);
     db.prepare('DELETE FROM pool WHERE profile_id = ? AND man_id = ?').run(p.id, man.id);
     const limits = limitsFor(p, settings);
@@ -499,6 +518,8 @@ export default function botRoutes(db, cfg) {
         .run(t, day, t, man.text, mood, bonus, bonus > 0 ? t + afterReply.silenceHours * HOUR : null, m.id);
       fresh.push(find.get(p.id, man.id));
     }
+    // he answered after an «Аллчат» message: counted for that message too
+    for (const raw of list) { const man = readMan(raw); if (man) markAllchatReply(p.id, man.id, t); }
     if (fresh.length) notifyReplies(db, p, settings, fresh, req.user);
     res.json({ ok: true, new: fresh.length, negative, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name, mood: m.reply_mood })) });
   });
@@ -553,8 +574,130 @@ export default function botRoutes(db, cfg) {
     res.json({ ok: true, paused: fresh.status !== 'active', stop });
   });
 
+  // ---------- «Аллчат»: a few messages a night on the topic of running talks ----------
+  /** He answered: the latest «Аллчат» message to him before that gets the reply (one reply counts once). */
+  const markAllchatReply = (pid, manId, t) => db.prepare(`UPDATE allchat_log SET replied_at = ? WHERE id = (SELECT id FROM allchat_log
+    WHERE profile_id = ? AND man_id = ? AND ok = 1 AND at < ? ORDER BY at DESC LIMIT 1) AND replied_at IS NULL`).run(t, pid, manId, t);
+  const fpOf = (history) => { const last = history[history.length - 1]; return last ? `${last.mine ? 'h' : 'm'}:${String(last.text || '').replace(/\s+/g, ' ').trim().slice(0, 200)}` : ''; };
+  const readHistory = (h) => (Array.isArray(h) ? h.slice(-20) : []).map((m) => ({ mine: Boolean(m?.mine), text: String(m?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 600) })).filter((m) => m.text);
+
+  /** May the bot write into this dialog now? (he must not be waiting for an answer; limits per night; quiet long enough) */
+  r.post('/profiles/:id/allchat/check', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = profileSettings(db, p);
+    const modes = effectiveModes(settings);
+    const ac = modes.allchat;
+    const man = readMan(req.body?.man);
+    if (!man) throw bad('Немає даних чоловіка');
+    const history = readHistory(req.body?.history);
+    const t = now();
+    const human = profileScenario(db, p, siteOf(p)).human;
+    const night = shiftKey(t, settings.timezone, human);
+    // the last message as seen now; "quiet since" = when it was first seen unchanged
+    const fp = fpOf(history);
+    const row = db.prepare('SELECT * FROM dialogs WHERE profile_id = ? AND man_id = ?').get(p.id, man.id);
+    let since = t;
+    if (!row) db.prepare('INSERT INTO dialogs (profile_id, man_id, fp, fp_at) VALUES (?,?,?,?)').run(p.id, man.id, fp, t);
+    else if (!row.fp) { db.prepare('UPDATE dialogs SET fp = ? WHERE profile_id = ? AND man_id = ?').run(fp, p.id, man.id); since = row.fp_at; } // right after our own message
+    else if (row.fp !== fp) db.prepare('UPDATE dialogs SET fp = ?, fp_at = ? WHERE profile_id = ? AND man_id = ?').run(fp, t, p.id, man.id);
+    else since = row.fp_at;
+    const no = (reason) => res.json({ write: false, reason });
+    if (!ac.on) return no('off');
+    const last = history[history.length - 1];
+    if (!last) return no('empty');
+    if (!last.mine) {
+      // his message is the last one: he waits for an answer — a live person answers (the bot only if the admin opened «auto reply»)
+      markAllchatReply(p.id, man.id, t);
+      return modes.autoReply.on ? res.json({ write: true, reply: true }) : no('waits');
+    }
+    if (ac.who === 'replied' && !history.some((m) => !m.mine)
+      && !db.prepare("SELECT 1 FROM messages WHERE profile_id = ? AND man_id = ? AND replied_at IS NOT NULL").get(p.id, man.id)) return no('never-replied');
+    const tonight = db.prepare('SELECT COUNT(*) AS n, MAX(at) AS last FROM allchat_log WHERE profile_id = ? AND man_id = ? AND night = ? AND ok = 1').get(p.id, man.id, night);
+    if (tonight.n >= ac.perNight) return no('night-limit');
+    if (tonight.last && t - tonight.last < ac.gapHours * HOUR) return no('too-soon');
+    const quiet = (ac.who === 'silent' ? ac.silentHours : 1) * HOUR;
+    if (t - since < quiet) return no('not-quiet');
+    res.json({ write: true, night, count: tonight.n });
+  });
+
+  /** The message itself: on the topic of their talk (AI), or a template without a key. */
+  r.post('/profiles/:id/allchat/compose', ah(async (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = profileSettings(db, p);
+    const man = readMan(req.body?.man);
+    if (!man) throw bad('Немає даних чоловіка');
+    const history = readHistory(req.body?.history);
+    const modes = effectiveModes(settings);
+    if (req.body?.reply) {
+      if (!modes.autoReply.on) throw forbidden('Відповіді бота закриті');
+      const out = await generateReply({ profile: p, settings, history }).catch(() => null);
+      return res.json(out ? { text: personalize(out.text, man), source: out.source } : { text: '', source: 'none' });
+    }
+    const seed = db.prepare('SELECT COUNT(*) AS n FROM allchat_log WHERE profile_id = ? AND man_id = ?').get(p.id, man.id).n + p.id;
+    let out;
+    try { out = await generateTopic({ profile: p, settings, history, seed }); } catch { out = templateTopic(history, seed); } // AI down must not stop the bot
+    res.json({ text: personalize(fillHer(out.text, p), man), source: out.source });
+  }));
+
+  r.post('/profiles/:id/allchat/sent', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = profileSettings(db, p);
+    const man = readMan(req.body?.man);
+    if (!man) throw bad('Немає даних чоловіка');
+    const t = now();
+    const ok = Boolean(req.body?.ok);
+    const night = shiftKey(t, settings.timezone, profileScenario(db, p, siteOf(p)).human);
+    db.prepare('INSERT INTO allchat_log (agency_id, profile_id, operator_id, man_id, man_name, kind, night, text, ok, error, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .run(p.agency_id, p.id, req.user.id, man.id, man.name, req.body?.reply ? 'reply' : 'allchat', night, str(req.body?.text, { max: 1000 }) || '', ok ? 1 : 0,
+        ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), t);
+    // our message is the last one now: the quiet time counts from here (the page may show it translated — the next look adopts it)
+    if (ok) db.prepare(`INSERT INTO dialogs (profile_id, man_id, fp, fp_at) VALUES (?,?,'',?) ON CONFLICT(profile_id, man_id) DO UPDATE SET fp = '', fp_at = excluded.fp_at`).run(p.id, man.id, t);
+    res.json({ ok: true });
+  });
+
+  /** One pass of a mode is over: stored for the stats, and a mini report goes to Telegram. */
+  r.post('/profiles/:id/pass', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const settings = profileSettings(db, p);
+    const mode = oneOf(req.body?.mode, ['chance', 'allchat', 'hint', 'list', 'due'], 'mode');
+    const n = (k) => Math.max(0, Math.min(100000, Number.parseInt(req.body?.[k], 10) || 0));
+    const t = now();
+    const started = Math.min(t, Number(req.body?.startedAt) || t);
+    const info = req.body?.info && typeof req.body.info === 'object' ? JSON.stringify(req.body.info).slice(0, 2000) : '';
+    const night = shiftKey(t, settings.timezone, profileScenario(db, p, siteOf(p)).human);
+    const id = db.prepare('INSERT INTO passes (agency_id, profile_id, operator_id, mode, night, started_at, ended_at, seen, sent, failed, skipped, info) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(p.agency_id, p.id, req.user.id, mode, night, started, t, n('seen'), n('sent'), n('failed'), n('skipped'), info).lastInsertRowid;
+    if (settings.reports.eachPass) reportPass(db, Number(id)).catch(() => {});
+    res.json({ ok: true, id: Number(id) });
+  });
+
+  /** Started from the panel or Telegram: which of my profiles should start now (the extension asks every minute). */
+  r.get('/control', (req, res) => {
+    const scope = profileScope(req.user);
+    const rows = db.prepare(`SELECT p.id, p.name, p.site_id FROM profiles p WHERE ${scope.where} AND p.status = 'active' AND p.start_at IS NOT NULL
+      AND p.start_at > COALESCE(p.bot_beat_at, 0) AND p.start_at > COALESCE(p.stop_at, 0) AND p.start_at > ? ORDER BY p.start_at`).all(...scope.params, now() - 30 * 60000);
+    res.json({ start: rows });
+  });
+
   return r;
 }
+
+/** The team's modes as the bot uses them: «auto reply» only when the platform admin opened it. */
+export function effectiveModes(settings, unlocked = autoReplyUnlocked) {
+  const m = settings.modes;
+  const clamp = (v, a, b, d) => { const x = Number(v); return Number.isFinite(x) ? Math.min(b, Math.max(a, x)) : d; };
+  return {
+    chance: { on: Boolean(m.chance.on), everyMin: clamp(m.chance.everyMin, 10, 240, 30), onlineOnly: m.chance.onlineOnly !== false },
+    allchat: {
+      on: Boolean(m.allchat.on), perNight: clamp(m.allchat.perNight, 1, 6, 2), who: ['silent', 'replied', 'all'].includes(m.allchat.who) ? m.allchat.who : 'silent',
+      silentHours: clamp(m.allchat.silentHours, 1, 72, 6), gapHours: clamp(m.allchat.gapHours, 1, 12, 3), maxPerPass: clamp(m.allchat.maxPerPass, 1, 200, 40),
+    },
+    autoReply: { on: Boolean(unlocked() && m.autoReply.on), locked: !unlocked() },
+  };
+}
+let autoReplyUnlocked = () => false;
+/** Set once at start: reads the platform switch «auto reply opened». */
+export function setAutoReplyGate(fn) { autoReplyUnlocked = fn; }
 
 function notifyReplies(db, profile, settings, msgs, user) {
   const token = settings.telegram.botToken;

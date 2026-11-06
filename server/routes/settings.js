@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireRole } from '../auth.js';
 import { bad, mask, mergeSettings, ah, int, str, dayKey } from '../util.js';
 import { getSettings } from '../services.js';
+import { platformGet } from '../db.js';
 import { DEFAULT_PROMPT, PROMPT_VARS } from '../ai.js';
 import { sendTelegram } from '../telegram.js';
 import { memoryLines } from '../learning.js';
@@ -37,6 +38,7 @@ export default function settingsRoutes(db) {
       memory: memoryLines(db, { ai: { sharedMemory: true } }),
       usage: usageOf(req.user.agencyId, dayKey(Date.now(), s.timezone).slice(0, 7)),
       platformKey: s.ai.platformKey !== false && Boolean(process.env.ANTHROPIC_API_KEY),
+      autoReplyOpen: platformGet(db, 'autoReply', '0') === '1',
     });
   });
 
@@ -67,6 +69,22 @@ export default function settingsRoutes(db) {
       };
       if (patch.defaults.maxDelay < patch.defaults.minDelay) throw bad('Макс. пауза має бути не меншою за мінімальну');
     }
+    if (patch.modes) {
+      // «Шанс» / «Аллчат»: sane numbers only; «auto reply» only once the platform admin opened it
+      const m = patch.modes;
+      const n = (v, a, b, d) => { const x = Number(v); return v === undefined || !Number.isFinite(x) ? d : Math.min(b, Math.max(a, Math.round(x))); };
+      const c = cur.modes;
+      patch.modes = {
+        chance: { on: m.chance?.on === undefined ? c.chance.on : Boolean(m.chance.on), everyMin: n(m.chance?.everyMin, 10, 240, c.chance.everyMin),
+          onlineOnly: m.chance?.onlineOnly === undefined ? c.chance.onlineOnly : Boolean(m.chance.onlineOnly) },
+        allchat: { on: m.allchat?.on === undefined ? c.allchat.on : Boolean(m.allchat.on), perNight: n(m.allchat?.perNight, 1, 6, c.allchat.perNight),
+          who: ['silent', 'replied', 'all'].includes(m.allchat?.who) ? m.allchat.who : c.allchat.who,
+          silentHours: n(m.allchat?.silentHours, 1, 72, c.allchat.silentHours), gapHours: n(m.allchat?.gapHours, 1, 12, c.allchat.gapHours),
+          maxPerPass: n(m.allchat?.maxPerPass, 1, 200, c.allchat.maxPerPass) },
+        autoReply: { on: platformGet(db, 'autoReply', '0') === '1' ? Boolean(m.autoReply?.on ?? c.autoReply.on) : false },
+      };
+    }
+    if (patch.reports) patch.reports = { eachPass: patch.reports.eachPass === undefined ? cur.reports.eachPass : Boolean(patch.reports.eachPass) };
     if (patch.inboxCheckEvery !== undefined) patch.inboxCheckEvery = int(patch.inboxCheckEvery, { min: 0, max: 500, field: 'перевірка вхідних' }) ?? 0;
     if (patch.ai) {
       for (const k of ['model', 'language', 'instructions']) {

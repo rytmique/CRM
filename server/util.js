@@ -38,6 +38,18 @@ export const DEFAULT_SETTINGS = Object.freeze({
   caps: { dailyMax: 0, minDelayFloor: 0, maxOperators: 0, maxProfiles: 0 },
   // the team's plan (instead of a license per profile): up to N active profiles; until = end date or null (no end)
   plan: { profiles: 0, until: null },
+  // what the bot does in a shift
+  modes: {
+    // «Шанс»: every N minutes an invite letter with her photo to every online man there it has not written to yet
+    chance: { on: true, everyMin: 30, onlineOnly: true },
+    // «Аллчат»: a few times a night a message on the topic of the talk into running dialogs (never when he waits for an answer)
+    // who: 'silent' — he is quiet for silentHours+; 'replied' — only men who have written at least once; 'all' — every dialog
+    allchat: { on: true, perNight: 2, who: 'silent', silentHours: 6, gapHours: 3, maxPerPass: 40 },
+    // the bot answers his reply itself — locked until the platform admin opens it
+    autoReply: { on: false },
+  },
+  // mini reports in Telegram after each pass (each person gets the reports of what they run)
+  reports: { eachPass: true },
 });
 
 function deepMerge(base, over) {

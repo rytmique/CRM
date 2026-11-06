@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { HttpError } from './util.js';
 import { authenticate, hashPassword } from './auth.js';
-import { now } from './db.js';
+import { now, platformGet } from './db.js';
 import { buildZip } from './zip.js';
 import { stripJs } from './strip.js';
 import { onAiUsage } from './ai.js';
@@ -21,7 +21,8 @@ import siteRoutes from './routes/sites.js';
 import settingsRoutes from './routes/settings.js';
 import statsRoutes from './routes/stats.js';
 import billingRoutes from './routes/billing.js';
-import botRoutes from './routes/bot.js';
+import botRoutes, { setAutoReplyGate } from './routes/bot.js';
+import controlRoutes from './routes/control.js';
 import scenarioRoutes from './routes/scenarios.js';
 import promptRoutes from './routes/prompts.js';
 
@@ -32,6 +33,8 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
     publicUrl: publicUrl.replace(/\/$/, ''), demoSite, persistent,
     mediaDir: mediaDir || fs.mkdtempSync(path.join(os.tmpdir(), 'agency-media-')),
   };
+  // «the bot answers his reply itself» stays closed until the platform admin opens it
+  setAutoReplyGate(() => platformGet(db, 'autoReply', '0') === '1');
   const app = express();
   app.disable('x-powered-by');
   // every AI text is counted for the team and the person whose profile it is (the team lead sees who uses the key how much)
@@ -78,6 +81,7 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   api.use('/admin', pultRoutes(db, cfg));
   api.use((req, _res, next) => (req.user.role === 'admin' ? next(new HttpError(403, 'Цей розділ доступний лише обліковим записам агенції')) : next()));
   api.use('/bot', botRoutes(db, cfg));
+  api.use('/bots', controlRoutes(db));
   api.use('/operators', operatorRoutes(db));
   api.use('/profiles', profileRoutes(db, cfg));
   api.use('/licenses', licenseRoutes(db));
