@@ -9,7 +9,7 @@
   const M = self.__scanMask;
   const R = self.__scanRoles;
   const TOP = window === window.top;
-  const MAX_NODES = 1600;
+  const MAX_NODES = 2500;
   const MAX_DEPTH = 60;
   const SNAP_DEBOUNCE = 1200;
   const SNAP_MIN_GAP = 2500;
@@ -68,7 +68,8 @@
   function groupKey(el) {
     const c = cls(el)[0] || '';
     let k = `${el.tagName}.${c}`;
-    for (const a of ['role', 'aria-label', 'title', 'type', 'name', 'data-testid']) { const v = el.getAttribute(a); if (v) k += `|${a}=${v.slice(0, 30)}`; }
+    // masked values, with hashes flattened: "Chat with [W]" or "~_k" — rows about different people still group together
+    for (const a of ['role', 'aria-label', 'title', 'type', 'name', 'data-testid']) { const v = el.getAttribute(a); if (v) k += `|${a}=${M.maskValue(v.slice(0, 40)).replace(/~[0-9a-f]{4}/g, '~')}`; }
     if (['BUTTON', 'A', 'LI', 'LABEL'].includes(el.tagName) || el.getAttribute('role') === 'tab') {
       const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
       if (t && t.length <= 30) { const m = M.maskText(t); if (m?.ui) k += `|t=${m.t}`; }
@@ -76,6 +77,7 @@
     return k;
   }
   const extIds = new Set();
+  let lastForeign = new Set(); // other extensions' elements from the last snapshot
   const EXT_RE = /chrome-extension:\/\/([a-p]{32})/;
 
   /**
@@ -140,9 +142,12 @@
     let foreign = 0;
     const active = document.activeElement;
     const foreignEls = foreignSet();
-    const stack = [[document.documentElement, -1, 0, 1, 0]];
-    while (stack.length) {
-      const [el, p, d, k, rep] = stack.pop();
+    lastForeign = foreignEls;
+    // breadth first: every panel gets its top levels before any panel goes deep (a long list cannot eat the budget)
+    const queue = [[document.documentElement, -1, 0, 1, 0]];
+    for (let qi = 0; qi < queue.length; qi++) {
+      const [el, p, d, k, rep] = queue[qi];
+      queue[qi] = null;
       total++;
       if (nodes.length >= MAX_NODES || d > MAX_DEPTH) continue;
       const tg = el.tagName.toLowerCase();
@@ -227,7 +232,8 @@
         if (size > 6 && seen > 3) return; // long lists: 3 examples + how many there are
         push.push([ch, i, d + 1, kk, size >= 3 ? size : 0]);
       });
-      for (let j = push.length - 1; j >= 0; j--) stack.push(push[j]);
+      for (const x of push) queue.push(x);
+      if (queue.length > 60000) break; // a pathological page: stop collecting
     }
     return { nodes, total, foreign, vw, vh };
   }
@@ -242,7 +248,8 @@
       sx: Math.round(scrollX), sy: Math.round(scrollY), vis: document.visibilityState,
       n: res.nodes, total: res.total, ms, foreign: { count: res.foreign, ext: [...extIds] },
     };
-    s.sig = 's' + M.fnv(`${s.route}|${res.nodes.map((n) => `${n.d}${n.tg}${n.c ? `.${n.c[0]}` : ''}${n.rep ? '*' : ''}${n.v ? '' : '-'}`).join(',')}`);
+    // usernames in the address (~hash) do not make a new screen: 900 profiles of one layout = one screen seen 900 times
+    s.sig = 's' + M.fnv(`${s.route.replace(/[^/?#&]*~[0-9a-f]{4}[^/?#&]*/g, '~')}|${res.nodes.map((n) => `${n.d}${n.tg}${n.c ? `.${n.c[0]}` : ''}${n.rep ? '*' : ''}${n.v ? '' : '-'}`).join(',')}`);
     return s;
   }
 
@@ -421,16 +428,21 @@
     if (moves.length > 200) moves.splice(0, moves.length - 200);
   }
   function onDown(e) { lastDown = { t: Date.now(), el: e.target, tr: e.isTrusted }; }
+  /** The action happened on another extension's panel (another bot), not on the site. */
+  const onForeign = (e) => { try { const de = document.documentElement; return (e.composedPath?.() || []).some((x) => x.nodeType === 1 && (lastForeign.has(x) || (x.parentElement === de && x.tagName !== 'BODY' && x.tagName !== 'HEAD'))); } catch { return false; } };
+  const realTarget = (e) => { try { const p = e.composedPath?.(); return (p && p[0]?.nodeType === 1 ? p[0] : null) || e.target; } catch { return e.target; } };
   function onClick(e) {
-    const d = describe(e.target);
+    const d = describe(realTarget(e));
     const ev = { ty: 'click', tr: e.isTrusted ? 1 : 0, det: e.detail, btn: e.button, mv: moves.length,
       pd: lastDown.el && Date.now() - lastDown.t < 800 && (lastDown.el === e.target || lastDown.el?.contains?.(e.target)) ? 1 : 0, d };
+    if (d && onForeign(e)) d.ext = 1;
     openEffect(ev);
     snapSoon('click');
   }
   function onKey(e) {
     if (['Enter', 'Escape', 'Tab', 'NumpadEnter'].includes(e.key)) {
-      const ev = { ty: 'key', k: e.key, tr: e.isTrusted ? 1 : 0, ctrl: e.ctrlKey ? 1 : 0, shift: e.shiftKey ? 1 : 0, meta: e.metaKey ? 1 : 0, d: describe(e.target) };
+      const ev = { ty: 'key', k: e.key, tr: e.isTrusted ? 1 : 0, ctrl: e.ctrlKey ? 1 : 0, shift: e.shiftKey ? 1 : 0, meta: e.metaKey ? 1 : 0, d: describe(realTarget(e)) };
+      if (ev.d && onForeign(e)) ev.d.ext = 1;
       if (e.key === 'Tab') pushEvent(ev);
       else { openEffect(ev); snapSoon('key'); }
     }
@@ -470,6 +482,7 @@
     const k = sig(el);
     const now = Date.now();
     if (now - (boxes.get(k) || 0) < 60000) return;
+    if (boxes.size > 500) boxes.clear();
     boxes.set(k, now);
     const r = el.getBoundingClientRect();
     pushEvent({ ty: 'scrollbox', tr: e.isTrusted ? 1 : 0, d: { tg: el.tagName.toLowerCase(), c: cls(el).slice(0, 5), b: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] },
@@ -621,10 +634,12 @@
     const anc = [...(location.ancestorOrigins || [])].map((o) => { try { return new URL(o).hostname; } catch { return ''; } });
     if (!ours(host) && !(anc.length && anc.some(ours))) { teardown(); return; }
     if (location.protocol !== 'http:' && location.protocol !== 'https:') { teardown(); return; }
+    if (!TOP && (innerWidth < 200 || innerHeight < 120)) { teardown(); return; } // tiny / hidden frames: counters, pixels, ads
     cfg = scan;
     if (TOP) {
       // iframes from other hosts inside the site: tell the background so it can record them too
-      const frames = () => [...document.querySelectorAll('iframe[src]')].map((f) => { try { return new URL(f.src).origin; } catch { return null; } }).filter(Boolean);
+      const frames = () => [...document.querySelectorAll('iframe[src]')].filter((f) => { const r = f.getBoundingClientRect(); return r.width >= 200 && r.height >= 120; })
+        .map((f) => { try { const u = new URL(f.src); return /^h-/.test(M.maskHost(u.hostname, scan.siteDomains)) || M.maskHost(u.hostname, scan.siteDomains).endsWith('SITE') ? u.origin : null; } catch { return null; } }).filter(Boolean);
       const report = () => { const o = [...new Set(frames())]; if (o.length) send({ type: 'frames', origins: o }); };
       setTimeout(report, 4000);
       const ft = setInterval(report, 120000);

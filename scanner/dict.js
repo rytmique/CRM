@@ -54,6 +54,8 @@ preview previews editor composer input inputs textarea field fields form forms l
 selected disabled enabled visible hidden open closed show hide true false null undefined none auto left right center top bottom start end first last prev next
 primary secondary success warning danger error info muted text title subtitle name names date time ago min sec hour day week month year total number num
 online offline away busy typing attach attachment attachments video audio voice sticker stickers emoji smile camera gallery album albums story stories
+token tokens cursor offset limit order query since after before version session sessions callback redirect return target source medium campaign utm term
+root frame frames iframe host widget widgets embed popup overlay portal chunk sw worker manifest robots sitemap favicon
 `.split(/\s+/).filter(Boolean));
 
   /** One part of a value / URL segment: interface and technical words stay, numbers → #, anything else → ~hash (a username stays hidden but repeats are visible). */
@@ -113,7 +115,9 @@ online offline away busy typing attach attachment attachments video audio voice 
   const KNOWN_HOSTS = /(^|\.)(google|gstatic|googleapis|googletagmanager|google-analytics|doubleclick|recaptcha|hcaptcha|cloudflare|cloudflareinsights|jsdelivr|unpkg|cdnjs|sentry|sentry-cdn|intercom|facebook|fbcdn|yandex|hotjar|clarity|stripe|paypal|onesignal|pusher|firebaseio|firebase|amplitude|mixpanel|segment|zendesk|tawk|jivosite)\.[a-z.]+$/i;
 
   function regDomain(host) {
-    const parts = String(host || '').toLowerCase().split('.').filter(Boolean);
+    const h = String(host || '').toLowerCase();
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return h; // an IP address is the site itself, never "its last two numbers"
+    const parts = h.split('.').filter(Boolean);
     if (parts.length <= 2) return parts.join('.');
     const two = parts.slice(-2).join('.');
     return /^(co|com|net|org|gov|ac)\.[a-z]{2}$/.test(two) ? parts.slice(-3).join('.') : two;

@@ -3,6 +3,7 @@
 // a second domain without losing data, the per-page screen limit, sleep gap, full-screen budget, probes, reset + empty report.
 // Usage: node scanner/test/situations.e2e.mjs
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,10 +26,20 @@ const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   let f = null;
   if (u.pathname.startsWith('/demo-site/')) f = path.join(ROOT, u.pathname);
+  else if (u.pathname.startsWith('/fx/profile/')) f = path.join(HERE, 'fixtures', 'profile.html'); // /fx/profile/<username>
   else if (u.pathname.startsWith('/fx/')) f = path.join(HERE, 'fixtures', u.pathname.slice(4));
   if (!f || !fs.existsSync(f)) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, { 'content-type': f.endsWith('.html') ? 'text/html; charset=utf-8' : f.endsWith('.js') ? 'text/javascript' : 'text/css' });
   fs.createReadStream(f).pipe(res);
+});
+// a websocket like a chat's live channel: the handshake only, then it stays open
+const sockets = new Set();
+server.on('upgrade', (req, socket) => {
+  sockets.add(socket);
+  socket.on('error', () => {});
+  socket.on('close', () => sockets.delete(socket));
+  const accept = crypto.createHash('sha1').update(`${req.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
 });
 await new Promise((r) => server.listen(0, r));
 const PORT = server.address().port;
@@ -117,12 +128,39 @@ try {
 
   // 5. a page that keeps changing shape: the per-page limit holds
   await login.bringToFront();
-  await sleep(40000);
-  await msg({ type: 'flush' });
-  const states2 = await readAll('states');
-  const meta2 = await ext.evaluate(() => self.__scanDb.get('meta', 'main'));
-  const morph = states2.filter((s) => s.route.includes('.html') && s.route.includes('fx')).length;
+  const t5 = Date.now();
+  let states2 = [];
+  let meta2 = {};
+  let morph = 0;
+  while (Date.now() - t5 < 300000) { // a new shape every ~3 s → the limit of 60 is reached in ~3–4 min
+    await sleep(10000);
+    await msg({ type: 'flush' });
+    states2 = await readAll('states');
+    meta2 = await ext.evaluate(() => self.__scanDb.get('meta', 'main'));
+    morph = states2.filter((s) => s.route.includes('fx')).length;
+    if (meta2.overflow > 3) break;
+  }
   ok('ліміт екранів на одну сторінку тримається', morph <= 60 && meta2.overflow > 0, `екранів цієї сторінки ${morph}, понад ліміт ${meta2.overflow}`);
+
+  // 5b. men's profiles with a username in the address: one layout = one screen (they must not eat the screen limit), no name leaks
+  const prof = await ctx.newPage();
+  const NAMES = ['anna_k', 'olga.m', 'iryna', 'svetlana', 'natalia_v', 'oksana-p', 'viktoriia'];
+  for (const nm of NAMES) { await prof.goto(`${SITE}/fx/profile/${nm}`); await sleep(2600); }
+  await sleep(2000);
+  await msg({ type: 'flush' });
+  const profStates = (await readAll('states')).filter((s) => s.route.includes('/profile/'));
+  const profSeen = profStates.reduce((a, s) => a + s.count, 0);
+  ok('профілі з іменем в адресі: один екран, а не по екрану на кожного', profStates.length <= 2 && profSeen >= NAMES.length, `екранів ${profStates.length}, переглядів ${profSeen}`);
+  const profJson = JSON.stringify([profStates, await readAll('events')]).toLowerCase();
+  ok('імена з адрес профілів ніде не записані', NAMES.every((nm) => !profJson.includes(nm.split(/[._-]/)[0])));
+  await prof.close();
+
+  // 5c. the site's live channel (websocket): noted the moment it opens, although it never "completes"
+  const wsOpen = await site.evaluate((u) => new Promise((r) => { const w = new WebSocket(u); window.__ws = w; w.onopen = () => r(true); w.onerror = () => r(false); setTimeout(() => r(false), 5000); }), `${SITE.replace('http', 'ws')}/socket/chat?sid=777`);
+  await sleep(1500);
+  await msg({ type: 'flush' });
+  const wsLog = (await readAll('netlog')).filter((r) => r.ty === 'websocket');
+  ok('живий канал сайту (websocket) записано', wsOpen && wsLog.some((r) => r.st === 101 && r.u.startsWith('ws://SITE/socket/chat?')), JSON.stringify(wsLog[0] || {}).slice(0, 120));
 
   // 6. report while recording: recording goes on
   const evBefore = (await msg({ type: 'status' })).events;
@@ -163,7 +201,7 @@ try {
   ok('зупинений сканер нічого не пише', (await msg({ type: 'status' })).events === evStop);
   const r8 = await msg({ type: 'resume' });
   await sleep(1500);
-  await site.click('.chat-item >> nth=2');
+  await site.click('.chat-item >> nth=0');
   await sleep(6000);
   ok('«Продовжити» з будь-якої вкладки', r8.ok && (await msg({ type: 'status' })).events > evStop && (await badge()) === 'REC', JSON.stringify(r8));
   const sites8 = (await msg({ type: 'status' })).sites;
@@ -174,12 +212,25 @@ try {
   const r9 = await msg({ type: 'start', tabId: await tabOf('127.0.0.1') });
   const st9 = await msg({ type: 'status' });
   ok('другий сайт додано, записане не стерто', r9.ok && st9.sites.length === 2 && st9.states >= statesBefore9, `${st9.sites.length} сайти, екранів ${statesBefore9} → ${st9.states}`);
+  // the second site sits on an IP address (127.0.0.1): it is recorded too, as a whole address
+  await other.bringToFront();
+  await other.reload();
+  await other.waitForSelector('.man-card');
+  await other.click('.man-card >> nth=1 >> .btn-write');
+  await sleep(6000);
+  await msg({ type: 'flush' });
+  const ipStates = (await readAll('states')).filter((s) => s.route.includes('search.html'));
+  ok('сайт на IP-адресі записується', st9.sites.includes('127.0.0.1') && ipStates.length > 0, `${st9.sites.join(', ')}; екранів ${ipStates.length}`);
 
   // 10. probes (every 20 min, first after 3 min): what the bot sees right now
   const t10 = Date.now();
   let probes = [];
   while (!probes.length && Date.now() - t10 < 200000) { await sleep(10000); probes = await readAll('probes'); }
   ok('перевірка «що бот бачить» спрацювала', probes.some((p) => p.best && Object.keys(p.best).length), probes[0] ? Object.keys(probes[0].best || {}).slice(0, 6).join(', ') : 'немає');
+
+  // the whole night above: no inner errors of the scanner itself
+  const bad = (await readAll('incidents')).filter((i) => /error/.test(i.kind));
+  ok('за весь тест жодної внутрішньої помилки сканера', !bad.length, bad.map((i) => `${i.kind}:${i.where || ''}:${i.note || ''}`).join(' | ').slice(0, 300));
 
   // 11. reset → empty; a report of nothing still builds
   await msg({ type: 'reset' });
@@ -191,6 +242,7 @@ try {
   ok('тест дійшов до кінця', false, e.message.split('\n')[0]);
 } finally {
   await ctx?.close().catch(() => {});
+  for (const so of sockets) so.destroy();
   server.close();
   const bad = results.filter((r) => r[0] === '✗');
   console.log(`\n${bad.length ? `SITUATIONS FAILED: ${bad.length}` : 'SITUATIONS OK'} (${results.length} checks)`);

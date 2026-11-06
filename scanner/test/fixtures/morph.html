@@ -7,9 +7,16 @@ let n = 0;
 setInterval(() => {
   n++;
   const app = document.getElementById('app');
+  // every n gives a really different shape: its bits decide the tags and the nesting
   const box = document.createElement('section');
-  box.className = `shape${n}`;
-  for (let i = 0; i < (n % 5) + 1; i++) { const d = document.createElement('div'); d.className = `cell${(n + i) % 97}`; box.append(d); }
+  let cur = box;
+  for (let b = 0; b < 9; b++) {
+    const e = document.createElement((n >> b) & 1 ? 'article' : 'aside');
+    e.className = ['alpha', 'beta', 'gamma'][b % 3];
+    e.textContent = 'x';
+    cur.append(e);
+    if ((n >> b) & 1) cur = e;
+  }
   app.replaceChildren(box);
 }, 250);
 </script>

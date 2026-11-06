@@ -180,6 +180,7 @@ try {
   log('tabs, window, offline, captcha, login page, iframe done');
 
   // ---------- 5. another bot clicking and typing fast (programmatic events) ----------
+  await desk.locator('other-bot-panel button').click(); // the operator presses «Start» on the other bot's own panel
   await desk.evaluate(() => localStorage.setItem('otherbot', '1'));
   const t5 = Date.now();
   while (Date.now() - t5 < BURST_S * 1000) {
@@ -270,6 +271,8 @@ try {
   if (!sum.otherExtensions.length) fail('the other bot\'s extension was not noticed');
   if (!(sum.bot.syntheticClicks > 10 && sum.bot.trustedClicks > 5)) fail(`bot analysis: ${JSON.stringify(sum.bot).slice(0, 300)}`);
   const kinds = new Map(sum.incidents);
+  const errKinds = sum.incidents.filter(([k]) => /error/.test(k));
+  if (errKinds.length) fail(`inner errors of the scanner: ${JSON.stringify(errKinds)}`);
   for (const k of ['start', 'offline', 'online', 'tab-closed']) if (!kinds.has(k)) fail(`incident "${k}" missing: ${JSON.stringify(sum.incidents)}`);
   const states = readParts('states/');
   if (!states.some((s) => !s.top)) fail('the iframe from another host was not recorded');
@@ -278,6 +281,10 @@ try {
   if (!ev.some((e) => e.ty === 'file' && e.files === 1 && e.types[0] === 'image/png')) fail('the attached photo (count + type) was not recorded');
   if (!ev.some((e) => e.ty === 'type' && e.tr === 1 && e.len > 20)) fail('trusted typing (length only) was not recorded');
   if (!ev.some((e) => e.ty === 'click' && e.fx)) fail('no "what changed after the click"');
+  if (!ev.some((e) => e.ty === 'click' && e.tr === 1 && e.d?.ext === 1)) fail('the click on the other bot\'s panel is not marked as «another extension»');
+  const wrongExt = ev.filter((e) => e.ty === 'click' && e.tr === 0 && e.d?.ext).length;
+  if (wrongExt) fail(`${wrongExt} programmatic clicks on the site were marked as «another extension»`);
+  if (!(sum.bot.clicksOnOtherExtension >= 1)) fail(`bot.clicksOnOtherExtension = ${sum.bot.clicksOnOtherExtension}`);
   if (!sum.network.length) fail('no network templates');
   if (ctx.pages().filter((p) => !p.url().startsWith('chrome-extension://')).length > 1 + 0) { /* desk2 only — the scanner opened nothing */ }
   log(`report content ok: ${states.length} screens, ${ev.length} actions, ${sum.network.length} request types, other extensions: ${sum.otherExtensions.length}, bot clicks: ${sum.bot.syntheticClicks}`);

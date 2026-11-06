@@ -112,6 +112,8 @@ try {
   const leaks = SECRETS.filter((x) => (/^\d+$/.test(x) ? new RegExp(`(?<!\\d)${x}(?!\\d)`).test(all) : all.includes(x))); // numbers: not inside timestamps
   if (leaks.length) fail(`personal data in the report: ${leaks.join(', ')}`);
   const sum = JSON.parse(fs.readFileSync(path.join(dir, 'summary.json'), 'utf8'));
+  const errKinds = (sum.incidents || []).filter(([k]) => /error/.test(k));
+  if (errKinds.length) fail(`inner errors of the scanner: ${JSON.stringify(errKinds)}`);
   const states = files.filter((f) => f.startsWith('states/')).flatMap((f) => fs.readFileSync(path.join(dir, f), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)));
   const seenTotal = states.reduce((a, s) => a + s.count, 0);
   const snapMs = states.map((s) => s.state.ms || 0);

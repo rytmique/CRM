@@ -59,6 +59,12 @@ test('URLs: site → SITE, no IDs, no usernames, no query values, no tokens', ()
   assert.equal(M.maskUrl('wss://ex.com/socket?sid=1', D), 'wss://SITE/socket?sid'.replace('sid', M.maskToken('sid')));
   assert.equal(M.maskUrl('not a url', D), '[адреса]');
   assert.equal(M.maskUrl('https://ex.com/#/chat/123', D), 'SITE/#/chat/#');
+  // a site on an IP address: the whole address is the site
+  assert.equal(M.regDomain('192.168.1.10'), '192.168.1.10');
+  assert.equal(M.regDomain('operator.example.co.uk'), 'example.co.uk');
+  assert.equal(M.regDomain('app.site.com.ua'), 'site.com.ua');
+  assert.equal(M.maskUrl('http://192.168.1.10:8080/desk/chat/55', ['192.168.1.10']), 'SITE/desk/chat/#');
+  assert.notEqual(M.maskHost('10.0.1.10', ['192.168.1.10']), 'SITE');
   // the site's own name never appears
   assert.ok(!M.maskUrl('https://chat.ex.com/ex/page', D).includes('ex.com'));
 });

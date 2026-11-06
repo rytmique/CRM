@@ -39,7 +39,7 @@ config.actions = ['likeButton', 'favoriteButton', 'winkButton'].filter((r) => su
   .map((r) => ({ key: r.replace('Button', ''), name: { likeButton: 'Лайк', favoriteButton: 'Обране', winkButton: 'Підморгнути' }[r], sel: sum.roles[r][0].css[0], where: 'page' }));
 // what the site shows after Send — candidate "sent" confirmations from the effects of clicks on the send button
 const sendCss = sum.roles?.sendButton?.[0]?.css?.[0] || '';
-const afterSend = (sum.actions || []).filter((a) => /send|надісл|➤/i.test(a.action) || (sendCss && a.action.includes(sendCss.split('[')[0])));
+const afterSend = (sum.actions || []).filter((a) => !a.action.includes('[ext]')).filter((a) => /send|надісл|➤/i.test(a.action) || (sendCss && a.action.includes(sendCss.split('[')[0])));
 const toasts = afterSend.flatMap((a) => a.effects.filter(([k]) => k.startsWith('«')).map(([k, n]) => [k, n]));
 if (toasts.length) check.push(`ℹ після «Надіслати» з’являється: ${toasts.slice(0, 5).map(([k]) => k).join(', ')} → кандидат для sentConfirm`);
 const sendReq = afterSend.flatMap((a) => a.requests).slice(0, 5);

@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>profile</title></head>
+<body>
+<!-- One man's profile at /fx/profile/<username>: the same layout for everybody, only the name differs. -->
+<header class="top"><a class="logo" href="/">Home</a></header>
+<main class="profile">
+  <img class="avatar" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="80" height="80" alt="">
+  <h1 class="name"></h1>
+  <p class="about">About me</p>
+  <button class="btn-write" type="button">Write</button>
+  <button class="btn-like" type="button" aria-label="Like">♥</button>
+</main>
+<script>document.querySelector('.name').textContent = decodeURIComponent(location.pathname.split('/').pop());</script>
+</body></html>

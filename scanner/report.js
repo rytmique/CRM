@@ -68,7 +68,7 @@ async function zip(files) {
 
 // ---------------- analysis ----------------
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-const descKey = (d) => (d ? `${d.tg}${d.c?.length ? `.${d.c.slice(0, 2).join('.')}` : ''}${d.r ? `[role=${d.r}]` : ''}${d.tx && d.tx.length < 40 ? ` «${d.tx}»` : ''}` : '?');
+const descKey = (d) => (d ? `${d.tg}${d.c?.length ? `.${d.c.slice(0, 2).join('.')}` : ''}${d.r ? `[role=${d.r}]` : ''}${d.ext ? '[ext]' : ''}${d.tx && d.tx.length < 40 ? ` «${d.tx}»` : ''}` : '?');
 
 function botAnalysis(events) {
   const clicks = events.filter((e) => e.ty === 'click');
@@ -84,7 +84,8 @@ function botAnalysis(events) {
   const seq = {};
   for (let i = 1; i < syn.length; i++) { const k = `${descKey(syn[i - 1].d)}  →  ${descKey(syn[i].d)}`; seq[k] = (seq[k] || 0) + 1; }
   return {
-    note: 'Кліки з isTrusted=0 — програмні (інше розширення / скрипт). detail=0 — клік через el.click(). mv=0 — без руху миші перед кліком.',
+    note: 'Кліки з isTrusted=0 — програмні (інше розширення / скрипт). detail=0 — клік через el.click(). mv=0 — без руху миші перед кліком. [ext] — клік по панелі іншого розширення, не по сайту.',
+    clicksOnOtherExtension: clicks.filter((e) => e.d?.ext).length,
     clicks: clicks.length, trustedClicks: real.length, syntheticClicks: syn.length,
     clickNoDetail: clicks.filter((e) => e.det === 0).length, clickNoMouseMove: clicks.filter((e) => !e.mv).length, clickNoPointerDown: clicks.filter((e) => !e.pd).length,
     syntheticGapMs: { median: median(sg), mean: Math.round(mean), sd: Math.round(sd) },
@@ -279,7 +280,7 @@ async function build() {
     s('Аналіз готовий');
 
     s = step('Малюю схеми екранів…');
-    const topStates = [...states].sort((a, b) => b.count - a.count).slice(0, 30);
+    const topStates = states.filter((x) => x.state.n?.length).sort((a, b) => b.count - a.count).slice(0, 30);
     const svgs = topStates.map((st, i) => ({ name: `screens/${String(i + 1).padStart(2, '0')}-${st.route.replace(/[^\w.-]+/g, '_').slice(0, 50)}.svg`, data: wireframe(st, st.roles || {}) }));
     s(`Схем: ${svgs.length}`);
 

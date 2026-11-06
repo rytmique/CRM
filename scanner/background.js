@@ -13,17 +13,25 @@ const NET_SKIP_LOG = new Set(['image', 'font', 'media', 'stylesheet', 'imageset'
 
 // ---------------- config (chrome.storage.local "scan") ----------------
 let scanCache = null;
+let scanLoaded = false; // settings read once per wake-up; later changes come through setScan / storage.onChanged
 async function getScan() {
-  if (scanCache) return scanCache;
+  if (scanLoaded) return scanCache;
   const { scan } = await chrome.storage.local.get('scan');
-  scanCache = scan || null;
+  if (!scanLoaded) { scanCache = scan || null; scanLoaded = true; }
   return scanCache;
 }
 async function setScan(v) {
   scanCache = v;
+  scanLoaded = true;
   await chrome.storage.local.set({ scan: v });
 }
-chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.scan) scanCache = ch.scan.newValue || null; });
+chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.scan) { scanCache = ch.scan.newValue || null; scanLoaded = true; } });
+
+/** Wraps listeners: an unexpected error becomes an incident in the report, never an «Errors» badge for the operator. */
+const safe = (name, fn) => async (...args) => {
+  try { return await fn(...args); } catch (e) { try { await DB.add('incidents', [{ t: Date.now(), kind: 'internal-error', where: name, note: String(e?.message || e).slice(0, 120) }]); } catch { /* ignore */ } return undefined; }
+};
+self.addEventListener('unhandledrejection', (e) => { e.preventDefault(); });
 
 const ours = (host, scan) => Boolean(host && scan?.siteDomains?.some((d) => host === d || host.endsWith(`.${d}`)));
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -57,8 +65,10 @@ async function incident(kind, extra = {}) {
 
 // ---------------- the recorder in pages ----------------
 const FILES = ['dict.js', 'roles.js', 'content.js'];
+/** Address patterns of the site: the domain with all its subdomains; an IP address exactly (it has no subdomains). */
+const sitePatterns = (scan) => scan.siteDomains.map((d) => (/^\d{1,3}(\.\d{1,3}){3}$/.test(d) || d.includes(':') ? `*://${d}/*` : `*://*.${d}/*`));
 async function registerRecorder(scan) {
-  const want = [{ id: 'rec', matches: scan.siteDomains.map((d) => `*://*.${d}/*`) }];
+  const want = [{ id: 'rec', matches: sitePatterns(scan) }];
   if (scan.frameOrigins?.length) want.push({ id: 'rec-frames', matches: [...new Set(scan.frameOrigins.map((o) => { const u = new URL(o); return `${u.protocol}//${u.hostname}/*`; }))] });
   const have = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
   for (const w of want) {
@@ -76,7 +86,7 @@ async function unregisterRecorder() {
 }
 /** Tabs of the site that were already open when recording started (or after an update of the scanner). */
 async function injectOpenTabs(scan) {
-  const tabs = await chrome.tabs.query({ url: scan.siteDomains.map((d) => `*://*.${d}/*`) }).catch(() => []);
+  const tabs = await chrome.tabs.query({ url: sitePatterns(scan) }).catch(() => []);
   for (const t of tabs) {
     await chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: FILES }).catch(() => {});
   }
@@ -87,7 +97,11 @@ async function ensureRunning(reason) {
   const scan = await getScan();
   if (!scan?.scanning) { chrome.action.setBadgeText({ text: scan?.siteDomains ? '■' : '' }); return; }
   await registerRecorder(scan).catch((e) => incident('register-error', { note: String(e?.message || e).slice(0, 120) }));
-  if (reason !== 'message') await injectOpenTabs(scan);
+  const { injected } = await chrome.storage.session.get('injected').catch(() => ({}));
+  if (reason !== 'boot' || !injected) {
+    await injectOpenTabs(scan);
+    await chrome.storage.session.set({ injected: Date.now() }).catch(() => {});
+  }
   chrome.action.setBadgeBackgroundColor({ color: '#d6336c' });
   chrome.action.setBadgeText({ text: 'REC' });
   const alarms = await chrome.alarms.getAll();
@@ -136,7 +150,8 @@ async function seen(msg) {
   const m = await getMeta();
   m.seen ||= {};
   for (const [sig, n, last] of msg.list || []) {
-    const c = (m.seen[sig] ||= [0, 0]);
+    let c = m.seen[sig];
+    if (!c) { if ((m.seenN || 0) >= 5000) continue; m.seenN = (m.seenN || 0) + 1; c = m.seen[sig] = [0, 0]; } // a page of endless shapes cannot bloat the settings
     c[0] += n;
     c[1] = Math.max(c[1], last);
   }
@@ -157,14 +172,23 @@ async function storeEvents(list, tab, top, dropped) {
 const pending = new Map(); // requestId → start
 let netBuf = [];
 const netAgg = new Map();
+const early = [];
 function netStart(d) {
   if (d.tabId < 0 && !d.initiator) return;
+  if (!scanLoaded) {
+    // the background just woke up and has not read its settings yet: keep the first requests for a moment
+    if (early.length < 300) early.push(d);
+    if (early.length === 1) getScan().then(() => { for (const x of early.splice(0)) netStart(x); }).catch(() => { early.length = 0; });
+    return;
+  }
   const scan = scanCache;
   if (!scan?.scanning) return;
   const fromSite = ours(hostOf(d.initiator || d.documentUrl || ''), scan) || ((d.type === 'main_frame' || d.type === 'sub_frame') && ours(hostOf(d.url), scan));
   if (!fromSite) return;
   pending.set(d.requestId, { t: d.timeStamp, m: d.method, url: d.url, ty: d.type, tab: d.tabId, fr: d.frameId });
   if (pending.size > 5000) pending.delete(pending.keys().next().value);
+  // a websocket stays open for hours and may never "complete": note it the moment it opens (status 101 = switched to websocket)
+  if (d.type === 'websocket') netEnd({ requestId: d.requestId, statusCode: 101, timeStamp: d.timeStamp }, false);
 }
 function netEnd(d, err) {
   const p = pending.get(d.requestId);
@@ -233,17 +257,17 @@ async function timeline(e) {
   await DB.add('events', [{ t: Date.now(), ...e }]).catch(() => {});
   const m = await getMeta(); m.events++; touchMeta();
 }
-chrome.tabs.onActivated.addListener(async ({ tabId }) => { const site = await isSiteTab(tabId); await timeline({ ty: 'tab-focus', site: site ? 1 : 0, tab: site ? await tabNo(tabId) : 0 }); });
-chrome.windows.onFocusChanged.addListener(async (wid) => { await timeline({ ty: 'window-focus', none: wid === chrome.windows.WINDOW_ID_NONE ? 1 : 0 }); });
-chrome.tabs.onRemoved.addListener(async (tabId) => {
+chrome.tabs.onActivated.addListener(safe('tab-focus', async ({ tabId }) => { const site = await isSiteTab(tabId); await timeline({ ty: 'tab-focus', site: site ? 1 : 0, tab: site ? await tabNo(tabId) : 0 }); }));
+chrome.windows.onFocusChanged.addListener(safe('window-focus', async (wid) => { await timeline({ ty: 'window-focus', none: wid === chrome.windows.WINDOW_ID_NONE ? 1 : 0 }); }));
+chrome.tabs.onRemoved.addListener(safe('tab-closed', async (tabId) => {
   if (siteTabs.has(tabId) || (await getMeta()).tabs[tabId]) {
     siteTabs.delete(tabId);
     const scan = await getScan();
     if (scan?.scanning) await incident('tab-closed', { tab: await tabNo(tabId) });
   }
-});
-chrome.tabs.onCreated.addListener(async (t) => { if (t.openerTabId != null && siteTabs.has(t.openerTabId)) await timeline({ ty: 'tab-opened-from-site', tab: await tabNo(t.openerTabId) }); });
-chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+}));
+chrome.tabs.onCreated.addListener(safe('tab-opened', async (t) => { if (t.openerTabId != null && siteTabs.has(t.openerTabId)) await timeline({ ty: 'tab-opened-from-site', tab: await tabNo(t.openerTabId) }); }));
+chrome.tabs.onUpdated.addListener(safe('tab-updated', async (tabId, info, tab) => {
   if (info.discarded && siteTabs.has(tabId)) { const scan = await getScan(); if (scan?.scanning) await incident('tab-discarded', { tab: await tabNo(tabId) }); } // Chrome's memory saver
   if (!info.url) return;
   const scan = await getScan();
@@ -251,13 +275,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (site) siteTabs.add(tabId);
   else if (siteTabs.has(tabId)) { siteTabs.delete(tabId); if (scan?.scanning) await timeline({ ty: 'left-site', tab: await tabNo(tabId) }); }
   void tab;
-});
+}));
 chrome.idle.setDetectionInterval(120);
-chrome.idle.onStateChanged.addListener(async (s) => { const scan = await getScan(); if (scan?.scanning) await incident(`pc-${s}`); });
-chrome.runtime.onStartup.addListener(async () => { const scan = await getScan(); if (scan?.scanning) await incident('browser-started'); await ensureRunning('startup'); });
-chrome.runtime.onInstalled.addListener(async (d) => { const scan = await getScan(); if (scan?.scanning) await incident('scanner-updated', { reason: d.reason }); await ensureRunning('installed'); });
+chrome.idle.onStateChanged.addListener(safe('idle', async (s) => { const scan = await getScan(); if (scan?.scanning) await incident(`pc-${s}`); }));
+chrome.runtime.onStartup.addListener(safe('startup', async () => { const scan = await getScan(); if (scan?.scanning) await incident('browser-started'); await ensureRunning('startup'); }));
+chrome.runtime.onInstalled.addListener(safe('installed', async (d) => { const scan = await getScan(); if (scan?.scanning) await incident('scanner-updated', { reason: d.reason }); await ensureRunning('installed'); }));
 
-chrome.alarms.onAlarm.addListener(async (a) => {
+chrome.alarms.onAlarm.addListener(safe('alarm', async (a) => {
   const scan = await getScan();
   if (!scan?.scanning) return;
   const m = await getMeta();
@@ -270,7 +294,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
     await saveMeta();
     await flushNet();
   } else if (a.name === 'probe') {
-    const tabs = await chrome.tabs.query({ url: scan.siteDomains.map((d) => `*://*.${d}/*`) }).catch(() => []);
+    const tabs = await chrome.tabs.query({ url: sitePatterns(scan) }).catch(() => []);
     for (const t of tabs) {
       const r = await chrome.tabs.sendMessage(t.id, { type: 'probe' }, { frameId: 0 }).catch((e) => ({ error: String(e?.message || e).slice(0, 80) }));
       await DB.add('probes', [{ t: Date.now(), tab: await tabNo(t.id), active: t.active ? 1 : 0, ...(r || { error: 'no answer' }) }]).catch(() => {});
@@ -284,7 +308,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
       touchMeta();
     }
   }
-});
+}));
 
 // ---------------- messages ----------------
 async function handle(msg, sender) {
@@ -315,6 +339,7 @@ async function handle(msg, sender) {
   switch (msg.type) {
     case 'status': return status();
     case 'start': return start(msg.tabId);
+    case 'resume': return resume();
     case 'stop': return stop();
     case 'reset': return reset();
     case 'flush': await flushNet(); await saveMeta(); return { ok: true };
@@ -354,7 +379,21 @@ async function start(tabId) {
   await incident(same ? 'resume' : 'start');
   await ensureRunning('start');
   siteTabs.add(tabId);
-  return { ok: true, tabs: (await chrome.tabs.query({ url: scan.siteDomains.map((d) => `*://*.${d}/*`) })).length };
+  return { ok: true, tabs: (await chrome.tabs.query({ url: sitePatterns(scan) })).length };
+}
+
+async function resume() {
+  const prev = await getScan();
+  if (!prev?.siteDomains?.length) throw new Error('Нічого продовжувати — натисніть «Вивчити сайт» на вкладці з сайтом');
+  await setScan({ ...prev, scanning: true, scanId: Math.random().toString(36).slice(2), resumedAt: Date.now(), stoppedAt: undefined });
+  const m = await getMeta();
+  m.lastTick = Date.now();
+  m.starts = (m.starts || 0) + 1;
+  touchMeta();
+  await saveMeta();
+  await incident('resume');
+  await ensureRunning('start');
+  return { ok: true };
 }
 
 async function stop() {
@@ -392,4 +431,4 @@ async function status() {
   };
 }
 
-ensureRunning('boot');
+safe('boot', () => ensureRunning('boot'))();
