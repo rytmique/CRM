@@ -92,7 +92,14 @@ async function incident(kind, extra = {}) {
 const FILES = ['dict.js', 'roles.js', 'content.js'];
 /** Address patterns of the site: the domain with all its subdomains; an IP address exactly (it has no subdomains). */
 const sitePatterns = (scan) => scan.siteDomains.map((d) => (/^\d{1,3}(\.\d{1,3}){3}$/.test(d) || d.includes(':') ? `*://${d}/*` : `*://*.${d}/*`));
-async function registerRecorder(scan) {
+// one registration at a time: the start, a wake-up and a «frames» message can come together → «Duplicate script ID»
+let regChain = Promise.resolve();
+function registerRecorder(scan) {
+  const run = regChain.then(() => registerRecorderNow(scan));
+  regChain = run.catch(() => {});
+  return run;
+}
+async function registerRecorderNow(scan) {
   const want = [{ id: 'rec', matches: sitePatterns(scan) }];
   if (scan.frameOrigins?.length) want.push({ id: 'rec-frames', matches: [...new Set(scan.frameOrigins.map((o) => { const u = new URL(o); return `${u.protocol}//${u.hostname}/*`; }))] });
   const have = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
