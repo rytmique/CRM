@@ -7,7 +7,8 @@ const M = self.__scanMask;
 const DB = self.__scanDb;
 const VERSION = chrome.runtime.getManifest().version;
 
-const CAP = { states: 900, perRoute: 60, events: 150000, netlog: 120000, bytes: 1.5e9 };
+const CAP = { states: 900, perRoute: 60, stateBytes: 90e6, events: 150000, netlog: 120000, bytes: 1.5e9 };
+const R = self.__scanRoles;
 const NET_SKIP_LOG = new Set(['image', 'font', 'media', 'stylesheet', 'imageset']);
 
 // ---------------- config (chrome.storage.local "scan") ----------------
@@ -64,7 +65,9 @@ async function registerRecorder(scan) {
     const cur = have.find((h) => h.id === w.id);
     if (cur && JSON.stringify(cur.matches) === JSON.stringify(w.matches)) continue;
     if (cur) await chrome.scripting.unregisterContentScripts({ ids: [w.id] }).catch(() => {});
-    await chrome.scripting.registerContentScripts([{ id: w.id, matches: w.matches, js: FILES, allFrames: true, runAt: 'document_idle', persistAcrossSessions: true }]);
+    const def = { id: w.id, matches: w.matches, js: FILES, allFrames: true, runAt: 'document_idle', persistAcrossSessions: true };
+    // also blank / srcdoc frames the site makes for its widgets (needs a newer Chrome — without it, the rest still works)
+    try { await chrome.scripting.registerContentScripts([{ ...def, matchOriginAsFallback: true }]); } catch { await chrome.scripting.registerContentScripts([def]); }
   }
 }
 async function unregisterRecorder() {
@@ -89,7 +92,7 @@ async function ensureRunning(reason) {
   chrome.action.setBadgeText({ text: 'REC' });
   const alarms = await chrome.alarms.getAll();
   if (!alarms.some((a) => a.name === 'tick')) chrome.alarms.create('tick', { periodInMinutes: 1 });
-  if (!alarms.some((a) => a.name === 'probe')) chrome.alarms.create('probe', { delayInMinutes: 5, periodInMinutes: 60 });
+  if (!alarms.some((a) => a.name === 'probe' && a.periodInMinutes === 20)) chrome.alarms.create('probe', { delayInMinutes: 3, periodInMinutes: 20 });
   if (!alarms.some((a) => a.name === 'space')) chrome.alarms.create('space', { periodInMinutes: 30 });
 }
 
@@ -114,8 +117,18 @@ async function storeState(st, tab, frameId) {
   m.states++;
   m.routes[st.route] = perRoute + 1;
   for (const id of st.foreign?.ext || []) if (!m.ext.includes(id)) m.ext.push(id);
+  const size = JSON.stringify(st).length;
+  m.stateBytes = (m.stateBytes || 0) + size;
   touchMeta();
-  await DB.put('states', { sig: st.sig, route: st.route, top: st.top, frame: frameId || 0, first: st.t, last: st.t, count: 1, tabs: [tab], state: st });
+  let keep = st;
+  if (m.stateBytes > CAP.stateBytes) {
+    // the budget for full screens is used up: keep what the scanner recognised on this screen, without the elements
+    let best = {};
+    try { const c = R.classify(st); best = Object.fromEntries(Object.entries(c.roles).filter(([, l]) => l[0]).map(([k, l]) => [k, { score: l[0].score, css: l[0].css, xp: l[0].xp }])); best.flags = c.flags; } catch { /* ignore */ }
+    keep = { ...st, n: [], light: 1, best };
+    m.lightStates = (m.lightStates || 0) + 1;
+  }
+  await DB.put('states', { sig: st.sig, route: st.route, top: st.top, frame: frameId || 0, first: st.t, last: st.t, count: 1, tabs: [tab], size, state: keep });
 }
 
 /** Repeat views of known screens: only counters (kept in meta, merged into the screens in the report). */
@@ -231,6 +244,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 });
 chrome.tabs.onCreated.addListener(async (t) => { if (t.openerTabId != null && siteTabs.has(t.openerTabId)) await timeline({ ty: 'tab-opened-from-site', tab: await tabNo(t.openerTabId) }); });
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+  if (info.discarded && siteTabs.has(tabId)) { const scan = await getScan(); if (scan?.scanning) await incident('tab-discarded', { tab: await tabNo(tabId) }); } // Chrome's memory saver
   if (!info.url) return;
   const scan = await getScan();
   const site = ours(hostOf(info.url), scan);

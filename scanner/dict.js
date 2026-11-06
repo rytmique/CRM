@@ -35,6 +35,39 @@ want was we week welcome what when which who wink winks with woman women write w
 `;
   const DICT = new Set(WORDS.split(/\s+/).filter(Boolean));
 
+  // technical words of sites (routes, class-like values, file names): safe to keep, they say how the site is built
+  const TECH = new Set(`
+api v rest graphql gql ajax json xml html htm php asp aspx jsp js mjs css map svg png jpg jpeg gif webp ico woff woff2 ttf static assets asset public dist build
+bundle bundles chunk chunks vendor vendors main app apps web www m mobile desktop index home default page pages view views list lists item items detail details
+info data cdn media img image images photos photo pic pics upload uploads files file download downloads ws wss socket sockets io realtime live stream events
+event push sse poll polling notify notifications notification user users me my account accounts profile profiles member members man men woman women lady ladies
+girl girls operator operators agent agents agency desk dashboard panel admin cabinet office workspace inbox outbox mail mails mailbox letter letters message
+messages msg msgs chat chats dialog dialogs dialogue conversation conversations thread threads contact contacts room rooms search find filter filters sort feed
+feeds online new hot top recent favorites favourite favourites favorite likes like wink winks gift gifts present presents send sent read unread history translate
+translator translation lang language en uk ua ru de fr es it pl auth login logout signin signup register session oauth captcha verify settings config options
+prefs status state health ping metrics log logs track tracking analytics stats count counter counters balance credits credit pay payment payments billing shop
+store buy premium vip offer offers bonus id ids uid key keys type types kind mode tab tabs site demo test src lib libs node modules polyfill polyfills runtime
+webpack next nuxt react vue angular svelte jquery bootstrap tailwind material ui ux icon icons sprite sprites font fonts theme themes dark light small medium
+large xl xs sm md lg btn button buttons link links nav navbar menu menus header footer sidebar aside container wrapper wrap inner outer content body row rows
+col cols column columns grid flex box card cards modal modals popup popups overlay backdrop toast toasts alert alerts badge badges avatar avatars thumb thumbnail
+preview previews editor composer input inputs textarea field fields form forms label labels placeholder select option dropdown toggle switch active inactive
+selected disabled enabled visible hidden open closed show hide true false null undefined none auto left right center top bottom start end first last prev next
+primary secondary success warning danger error info muted text title subtitle name names date time ago min sec hour day week month year total number num
+online offline away busy typing attach attachment attachments video audio voice sticker stickers emoji smile camera gallery album albums story stories
+`.split(/\s+/).filter(Boolean));
+
+  /** One part of a value / URL segment: interface and technical words stay, numbers → #, anything else → ~hash (a username stays hidden but repeats are visible). */
+  const maskPart = (p) => {
+    if (!p) return p;
+    if (/^\d+$/.test(p)) return '#';
+    const l = p.toLowerCase();
+    if (DICT.has(l) || TECH.has(l) || (/^[a-z]{1,3}$/.test(l))) return p.replace(/\d+/g, '#');
+    if (/^[a-z]+\d+$/i.test(p) && TECH.has(p.replace(/\d+$/, '').toLowerCase())) return p.replace(/\d+/g, '#'); // v2, h1, col3
+    return `~${fnv(l).slice(0, 4)}`;
+  };
+  /** A token like "chat-item", "anna_k", "desk.html": split on - _ . : and mask each part. */
+  const maskToken = (s) => String(s).split(/([-_.:]+)/).map((p, i) => (i % 2 ? p : maskPart(p))).join('').slice(0, 80);
+
   const EMAIL = /[\w.+-]+@[\w-]+(\.[\w-]+)+/g;
   const URLRE = /\bhttps?:\/\/\S+|\bwww\.\S+/gi;
   const PHONE = /\+?\d[\d\s().-]{6,}\d/g;
@@ -64,12 +97,12 @@ want was we week welcome what when which who wink winks with woman women write w
     return { t, n, ell, ui };
   }
 
-  /** Attribute values: enum-like words stay, the rest is masked the same way as text. */
+  /** Attribute values: one token ("chat-item", "true", "anna_k") part by part; sentences like text. */
   function maskValue(v) {
     const s = String(v ?? '').trim();
     if (!s) return '';
-    if (/^[a-z][a-z_-]{0,30}$/.test(s)) return s; // e.g. "button", "chat-item", "true"
     if (/^\d+$/.test(s)) return '#';
+    if (/^[\p{L}\d][\p{L}\d_.:-]{0,60}$/u.test(s)) return maskToken(s);
     const m = maskText(s);
     return m ? m.t : '';
   }
@@ -109,8 +142,8 @@ want was we week welcome what when which who wink winks with woman women write w
     let d = p;
     try { d = decodeURIComponent(p); } catch { /* keep */ }
     if (token(d)) return '#';
-    if (/[@\s]/.test(d) || d.length > 40) return '[x]';
-    return d.replace(/\d+/g, '#');
+    if (/[@\s]/.test(d) || d.length > 60) return '[x]';
+    return maskToken(d);
   };
 
   /** URL → template: SITE/chat/#?tab — no IDs, no query values, no tokens. */
@@ -134,5 +167,5 @@ want was we week welcome what when which who wink winks with woman women write w
     return [out, fixes];
   }
 
-  self.__scanMask = { DICT, maskText, maskValue, maskName, maskHost, maskUrl, regDomain, scrub, len, fnv };
+  self.__scanMask = { DICT, TECH, maskText, maskValue, maskName, maskHost, maskUrl, maskToken, regDomain, scrub, len, fnv };
 })();

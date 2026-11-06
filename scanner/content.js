@@ -60,26 +60,68 @@
     return c.split(/\s+/).filter(Boolean).slice(0, 8).map(M.maskName);
   };
   const sig = (el) => `${el.tagName}.${cls(el).join('.')}`;
+  /**
+   * Key for "these siblings are the same kind of row": tag + base class (modifiers like "is-online" toggle all the time)
+   * + what tells buttons apart (label, title, role, type, an interface word) — so 📷 🎬 🎤 ➤ or tabs never merge into one group,
+   * while 400 chat rows with different names do.
+   */
+  function groupKey(el) {
+    const c = cls(el)[0] || '';
+    let k = `${el.tagName}.${c}`;
+    for (const a of ['role', 'aria-label', 'title', 'type', 'name', 'data-testid']) { const v = el.getAttribute(a); if (v) k += `|${a}=${v.slice(0, 30)}`; }
+    if (['BUTTON', 'A', 'LI', 'LABEL'].includes(el.tagName) || el.getAttribute('role') === 'tab') {
+      const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length <= 30) { const m = M.maskText(t); if (m?.ui) k += `|t=${m.t}`; }
+    }
+    return k;
+  }
   const extIds = new Set();
   const EXT_RE = /chrome-extension:\/\/([a-p]{32})/;
 
-  function isForeign(el) {
-    const parent = el.parentElement;
-    let ext = false;
-    for (const a of ['src', 'href', 'style']) {
-      const v = el.getAttribute?.(a);
-      const m = v && EXT_RE.exec(v);
-      if (m) { extIds.add(m[1]); ext = true; }
+  /**
+   * Elements put on the page by other extensions (another bot's panel): computed once per snapshot.
+   * Direct children of <html> (sites never put things there), elements loading chrome-extension:// files and their small
+   * injected containers, shadow hosts at the top that carry such files, fixed custom elements on top of everything.
+   */
+  const EXT_SEL = '[src^="chrome-extension://"],[href^="chrome-extension://"],[style*="chrome-extension://"]';
+  function foreignSet() {
+    const set = new Set();
+    const de = document.documentElement;
+    for (const ch of de.children) if (ch.tagName !== 'HEAD' && ch.tagName !== 'BODY') set.add(ch);
+    const note = (el) => { const m = EXT_RE.exec(el.getAttribute('src') || el.getAttribute('href') || el.getAttribute('style') || ''); if (m) extIds.add(m[1]); };
+    let found = 0;
+    for (const el of document.querySelectorAll(EXT_SEL)) {
+      if (++found > 200) break;
+      note(el);
+      // climb to the injected container while it stays small (never the site's own app)
+      let top = el;
+      for (let j = 0; j < 8 && top.parentElement && top.parentElement !== document.body && top.parentElement !== de; j++) {
+        const up = top.parentElement;
+        if (up.getElementsByTagName('*').length > 150) break;
+        top = up;
+      }
+      set.add(top);
     }
-    const inner = el.shadowRoot?.querySelector('[src^="chrome-extension://"],[href^="chrome-extension://"]') || (el.children.length < 200 ? el.querySelector?.('[src^="chrome-extension://"],[href^="chrome-extension://"]') : null);
-    if (inner) { const m = EXT_RE.exec(inner.getAttribute('src') || inner.getAttribute('href') || ''); if (m) { extIds.add(m[1]); ext = true; } }
-    if (ext) return true;
-    if (parent === document.documentElement && el.tagName !== 'BODY' && el.tagName !== 'HEAD') return true;
-    if (parent === document.body && el.tagName.includes('-')) {
-      const cs = getComputedStyle(el);
-      if (cs.position === 'fixed' && Number(cs.zIndex) >= 2147480000) return true;
+    const tops = [...de.children, ...(document.body ? document.body.children : [])].slice(0, 400);
+    for (const host of tops) {
+      if (host.shadowRoot) { const inner = host.shadowRoot.querySelector(EXT_SEL); if (inner) { note(inner); set.add(host); } }
+      if (host.parentElement === document.body && host.tagName.includes('-') && !set.has(host)) {
+        const cs = getComputedStyle(host);
+        if (cs.position === 'fixed' && Number(cs.zIndex) >= 2147480000) set.add(host);
+      }
     }
-    return false;
+    return set;
+  }
+
+  /** Up to `max` characters of visible text inside an element, without reading typing boxes; cheap on huge blocks. */
+  function textSample(el, max = 200) {
+    let s = '';
+    try {
+      const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: (t) => (t.parentElement?.isContentEditable ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT) });
+      let n = 0;
+      for (let t = w.nextNode(); t && s.length < max && n < 300; t = w.nextNode(), n++) s += ` ${t.data}`;
+    } catch { /* ignore */ }
+    return s.slice(0, max);
   }
 
   function ownText(el) {
@@ -97,6 +139,7 @@
     let styled = 0;
     let foreign = 0;
     const active = document.activeElement;
+    const foreignEls = foreignSet();
     const stack = [[document.documentElement, -1, 0, 1, 0]];
     while (stack.length) {
       const [el, p, d, k, rep] = stack.pop();
@@ -107,7 +150,7 @@
       if (k > 1) n.k = k;
       if (rep) n.rep = rep;
       const i = nodes.push(n) - 1;
-      if (isForeign(el)) { n.f = 1; foreign++; continue; }
+      if (foreignEls.has(el)) { n.f = 1; foreign++; continue; }
       const c = cls(el);
       if (c.length) n.c = c;
       if (el.id) n.id = M.maskName(el.id);
@@ -169,20 +212,21 @@
       // same-tag sibling index (for XPath) and repeated groups
       const byTag = new Map();
       const groups = new Map();
-      for (const ch of kids) groups.set(sig(ch), (groups.get(sig(ch)) || 0) + 1);
+      const keys = kids.map(groupKey);
+      for (const g of keys) groups.set(g, (groups.get(g) || 0) + 1);
       const kept = new Map();
       const push = [];
-      for (const ch of kids) {
-        if (SKIP.has(ch.tagName)) continue;
+      kids.forEach((ch, j) => {
+        if (SKIP.has(ch.tagName)) return;
         const kk = (byTag.get(ch.tagName) || 0) + 1;
         byTag.set(ch.tagName, kk);
-        const g = sig(ch);
+        const g = keys[j];
         const size = groups.get(g);
         const seen = (kept.get(g) || 0) + 1;
         kept.set(g, seen);
-        if (size > 3 && seen > 3) continue;
+        if (size > 6 && seen > 3) return; // long lists: 3 examples + how many there are
         push.push([ch, i, d + 1, kk, size >= 3 ? size : 0]);
-      }
+      });
       for (let j = push.length - 1; j >= 0; j--) stack.push(push[j]);
     }
     return { nodes, total, foreign, vw, vh };
@@ -198,7 +242,7 @@
       sx: Math.round(scrollX), sy: Math.round(scrollY), vis: document.visibilityState,
       n: res.nodes, total: res.total, ms, foreign: { count: res.foreign, ext: [...extIds] },
     };
-    s.sig = 's' + M.fnv(`${s.route}|${res.nodes.map((n) => `${n.d}${n.tg}${n.c ? `.${n.c.join('.')}` : ''}${n.rep ? '*' : ''}${n.v ? '' : '-'}${n.s?.includes('h') ? 'h' : ''}`).join(',')}`);
+    s.sig = 's' + M.fnv(`${s.route}|${res.nodes.map((n) => `${n.d}${n.tg}${n.c ? `.${n.c[0]}` : ''}${n.rep ? '*' : ''}${n.v ? '' : '-'}`).join(',')}`);
     return s;
   }
 
@@ -215,10 +259,14 @@
   let mutations = 0;
   let mutationsSinceSnap = 0;
 
+  let pendingSince = 0;
   function scheduleSnap(reason, delay = SNAP_DEBOUNCE) {
     if (!alive) return;
+    if (snapTimer && pendingSince && Date.now() - pendingSince > 2500) return; // the page never stops changing: let it fire
     clearTimeout(snapTimer);
+    if (!pendingSince) pendingSince = Date.now();
     snapTimer = setTimeout(() => {
+      snapTimer = null;
       const wait = lastSnap + SNAP_MIN_GAP - Date.now();
       if (wait > 0) { scheduleSnap(reason, wait); return; }
       const run = () => takeSnap(reason);
@@ -226,8 +274,20 @@
     }, delay);
   }
 
+  /** Right after an action: a look ~0.8 s later, whatever else happens (a menu or a window may close again in a few seconds). */
+  let urgentTimer = null;
+  function snapSoon(reason, ms = 800) {
+    if (!alive || urgentTimer) return;
+    urgentTimer = setTimeout(() => {
+      urgentTimer = null;
+      if (Date.now() - lastSnap < 700) return;
+      if ('requestIdleCallback' in window) requestIdleCallback(() => takeSnap(reason), { timeout: 600 }); else takeSnap(reason);
+    }, ms);
+  }
+
   function takeSnap(reason) {
     if (!alive || !cfg) return null;
+    pendingSince = 0;
     lastSnap = Date.now();
     mutationsSinceSnap = 0;
     let s;
@@ -257,8 +317,8 @@
     const m = Math.floor(Date.now() / 60000);
     if (m !== evMinute) { evMinute = m; evThisMinute = 0; }
     if (++evThisMinute > 900) { dropped++; return; }
-    e.t = Date.now();
-    e.r = route();
+    e.t ||= Date.now();
+    e.r ||= route();
     events.push(e);
     if (events.length >= 60) flushEvents();
   }
@@ -291,7 +351,7 @@
     if (role) d.r = role;
     for (const a of ['type', 'name', 'title', 'aria-label', 'placeholder']) { const v = el.getAttribute(a); if (v) (d.a ||= {})[a] = M.maskValue(v); }
     if (!['INPUT', 'TEXTAREA'].includes(el.tagName) && !el.isContentEditable) {
-      const m = M.maskText((el.innerText || el.textContent || '').slice(0, 300));
+      const m = M.maskText(textSample(el, 300));
       if (m) d.tx = m.t;
     }
     if (el.isContentEditable) d.ce = 1;
@@ -312,9 +372,11 @@
   // effects: what appears / disappears in the 2.5 s after an action
   let effect = null;
   function openEffect(ev) {
+    ev.t = Date.now();
+    ev.r = route();
     if (effect) closeEffect();
-    effect = { ev, t0: Date.now(), added: new Map(), removed: 0, attrs: new Map(), text: 0, counters: countersNow(), routeBefore: route() };
-    setTimeout(() => { if (effect && effect.ev === ev) closeEffect(); }, 2500);
+    effect = { ev, t0: Date.now(), first: 0, added: new Map(), texts: [], removed: 0, attrs: new Map(), text: 0, counters: countersNow(), routeBefore: route() };
+    setTimeout(() => { if (effect && effect.ev === ev) closeEffect(); }, 4000);
   }
   function closeEffect() {
     const e = effect;
@@ -324,10 +386,13 @@
     const counters = [];
     for (const [tpl, v] of Object.entries(after)) if (e.counters[tpl] !== undefined && e.counters[tpl] !== v) counters.push({ tpl, delta: v - e.counters[tpl] });
     e.ev.fx = {
+      firstMs: e.first ? e.first - e.t0 : undefined,
+      texts: e.texts.length ? e.texts : undefined,
       added: [...e.added.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
       removed: e.removed, attrs: [...e.attrs.entries()].slice(0, 10), text: e.text, counters,
       route: route() !== e.routeBefore ? route() : undefined,
     };
+    pushEvent(e.ev);
     scheduleSnap('after-action', 600);
   }
   /** Counters like "Left 12 messages": template → number (the number itself is a site counter, not personal). */
@@ -360,14 +425,14 @@
     const d = describe(e.target);
     const ev = { ty: 'click', tr: e.isTrusted ? 1 : 0, det: e.detail, btn: e.button, mv: moves.length,
       pd: lastDown.el && Date.now() - lastDown.t < 800 && (lastDown.el === e.target || lastDown.el?.contains?.(e.target)) ? 1 : 0, d };
-    pushEvent(ev);
     openEffect(ev);
+    snapSoon('click');
   }
   function onKey(e) {
     if (['Enter', 'Escape', 'Tab', 'NumpadEnter'].includes(e.key)) {
       const ev = { ty: 'key', k: e.key, tr: e.isTrusted ? 1 : 0, ctrl: e.ctrlKey ? 1 : 0, shift: e.shiftKey ? 1 : 0, meta: e.metaKey ? 1 : 0, d: describe(e.target) };
-      pushEvent(ev);
-      if (e.key !== 'Tab') openEffect(ev);
+      if (e.key === 'Tab') pushEvent(ev);
+      else { openEffect(ev); snapSoon('key'); }
     }
   }
   function onInput(e) {
@@ -394,18 +459,39 @@
     if (el?.type === 'file') pushEvent({ ty: 'file', tr: e.isTrusted ? 1 : 0, files: el.files?.length || 0, types: [...(el.files || [])].map((f) => f.type || '?').slice(0, 10), d: describe(el) });
     else if (el?.tagName === 'SELECT') pushEvent({ ty: 'select', tr: e.isTrusted ? 1 : 0, d: describe(el) });
   }
-  function onSubmit(e) { const ev = { ty: 'submit', tr: e.isTrusted ? 1 : 0, d: describe(e.target) }; pushEvent(ev); openEffect(ev); }
+  function onSubmit(e) { openEffect({ ty: 'submit', tr: e.isTrusted ? 1 : 0, d: describe(e.target) }); }
   function onPaste(e) { pushEvent({ ty: 'paste', tr: e.isTrusted ? 1 : 0, d: describe(e.target) }); }
   let scrolls = 0;
-  function onScroll() { scrolls++; }
+  const boxes = new Map();
+  function onScroll(e) {
+    scrolls++;
+    const el = e.target;
+    if (!el || el.nodeType !== 1) return;
+    const k = sig(el);
+    const now = Date.now();
+    if (now - (boxes.get(k) || 0) < 60000) return;
+    boxes.set(k, now);
+    const r = el.getBoundingClientRect();
+    pushEvent({ ty: 'scrollbox', tr: e.isTrusted ? 1 : 0, d: { tg: el.tagName.toLowerCase(), c: cls(el).slice(0, 5), b: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] },
+      sh: el.scrollHeight, ch: el.clientHeight, st: Math.round(el.scrollTop), end: el.scrollTop + el.clientHeight >= el.scrollHeight - 30 ? 1 : 0, kids: el.childElementCount });
+  }
 
   function onMutations(list) {
     mutations += list.length;
     mutationsSinceSnap += list.length;
     if (effect) {
+      if (!effect.first) effect.first = Date.now();
       for (const m of list) {
         if (m.type === 'childList') {
-          for (const nd of m.addedNodes) if (nd.nodeType === 1 && effect.added.size < 60) { const k = sig(nd).toLowerCase(); effect.added.set(k, (effect.added.get(k) || 0) + 1); }
+          for (const nd of m.addedNodes) {
+            if (nd.nodeType !== 1 || effect.added.size >= 60) continue;
+            const k = sig(nd).toLowerCase();
+            effect.added.set(k, (effect.added.get(k) || 0) + 1);
+            if (effect.texts.length < 8 && !nd.isContentEditable) {
+              const mt = M.maskText(textSample(nd, 120));
+              if (mt && mt.n <= 60 && !mt.t.startsWith('[текст') && !effect.texts.includes(mt.t)) effect.texts.push(mt.t); // short notices only
+            }
+          }
           effect.removed += m.removedNodes.length;
         } else if (m.type === 'attributes') {
           effect.attrs.set(m.attributeName, (effect.attrs.get(m.attributeName) || 0) + 1);
@@ -438,7 +524,7 @@
     listen(window, 'offline', () => send({ type: 'incident', kind: 'offline', top: TOP }));
     let jsErr = 0;
     listen(window, 'error', () => { if (jsErr++ < 20) pushEvent({ ty: 'jserr' }); });
-    listen(window, 'pagehide', () => { flushEvents(); flushSeen(); });
+    listen(window, 'pagehide', () => { closeEffect(); flushEvents(); flushSeen(); });
     const timers = [
       setInterval(() => { // SPA navigation without a page load
         if (location.href !== lastHref) {
@@ -461,13 +547,44 @@
     ];
     cleanups.push(() => timers.forEach(clearInterval));
     scheduleSnap('load', 1500);
+    setTimeout(pageInfo, 3000);
+  }
+
+  /** Facts about the page itself: framework hints, load timing, screen — nothing about people. */
+  function pageInfo() {
+    if (!alive) return;
+    try {
+      const q = (sel) => { try { return Boolean(document.querySelector(sel)); } catch { return false; } };
+      const fw = [];
+      if (q('[ng-version]')) fw.push('angular');
+      if (q('[data-reactroot]') || q('#__next') || q('#root')) fw.push('react?');
+      if (q('#__nuxt')) fw.push('nuxt');
+      if ([...document.querySelectorAll('body *')].slice(0, 400).some((el) => [...el.attributes].some((a) => a.name.startsWith('data-v-')))) fw.push('vue');
+      if (q('[class*="svelte-"]')) fw.push('svelte');
+      if (q('[class*="css-"]') || q('[class*="sc-"]')) fw.push('css-in-js');
+      if ([...document.querySelectorAll('[class]')].slice(0, 400).some((el) => /__[\w-]{4,}$/.test(String(el.className)))) fw.push('css-modules');
+      const nav = performance.getEntriesByType('navigation')[0];
+      const all = document.getElementsByTagName('*');
+      pushEvent({
+        ty: 'pageinfo', fw, top: TOP,
+        scripts: [...document.scripts].map((x) => (x.src ? M.maskUrl(x.src, cfg.siteDomains) : 'inline')).slice(0, 40),
+        nodes: all.length, iframes: document.getElementsByTagName('iframe').length, forms: document.forms.length,
+        custom: new Set([...all].slice(0, 20000).map((x) => x.tagName).filter((t) => t.includes('-'))).size,
+        shadow: [...all].slice(0, 20000).filter((x) => x.shadowRoot).length,
+        load: nav ? { dom: Math.round(nav.domContentLoadedEventEnd), full: Math.round(nav.loadEventEnd), type: nav.type } : undefined,
+        dpr: devicePixelRatio, vw: innerWidth, vh: innerHeight, sw: screen.width, sh: screen.height, lang: document.documentElement.lang || '',
+        charset: document.characterSet, mode: document.compatMode,
+      });
+    } catch (e) { send({ type: 'incident', kind: 'pageinfo-error', note: String(e?.message || e).slice(0, 80) }); }
   }
 
   function teardown() {
     if (!alive) return;
+    try { closeEffect(); flushEvents(); } catch { /* ignore */ }
     alive = false;
     for (const f of cleanups.splice(0)) { try { f(); } catch { /* ignore */ } }
     clearTimeout(snapTimer);
+    clearTimeout(urgentTimer);
   }
 
   // hourly probe from the background: a fresh look + what the scanner recognises right now
@@ -477,7 +594,12 @@
       const s = buildState('probe');
       const { roles, flags } = R.classify(s);
       const best = {};
-      for (const [role, list] of Object.entries(roles)) if (list[0]) best[role] = { score: list[0].score, css: list[0].css[0], n: list.length };
+      for (const [role, list] of Object.entries(roles)) {
+        if (!list[0]) continue;
+        let live = null;
+        try { live = document.querySelectorAll(list[0].css[0]).length; } catch { /* custom syntax */ }
+        best[role] = { score: list[0].score, css: list[0].css[0], live };
+      }
       reply({ route: s.route, vis: document.visibilityState, best, flags, nodes: s.total });
     } catch (e) {
       reply({ error: String(e?.message || e).slice(0, 120) });

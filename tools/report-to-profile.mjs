@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// Stage 2 helper: scanner report → a draft of the bot's site settings (SITE_FIELDS keys) + what to check by hand.
+// Usage: node tools/report-to-profile.mjs <report.zip | unzipped dir> [out.json]
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+const src = process.argv[2];
+if (!src) { console.error('usage: node tools/report-to-profile.mjs <report.zip | dir> [out.json]'); process.exit(1); }
+let dir = src;
+if (src.endsWith('.zip')) {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-rep-'));
+  execFileSync('unzip', ['-q', '-o', src, '-d', dir]);
+}
+const sum = JSON.parse(fs.readFileSync(path.join(dir, 'summary.json'), 'utf8'));
+
+// scanner role → bot setting
+const MAP = {
+  messageInput: 'messageInput', sendButton: 'sendButton', translateButton: 'translateButton', attach: 'attachButton', fileInput: 'fileInput',
+  letterButton: 'letterOpen', hintItem: 'taskItem', counter: 'chatLeft', herCurrent: 'herCurrent', herSwitch: 'herSwitch', searchInput: 'findInput',
+  chatHeader: 'chatName', chatItem: 'inboxItem', unreadMark: 'inboxUnread',
+};
+const config = {};
+const check = [];
+const conf = {};
+for (const [role, key] of Object.entries(MAP)) {
+  const list = sum.roles?.[role] || [];
+  const best = list[0];
+  if (!best) { check.push(`✗ ${key}: сканер не знайшов (${role})`); continue; }
+  // several candidates that are all good → join them (the bot takes the first visible)
+  const good = list.filter((c) => c.confidence >= Math.max(0.5, best.confidence - 0.15)).slice(0, 3).map((c) => c.css[0]);
+  config[key] = [...new Set(good)].join(', ');
+  conf[key] = best.confidence;
+  if (best.confidence < 0.7) check.push(`? ${key} = ${config[key]} — впевненість ${Math.round(best.confidence * 100)}%`);
+}
+// buttons the bot may press in scenarios
+config.actions = ['likeButton', 'favoriteButton', 'winkButton'].filter((r) => sum.roles?.[r]?.[0]?.confidence >= 0.5)
+  .map((r) => ({ key: r.replace('Button', ''), name: { likeButton: 'Лайк', favoriteButton: 'Обране', winkButton: 'Підморгнути' }[r], sel: sum.roles[r][0].css[0], where: 'page' }));
+// what the site shows after Send — candidate "sent" confirmations from the effects of clicks on the send button
+const sendCss = sum.roles?.sendButton?.[0]?.css?.[0] || '';
+const afterSend = (sum.actions || []).filter((a) => /send|надісл|➤/i.test(a.action) || (sendCss && a.action.includes(sendCss.split('[')[0])));
+const toasts = afterSend.flatMap((a) => a.effects.filter(([k]) => k.startsWith('«')).map(([k, n]) => [k, n]));
+if (toasts.length) check.push(`ℹ після «Надіслати» з’являється: ${toasts.slice(0, 5).map(([k]) => k).join(', ')} → кандидат для sentConfirm`);
+const sendReq = afterSend.flatMap((a) => a.requests).slice(0, 5);
+if (sendReq.length) check.push(`ℹ запити після «Надіслати»: ${sendReq.map(([r]) => r).join(' | ')}`);
+const counters = sum.texts?.counters || [];
+if (counters.length) check.push(`ℹ лічильники: ${counters.map(([t]) => t).join(' · ')}`);
+const prev = sum.texts?.ellipsisLengths || [];
+if (prev.length) check.push(`ℹ довжини обрізаних прев’ю: ${prev.slice(0, 10).map(([l, n]) => `${l}×${n}`).join(' ')}`);
+if (sum.flags?.captcha) check.push(`⚠ капча траплялась на ${sum.flags.captcha} екранах`);
+if (sum.bot?.syntheticClicks) check.push(`ℹ інший бот: ${sum.bot.syntheticClicks} програмних кліків; часті цілі: ${(sum.bot.topSyntheticTargets || []).slice(0, 3).map(([t]) => t).join(' | ')}`);
+
+const out = { from: path.basename(src), recorded: sum.scan, config, confidence: conf, check };
+const file = process.argv[3] || path.join(path.dirname(path.resolve(src)), 'site-profile.draft.json');
+fs.writeFileSync(file, JSON.stringify(out, null, 2));
+console.log(`draft → ${file}\n`);
+for (const [k, v] of Object.entries(config)) if (k !== 'actions') console.log(`  ${k.padEnd(16)} ${v}`);
+console.log(`  actions          ${config.actions.map((a) => `${a.name}=${a.sel}`).join(', ') || '—'}`);
+console.log(`\n${check.join('\n')}`);

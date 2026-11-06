@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="uk"><head><meta charset="utf-8"><title>Desk — heavy</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f1f5; }
+  .App_app__x1Y2z { display: grid; grid-template-columns: 300px 1fr 260px; grid-template-rows: 52px 1fr; height: 100vh; }
+  .Header_bar__aB3c4 { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; padding: 0 12px; background: #2b2230; color: #fff; }
+  .Tabs_tab__c7D8e { padding: 6px 10px; border-radius: 8px; cursor: pointer; } .Tabs_tab__c7D8e.Tabs_active__f9G0h { background: #c2255c; }
+  .ChatList_list__q9W8e { overflow: auto; background: #fff; }
+  .ChatList_row__k2L3m { display: flex; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; height: 44px; }
+  .ChatList_row__k2L3m * { pointer-events: none; }
+  .Avatar_img__z9Y8x { width: 36px; height: 36px; border-radius: 50%; background: #ddd; }
+  .ChatList_name__p0O9i { font-weight: 600; } .ChatList_last__r5T6y { color: #888; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+  .Badge_unread__a1S2d { background: #c2255c; color: #fff; border-radius: 9px; padding: 0 6px; font-size: 11px; }
+  .Online_dot__x1C2v { width: 8px; height: 8px; border-radius: 50%; background: #ccc; } .Online_on__b3N4m { background: #2b8a3e; }
+  .Chat_chat__m3N4b { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
+  .ChatHead_head__w5E6r { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: #fff; border-bottom: 1px solid #eee; }
+  .ChatHead_head__w5E6r > div { margin-right: auto; }
+  .Messages_list__o1P2a { overflow: auto; padding: 10px; display: grid; gap: 6px; align-content: start; }
+  .Message_bubble__s3D4f { background: #fff; border-radius: 10px; padding: 6px 10px; max-width: 70%; } .Message_mine__g5H6j { background: #fde4ee; justify-self: end; }
+  .Composer_box__k7L8z { display: grid; gap: 6px; padding: 8px 12px; background: #fff; border-top: 1px solid #eee; }
+  .Composer_input__e5R6t { min-height: 60px; border: 1px solid #ddd; border-radius: 8px; padding: 8px; }
+  .Composer_row__x9C0v { display: flex; gap: 6px; align-items: center; } .Composer_row__x9C0v .Counter_left__b1N2m { margin-right: auto; color: #888; }
+  .Icon_btn__q3W4e { width: 32px; height: 32px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+  .Hints_panel__h1J2k { overflow: auto; background: #2b2230; color: #fff; padding: 8px; }
+  .Hints_item__j3K4l { background: #3a2f40; border-radius: 10px; padding: 8px; margin-bottom: 8px; cursor: pointer; }
+  .Toast_wrap__t0Y9u { position: fixed; right: 20px; top: 70px; z-index: 50; }
+  .Toast_toast__r8T7y { background: #2b8a3e; color: #fff; padding: 8px 12px; border-radius: 8px; }
+  .Typing_dots__u6I5o { color: #888; font-size: 12px; } .Typing_hidden__y4T3r { visibility: hidden; }
+</style></head>
+<body>
+<div id="root"></div>
+<script>
+const FIRST = ['Michael', 'David', 'James', 'Robert', 'Steven', 'Andrew', 'Kevin', 'Brian', 'George', 'Edward', 'Patrick', 'Gregory'];
+const LAST = ['Brown', 'Wilson', 'Taylor', 'Anderson', 'Thompson', 'Harris', 'Clarke', 'Lewis'];
+const TEXTS = ['I really enjoyed our walk in Central Park yesterday, Anna, the weather was perfect', 'My daughter Emily starts school in Denver next week',
+  'Call me at the hotel, room number 1408, I will be there after nine', 'Do you still have that photo from the lake near Portland?'];
+const man = (i) => ({ id: String(700000000 + i * 7919), name: `${FIRST[i % FIRST.length]} ${LAST[(i * 3) % LAST.length]}`, age: 30 + (i % 30) });
+const el = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; for (const k of kids) e.append(k); return e; };
+const root = document.getElementById('root');
+const app = el('div', 'App_app__x1Y2z');
+root.append(app);
+
+// header: tabs, counters, a clock that never stops
+const clock = el('span', 'Header_clock__v2B3n', '00:00:00');
+const left = el('span', 'Counter_left__b1N2m', 'Залишилося 25 повідомлень');
+const header = el('header', 'Header_bar__aB3c4', el('b', 'Header_logo__n4M5q', '♥ Desk'));
+for (const [i, t] of ['Усі чати', 'Без відповіді', 'Улюблені', 'Діалоги', 'Листи'].entries()) {
+  const tab = el('div', `Tabs_tab__c7D8e${i === 0 ? ' Tabs_active__f9G0h' : ''}`, t);
+  tab.setAttribute('role', 'tab');
+  header.append(tab);
+}
+header.append(el('span', 'Header_her__p6O7i', 'Anna, 32 · ID 500001234'), clock);
+app.append(header);
+setInterval(() => { clock.textContent = new Date().toLocaleTimeString('uk-UA'); }, 200);
+
+// chat list: 400 rows, re-rendered on scroll like a virtual list, online dots flicker, rows move to the top
+const list = el('aside', 'ChatList_list__q9W8e');
+function row(i) {
+  const m = man(i);
+  const r = el('div', 'ChatList_row__k2L3m', el('img', 'Avatar_img__z9Y8x'), el('div', 'ChatList_text__d8F9g', el('div', 'ChatList_name__p0O9i', `${m.name}, ${m.age}`), el('div', 'ChatList_last__r5T6y', TEXTS[i % TEXTS.length])),
+    el('span', 'ChatList_time__u7I8o', `${(i % 59) + 1} хв`), i % 4 === 0 ? el('span', 'Badge_unread__a1S2d', String((i % 3) + 1)) : '', el('span', `Online_dot__x1C2v${i % 5 === 0 ? ' Online_on__b3N4m' : ''}`));
+  r.setAttribute('role', 'button');
+  r.dataset.chat = m.id;
+  r.dataset.user = m.name.toLowerCase().replace(' ', '_'); // usernames in attributes and links: must not reach the report
+  const a = document.createElement('a');
+  a.className = 'ChatList_link__l1K2j';
+  a.href = `/fx/profile/${m.name.replace(' ', '_')}?ref=${m.id}`;
+  a.textContent = '↗';
+  r.append(a);
+  r.addEventListener('click', () => openChat(i));
+  return r;
+}
+for (let i = 0; i < 400; i++) list.append(row(i));
+list.addEventListener('scroll', () => { // "virtual list": rows near the view are rebuilt
+  const first = Math.floor(list.scrollTop / 61);
+  for (let i = first; i < first + 12 && i < list.children.length; i++) list.children[i].replaceWith(row(i));
+});
+setInterval(() => { for (let k = 0; k < 5; k++) list.children[Math.floor(Math.random() * 60)]?.querySelector('.Online_dot__x1C2v')?.classList.toggle('Online_on__b3N4m'); }, 1000);
+setInterval(() => { const r = list.children[Math.floor(Math.random() * 50) + 5]; if (r) list.prepend(r); }, 30000);
+app.append(list);
+
+// the open chat
+const chat = el('main', 'Chat_chat__m3N4b');
+const headName = el('b', 'ChatHead_name__a7S8d', '');
+const headId = el('div', 'ChatHead_id__q1W2e', '');
+const btn = (label, icon) => { const b = el('button', 'Icon_btn__q3W4e', icon); b.setAttribute('aria-label', label); b.title = label; return b; };
+const head = el('div', 'ChatHead_head__w5E6r', el('div', '', headName, headId), btn('Like', '♡'), btn('Favorite', '★'), btn('Letter', '✉'));
+const msgs = el('div', 'Messages_list__o1P2a');
+const typing = el('div', 'Typing_dots__u6I5o Typing_hidden__y4T3r', 'друкує…');
+setInterval(() => typing.classList.toggle('Typing_hidden__y4T3r'), 700);
+const input = el('div', 'Composer_input__e5R6t');
+input.contentEditable = 'true';
+input.setAttribute('aria-label', 'Write a message');
+input.setAttribute('role', 'textbox');
+const picker = document.createElement('emoji-picker'); // the site's own web component
+picker.attachShadow({ mode: 'open' }).innerHTML = '<button class="ep-btn">😊</button>';
+const send = btn('Send', '➤');
+const toastWrap = el('div', 'Toast_wrap__t0Y9u');
+document.body.append(toastWrap);
+let leftN = 25;
+function sendNow() {
+  if (!input.textContent.trim()) return;
+  msgs.append(el('div', 'Message_bubble__s3D4f Message_mine__g5H6j', input.textContent));
+  input.textContent = '';
+  setTimeout(() => {
+    leftN--; left.textContent = `Залишилося ${leftN} повідомлень`;
+    const t = el('div', 'Toast_toast__r8T7y', 'Message sent');
+    toastWrap.append(t);
+    setTimeout(() => t.remove(), 1500);
+    fetch('/api/messages/send', { method: 'POST', body: '{}' }).catch(() => {});
+  }, 300);
+}
+send.addEventListener('click', sendNow);
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendNow(); } });
+const composer = el('div', 'Composer_box__k7L8z', typing, input,
+  el('div', 'Composer_row__x9C0v', left, btn('Photo', '📷'), btn('Video', '🎬'), btn('Audio', '🎤'), picker, el('button', 'Translate_btn__z5X6c', 'ПЕРЕКЛАСТИ'), send));
+chat.append(head, msgs, composer);
+app.append(chat);
+function openChat(i) {
+  const m = man(i);
+  headName.textContent = `${m.name}, ${m.age}`;
+  headId.textContent = `ID ${m.id}`;
+  msgs.replaceChildren(...Array.from({ length: 300 }, (_, k) => el('div', `Message_bubble__s3D4f${k % 3 === 0 ? ' Message_mine__g5H6j' : ''}`, `${TEXTS[(i + k) % TEXTS.length]} ${m.name}`)));
+}
+openChat(0);
+setInterval(() => msgs.append(el('div', 'Message_bubble__s3D4f', `${TEXTS[Math.floor(Math.random() * 4)]}`)), 20000);
+setInterval(() => { for (const t of list.querySelectorAll('.ChatList_time__u7I8o')) t.textContent = `${Math.floor(Math.random() * 59) + 1} хв`; }, 5000);
+
+// the site's hints panel
+const hints = el('section', 'Hints_panel__h1J2k');
+for (let i = 0; i < 10; i++) {
+  const m = man(400 + i);
+  const h = el('div', 'Hints_item__j3K4l', el('div', 'Hints_name__f5G6h', m.name), el('div', 'Hints_text__h7J8k', 'Please write him message'));
+  h.addEventListener('click', () => openChat(400 + i));
+  hints.append(h);
+}
+app.append(hints);
+</script>
+</body></html>

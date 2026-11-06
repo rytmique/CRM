@@ -6,7 +6,7 @@
   const KW = {
     msg: /messag|write|type a|typing|chat|msg|reply|compose|english|text|повідом|напиш|напис|сообщ|українськ|english|translat/i,
     notMsg: /search|find|пошук|поиск|знайти|найти|login|email|password|пароль|subject|тема|\bid\b/i,
-    send: /\bsend\b|submit|надісл|відправ|отправ|\bsent\b|➤|➢|✈/i,
+    send: /\bsend\b|submit|надіслати|надішліть|відправити|отправить|отправь|➤|➢|✈/i,
     translate: /translat|перекла|перевод|перевест/i,
     attach: /attach|clip|upload|\bphoto|\bimage|picture|\bvideo|\baudio|voice|camera|media|gallery|\bfile|фото|відео|видео|аудіо|аудио|скрепк|вклад|📎/i,
     letter: /letter|mail|envelope|лист|письм|✉/i,
@@ -70,12 +70,11 @@
     const own = [];
     if (n.id && !n.id.includes('#')) own.push(`#${cssEsc(n.id)}`);
     const cls = (n.c || []).filter((c) => !c.includes('#') && c.length < 40 && !/^(active|selected|open|show|hover|focus|on|is-|has-)/.test(c));
-    for (const a of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name', 'title', 'placeholder', 'role']) {
-      const v = n.a?.[a];
-      if (v && !/[#[\]]/.test(v) && v.length < 40) own.push(`${n.tg}[${a}="${v.replace(/"/g, '\\"')}"]`);
-    }
+    const attrSel = (a) => { const v = n.a?.[a]; return v && !/[#[\]~]/.test(v) && v.length < 40 ? `${n.tg}[${a}="${v.replace(/"/g, '\\"')}"]` : null; };
+    for (const a of ['data-testid', 'data-test', 'data-qa', 'aria-label', 'name', 'title', 'placeholder']) { const x = attrSel(a); if (x) own.push(x); }
     if (cls[0]) own.push(`${n.tg}.${cssEsc(cls[0])}`);
     if (cls[1]) own.push(`${n.tg}.${cssEsc(cls[0])}.${cssEsc(cls[1])}`);
+    { const x = attrSel('role'); if (x) own.push(x); }
     if (!own.length) own.push(n.tg);
     const p = n.p >= 0 ? nodes[n.p] : null;
     const pc = p && (p.c || []).find((c) => !c.includes('#'));
@@ -129,8 +128,8 @@
       if ((n.r === 'dialog' || n.a?.['aria-modal'] === 'true' || KW.modal.test(F.cls)) && vis && n.cs?.pos === 'fixed') { flags.modal = true; add('modal', i, 6, ['фіксоване вікно']); }
 
       // ---- buttons ----
-      if (isClickable(n) || n.tg === 'svg' || n.tg === 'i' || n.tg === 'span' || n.tg === 'div') {
-        const base = isClickable(n) ? 2 : 0;
+      if (isClickable(n) || n.cs?.cur || n.tg === 'svg' || n.tg === 'i') {
+        const base = isClickable(n) ? 2 : n.cs?.cur ? 1 : 0;
         const t = F.all;
         const btn = (role, re, label) => { if (re.test(t)) add(role, i, base + 4 + (vis ? 1 : 0) + (y > vh * 0.45 && role === 'sendButton' ? 1 : 0), [label]); };
         btn('sendButton', KW.send, 'слово «надіслати»');

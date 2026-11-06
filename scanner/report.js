@@ -41,7 +41,10 @@ async function zip(files) {
   const ddate = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
   for (const f of files) {
     const name = enc.encode(f.name);
-    const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
+    let raw = f.make ? await f.make() : f.data;
+    const data = typeof raw === 'string' ? enc.encode(raw) : raw;
+    raw = null;
+    if (f.onDone) f.onDone();
     const comp = await deflate(data);
     const crc = crc32(data);
     const h = new DataView(new ArrayBuffer(30));
@@ -92,6 +95,26 @@ function botAnalysis(events) {
     topSyntheticSequences: Object.entries(seq).sort((a, b) => b[1] - a[1]).slice(0, 15),
   };
 }
+const parts = (list, size) => { const out = []; for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size)); return out.length ? out : [[]]; };
+
+/** What the pages themselves say about the site: framework hints, size, load times (from the one-time page facts). */
+function pageFacts(events) {
+  const info = events.filter((e) => e.ty === 'pageinfo');
+  const fw = topN(info.flatMap((e) => e.fw || []), 10);
+  const byRoute = {};
+  for (const e of info) {
+    const r = (byRoute[e.r] ||= { n: 0, nodes: 0, maxNodes: 0, iframes: 0, shadow: 0, custom: 0, dom: [], scripts: new Set() });
+    r.n++; r.nodes += e.nodes; r.maxNodes = Math.max(r.maxNodes, e.nodes); r.iframes = Math.max(r.iframes, e.iframes); r.shadow = Math.max(r.shadow, e.shadow); r.custom = Math.max(r.custom, e.custom);
+    if (e.load?.dom) r.dom.push(e.load.dom);
+    for (const x of e.scripts || []) if (r.scripts.size < 30) r.scripts.add(x);
+  }
+  return {
+    frameworks: fw, screen: info[0] ? { dpr: info[0].dpr, vw: info[0].vw, vh: info[0].vh, sw: info[0].sw, sh: info[0].sh, lang: info[0].lang } : null,
+    routes: Object.entries(byRoute).map(([r, v]) => ({ route: r, loads: v.n, avgNodes: Math.round(v.nodes / v.n), maxNodes: v.maxNodes, iframes: v.iframes, shadow: v.shadow,
+      custom: v.custom, domReadyMs: median(v.dom), scripts: [...v.scripts] })).sort((a, b) => b.loads - a.loads).slice(0, 30),
+  };
+}
+
 function topN(list, n) { const m = {}; for (const x of list) m[x] = (m[x] || 0) + 1; return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, n); }
 
 /** Which requests follow which actions within 3 s (e.g. click «Send» → POST SITE/api/messages). */
@@ -111,10 +134,12 @@ function correlate(events, netlog) {
     if (e.tr) o.trusted++;
     for (const a of after) o.req[a] = (o.req[a] || 0) + 1;
     for (const [sig, c] of e.fx?.added || []) o.fx[`+${sig}`] = (o.fx[`+${sig}`] || 0) + c;
+    for (const t of e.fx?.texts || []) o.fx[`«${t}»`] = (o.fx[`«${t}»`] || 0) + 1;
+    if (e.fx?.firstMs !== undefined) (o.ms ||= []).push(e.fx.firstMs);
     for (const c of e.fx?.counters || []) o.fx[`${c.tpl} ${c.delta > 0 ? '+' : ''}${c.delta}`] = (o.fx[`${c.tpl} ${c.delta > 0 ? '+' : ''}${c.delta}`] || 0) + 1;
   }
   return Object.entries(out).sort((a, b) => b[1].n - a[1].n).slice(0, 80).map(([k, v]) => ({
-    action: k, n: v.n, trusted: v.trusted,
+    action: k, n: v.n, trusted: v.trusted, reactMs: v.ms ? median(v.ms) : undefined,
     requests: Object.entries(v.req).sort((a, b) => b[1] - a[1]).slice(0, 6),
     effects: Object.entries(v.fx).sort((a, b) => b[1] - a[1]).slice(0, 8),
   }));
@@ -194,6 +219,10 @@ async function build() {
     const meta = (await DB.get('meta', 'main').catch(() => null)) || {};
     const read = async (store) => { const out = []; await DB.each(store, (v) => out.push(v)).catch((e) => { out.error = String(e?.message || e); }); return out; };
     const [states, events, netlog, net, probes, incidents] = await Promise.all(['states', 'events', 'netlog', 'net', 'probes', 'incidents'].map(read));
+    events.sort((a, b) => a.t - b.t); // actions with an effect are stored a few seconds later
+    netlog.sort((a, b) => a.t - b.t);
+    // repeat views of known screens are counted separately (small) — add them to the screens
+    for (const st of states) { const c = meta.seen?.[st.sig]; if (c) { st.count += c[0]; st.last = Math.max(st.last, c[1]); } }
     s(`Прочитано: екранів ${states.length}, дій ${events.length}, запитів ${netlog.length}`);
 
     s = step('Розпізнаю, що де на сайті…');
@@ -201,10 +230,17 @@ async function build() {
     const flags = { captcha: 0, login: 0, modal: 0, foreign: 0 };
     for (const st of states) {
       try {
-        const c = R.classify(st.state);
-        st.roles = c.roles;
-        for (const k of Object.keys(flags)) if (c.flags[k]) flags[k] += 1;
-        classified.push({ roles: c.roles, route: st.route, count: st.count });
+        if (st.state.light) {
+          // stored without elements (the space budget was used up): roles were recognised when it was recorded
+          const { flags: f = {}, ...best } = st.state.best || {};
+          st.roles = Object.fromEntries(Object.entries(best).map(([k, v]) => [k, [{ ...v, tg: '?', why: [] }]]));
+          for (const k of Object.keys(flags)) if (f[k]) flags[k] += 1;
+        } else {
+          const c = R.classify(st.state);
+          st.roles = c.roles;
+          for (const k of Object.keys(flags)) if (c.flags[k]) flags[k] += 1;
+        }
+        classified.push({ roles: st.roles, route: st.route, count: st.count });
       } catch (e) { st.roleError = String(e?.message || e).slice(0, 80); }
     }
     const roles = R.aggregate(classified);
@@ -224,7 +260,8 @@ async function build() {
         stillRecording: Boolean(scan.scanning),
       },
       counts: { states: states.length, events: events.length, netlog: netlog.length, net: net.length, probes: probes.length, incidents: incidents.length,
-        statesOverCap: meta.overflow || 0, eventsDropped: meta.dropped || 0, eventsTrimmed: meta.eventsTrimmed || 0, storageFull: Boolean(meta.full) },
+        statesOverCap: meta.overflow || 0, statesLight: meta.lightStates || 0, stateMB: Math.round((meta.stateBytes || 0) / 1e6),
+        eventsDropped: meta.dropped || 0, eventsTrimmed: meta.eventsTrimmed || 0, storageFull: Boolean(meta.full), storageMB: meta.usage ? Math.round(meta.usage / 1e6) : null },
       roles, flags, otherExtensions: meta.ext || [],
       routes: Object.entries(routes).sort((a, b) => b[1] - a[1]),
       transitions,
@@ -233,7 +270,10 @@ async function build() {
       actions: correlate(events, netlog),
       texts: textStats(states),
       incidents: topN(incidents.map((i) => i.kind), 40),
-      probes: probes.slice(-48),
+      probes: probes.slice(-80),
+      pages: pageFacts(events),
+      scrollBoxes: topN(events.filter((e) => e.ty === 'scrollbox').map((e) => `${descKey(e.d)} end=${e.end} kids=${e.kids > 50 ? '50+' : e.kids}`), 30),
+      toasts: topN(events.flatMap((e) => e.fx?.texts || []), 60),
       readErrors: Object.fromEntries([['states', states], ['events', events], ['netlog', netlog]].filter(([, l]) => l.error).map(([k, l]) => [k, l.error])),
     };
     s('Аналіз готовий');
@@ -248,18 +288,18 @@ async function build() {
       { name: 'ПРОЧИТАЙ.txt', data: README },
       { name: 'summary.json', data: JSON.stringify(clean(sum), null, 1) },
       { name: 'summary.html', data: htmlSummary(clean(sum)) },
-      { name: 'states.jsonl', data: jsonl(states.map(({ roles: r, ...x }) => ({ ...x, best: Object.fromEntries(Object.entries(r || {}).filter(([, l]) => l[0]).map(([k, l]) => [k, { i: l[0].i, score: l[0].score, css: l[0].css, xp: l[0].xp }])) }))) },
-      { name: 'events.jsonl', data: jsonl(events) },
+      ...parts(states, 60).map((list, i) => ({ name: `states/part-${String(i + 1).padStart(2, '0')}.jsonl`,
+        make: () => jsonl(list.map(({ roles: r, ...x }) => ({ ...x, best: Object.fromEntries(Object.entries(r || {}).filter(([, l]) => l[0]).map(([k, l]) => [k, { i: l[0].i, score: l[0].score, css: l[0].css, xp: l[0].xp }])) }))) })),
+      ...parts(events, 25000).map((list, i) => ({ name: `events/part-${String(i + 1).padStart(2, '0')}.jsonl`, make: () => jsonl(list) })),
       { name: 'network.json', data: JSON.stringify(clean(net), null, 1) },
-      { name: 'network-log.jsonl', data: jsonl(netlog.slice(-40000)) },
+      { name: 'network-log.jsonl', make: () => jsonl([...netlog.slice(0, 10000), ...netlog.slice(Math.max(10000, netlog.length - 40000))]) },
       { name: 'incidents.json', data: JSON.stringify(clean(incidents), null, 1) },
       { name: 'probes.json', data: JSON.stringify(clean(probes), null, 1) },
       ...svgs, // texts inside are cleaned one by one (the svg itself has a w3.org namespace URL that must stay)
     ];
-    s(fixes ? `Перевірено: додатково приховано ${fixes} підозрілих фрагментів` : 'Перевірено: особистих даних не знайдено');
-
-    s = step('Пакую архів…');
+    s = step('Пакую архів (і перевіряю кожен файл)…');
     const blob = await zip(files);
+    step(fixes ? `Перевірено: додатково приховано ${fixes} підозрілих фрагментів` : 'Перевірено: особистих даних не знайдено', 'ok');
     const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{4})$/, '$1-$2');
     const name = `scan-report-${stamp}.zip`;
     const url = URL.createObjectURL(blob);
@@ -290,8 +330,8 @@ const README = `ЗВІТ СКАНЕРА САЙТУ
 Файли:
   summary.html      — короткий огляд (відкрити в браузері)
   summary.json      — те саме для розробника
-  states.jsonl      — кожен унікальний екран: елементи, класи, атрибути, розміри, стани, ролі
-  events.jsonl      — дії (клік / Enter / набір / файл), без текстів; tr=1 — людина, tr=0 — програмно
+  states/*.jsonl    — кожен унікальний екран: елементи, класи, атрибути, розміри, стани, ролі
+  events/*.jsonl    — дії (клік / Enter / набір / файл / прокрутка), без текстів; tr=1 — людина, tr=0 — програмно
   network.json      — шаблони запитів сайту (без вмісту), коди, час
   network-log.jsonl — останні запити по часу
   incidents.json    — сон, розлогін, капча, закриття вкладок, інтернет
@@ -302,4 +342,4 @@ const README = `ЗВІТ СКАНЕРА САЙТУ
 `;
 
 $('go').addEventListener('click', build);
-build();
+if (!location.search.includes('wait')) build();

@@ -244,14 +244,17 @@ try {
 
   const files = fs.readdirSync(dir, { recursive: true }).filter((f) => fs.statSync(path.join(dir, f)).isFile());
   for (const f of files.filter((x) => x.endsWith('.svg'))) if (!fs.readFileSync(path.join(dir, f), 'utf8').startsWith('<svg xmlns="http://www.w3.org/2000/svg"')) fail(`broken svg ${f}`);
-  for (const need of ['summary.json', 'summary.html', 'states.jsonl', 'events.jsonl', 'network.json', 'incidents.json', 'probes.json']) if (!files.includes(need)) fail(`no ${need} in the report`);
+  for (const need of ['summary.json', 'summary.html', 'network.json', 'incidents.json', 'probes.json']) if (!files.includes(need)) fail(`no ${need} in the report`);
+  const readParts = (prefix) => files.filter((f) => f.startsWith(prefix) && f.endsWith('.jsonl')).sort()
+    .flatMap((f) => fs.readFileSync(path.join(dir, f), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+  if (!files.some((f) => f.startsWith('states/part-')) || !files.some((f) => f.startsWith('events/part-'))) fail(`no states / events parts: ${files.join(' ')}`);
   if (!files.some((f) => f.startsWith('screens') && f.endsWith('.svg'))) fail('no screen schemes in the report');
 
   // ---------- 9. nothing personal inside ----------
   const all = files.map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
   const SECRETS = ['Michael', 'David', 'Robert', 'Thomas', 'Third private', 'Kate', 'Maria', 'Olha', 'Lviv', 'Hello my dear', 'Private subject', 'secret-photo', 'Second private',
     '100037', '100074', '5000000001', '5000000002', '123456', '777888', 'localhost', '127.0.0.1', `:${PORT}`, 'Hello there my friend'];
-  const leaks = SECRETS.filter((s) => all.includes(s));
+  const leaks = SECRETS.filter((x) => (/^\d+$/.test(x) ? new RegExp(`(?<!\\d)${x}(?!\\d)`).test(all) : all.includes(x))); // numbers: not inside timestamps
   if (leaks.length) fail(`personal data in the report: ${leaks.join(', ')}`);
   log('privacy: none of the names, texts, IDs, file names or the site address are in the report');
 
@@ -268,10 +271,10 @@ try {
   if (!(sum.bot.syntheticClicks > 10 && sum.bot.trustedClicks > 5)) fail(`bot analysis: ${JSON.stringify(sum.bot).slice(0, 300)}`);
   const kinds = new Map(sum.incidents);
   for (const k of ['start', 'offline', 'online', 'tab-closed']) if (!kinds.has(k)) fail(`incident "${k}" missing: ${JSON.stringify(sum.incidents)}`);
-  const states = fs.readFileSync(path.join(dir, 'states.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const states = readParts('states/');
   if (!states.some((s) => !s.top)) fail('the iframe from another host was not recorded');
   if (!states.some((s) => s.route.startsWith('SITE/demo-site/desk.html'))) fail(`routes: ${[...new Set(states.map((s) => s.route))].join(' ')}`);
-  const ev = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const ev = readParts('events/');
   if (!ev.some((e) => e.ty === 'file' && e.files === 1 && e.types[0] === 'image/png')) fail('the attached photo (count + type) was not recorded');
   if (!ev.some((e) => e.ty === 'type' && e.tr === 1 && e.len > 20)) fail('trusted typing (length only) was not recorded');
   if (!ev.some((e) => e.ty === 'click' && e.fx)) fail('no "what changed after the click"');
