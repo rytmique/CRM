@@ -193,12 +193,14 @@ export default async function profilesPage(main, { user }) {
     const mediaCard = (f) => {
       const thumb = h('div.media-thumb', f.type.startsWith('image/') ? '🖼' : f.type.startsWith('video/') ? '🎬' : f.type.startsWith('audio/') ? '🎵' : '📄');
       if (f.type.startsWith('image/')) blobUrl(`/api/profiles/${p.id}/media/${f.id}/file`).then((u) => thumb.replaceChildren(h('img', { src: u, alt: '' }))).catch(() => {});
-      const boxes = Array.from({ length: Math.max(stepCount, ...f.steps) }, (_, i) => i + 1).map((n) => h('label.check.small',
+      const CHANCE = 300; // the photos of «Шанс» letters
+      const box = (n, label) => h('label.check.small',
         h('input', { type: 'checkbox', checked: f.steps.includes(n), onchange: safe(async (e) => {
           const next = e.target.checked ? [...new Set([...f.steps, n])] : f.steps.filter((x) => x !== n);
           await patch(`/api/profiles/${p.id}/media/${f.id}`, { steps: next });
           f.steps = next;
-        }) }), `крок ${n}`));
+        }) }), label);
+      const boxes = [box(CHANCE, '🎯 Шанс'), ...Array.from({ length: Math.max(stepCount, ...f.steps.filter((n) => n <= 50)) }, (_, i) => i + 1).map((n) => box(n, `крок ${n}`))];
       return h('div.media-card', thumb,
         h('div.media-info', h('b.clamp', { title: f.name }, f.name), h('span.small.muted', fmtSize(f.size)),
           h('div.row-wrap', boxes),
@@ -219,7 +221,7 @@ export default async function profilesPage(main, { user }) {
     }).catch(() => reopen()));
     const filesSection = h('section',
       h('h3', '📎 Файли до повідомлень'),
-      h('p.small.muted', 'Фото чи відео, які бот сам прикріплює до повідомлень. Позначте, на якому кроці сценарію надсилати файл. У сценарії можна вибрати «усі» або «один випадковий». До 15 МБ, до 30 файлів.'),
+      h('p.small.muted', 'Фото, які бот сам прикріплює. «🎯 Шанс» — до листа-інвайту в «Шансі» (якщо жодне не позначене — береться фото кроку 1). До 15 МБ, до 30 файлів.'),
       media.length ? h('div.media-grid', media.map(mediaCard)) : null,
       h('div.row-wrap', addFiles, picker));
 

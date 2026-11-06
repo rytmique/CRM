@@ -18,6 +18,10 @@ import adminAgency from './pages/admin-agency.js';
 import adminRegistrations from './pages/admin-registrations.js';
 import adminDevices from './pages/admin-devices.js';
 import prompts from './pages/prompts.js';
+import bot from './pages/bot.js';
+import stats from './pages/stats.js';
+import basicSettings from './pages/basic-settings.js';
+import adminPlatform from './pages/admin-platform.js';
 import { renderJoin } from './pages/join.js';
 import { downloadBot } from './pages/extension.js';
 import { get } from './api.js';
@@ -36,6 +40,8 @@ const ICONS = {
   shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
   theme: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/>',
   logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"/>',
+  bot: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4M9 12h.01M15 12h.01M9 16h6"/><circle cx="12" cy="3.5" r="1"/>',
+  stats: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
 };
 function icon(name) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -48,28 +54,34 @@ function icon(name) {
 
 // [key, label, icon, page, { hidden: not in the menu but opens by link, parent: menu item to highlight }]
 const NAV = {
+  // only what matters every day; the rest opens by links from «Налаштування» / «Статистика»
   owner: [
-    ['dashboard', 'Головна', 'dashboard', dashboard],
-    ['team', 'Команда', 'operators', operators],
+    ['bot', 'Бот', 'bot', bot],
+    ['stats', 'Статистика', 'stats', stats],
     ['profiles', 'Анкети', 'profiles', profiles],
-    ['prompts', 'Промпти', 'prompts', prompts],
-    ['journal', 'Журнал', 'journal', journal],
+    ['team', 'Команда', 'operators', operators],
     ['billing', 'Оплата за бота', 'licenses', billing],
-    ['sites', 'Сайти', 'sites', sites],
-    ['settings', 'Налаштування', 'settings', settings],
+    ['settings', 'Налаштування', 'settings', basicSettings],
+    ['dashboard', 'Статистика по днях', 'dashboard', dashboard, { hidden: true, parent: 'stats' }],
+    ['journal', 'Журнал', 'journal', journal, { hidden: true, parent: 'stats' }],
+    ['prompts', 'Промпти', 'prompts', prompts, { hidden: true, parent: 'settings' }],
+    ['sites', 'Сайти', 'sites', sites, { hidden: true, parent: 'settings' }],
+    ['settings-advanced', 'Розширені налаштування', 'settings', settings, { hidden: true, parent: 'settings' }],
     ['operators', 'Команда', 'operators', operators, { hidden: true, parent: 'team' }],
-    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'dashboard' }],
-    ['extension', 'Бот', 'extension', extension, { hidden: true, parent: 'dashboard' }],
+    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'bot' }],
+    ['extension', 'Бот-розширення', 'extension', extension, { hidden: true, parent: 'bot' }],
   ],
   operator: [
-    ['dashboard', 'Головна', 'dashboard', dashboard],
+    ['bot', 'Бот', 'bot', bot],
+    ['stats', 'Статистика', 'stats', stats],
     ['profiles', 'Мої анкети', 'profiles', profiles],
     ['prompts', 'Мій промпт', 'prompts', prompts],
-    ['journal', 'Журнал', 'journal', journal],
     ['billing', 'Мій заробіток', 'licenses', billing],
-    ['sites', 'Сайти', 'sites', sites],
-    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'dashboard' }],
-    ['extension', 'Бот', 'extension', extension, { hidden: true, parent: 'dashboard' }],
+    ['dashboard', 'Статистика по днях', 'dashboard', dashboard, { hidden: true, parent: 'stats' }],
+    ['journal', 'Журнал', 'journal', journal, { hidden: true, parent: 'stats' }],
+    ['sites', 'Сайти', 'sites', sites, { hidden: true, parent: 'bot' }],
+    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'bot' }],
+    ['extension', 'Бот-розширення', 'extension', extension, { hidden: true, parent: 'bot' }],
   ],
   admin: [
     ['overview', 'Огляд', 'dashboard', adminOverview],
@@ -79,6 +91,7 @@ const NAV = {
     ['admin-licenses', 'Ліцензії (старі)', 'licenses', adminLicenses, { hidden: true, parent: 'agencies' }],
     ['admin-billing', 'Оплата за бота', 'licenses', adminBilling],
     ['memory', 'Пам’ять ШІ', 'settings', adminMemory],
+    ['platform', 'Telegram і функції', 'bot', adminPlatform],
     ['agency', 'Команда', 'agencies', adminAgency, { hidden: true, parent: 'agencies' }],
   ],
 };

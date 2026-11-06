@@ -702,16 +702,16 @@ try {
 
   // ---------- dashboard after the run (light, dark, mobile) ----------
   await page.bringToFront();
-  await page.click('a[href="#/dashboard"]');
+  await goHash(page, 'dashboard'); // «Статистика по днях» opens from «Статистика»
   await page.waitForSelector('.chart-svg');
   await sleep(300);
   await page.screenshot({ path: path.join(OUT, '01-dashboard.png'), fullPage: true });
-  await page.click('a[href="#/journal"]');
+  await goHash(page, 'journal');
   await page.waitForSelector('.page-head h1');
   await sleep(300);
   await page.screenshot({ path: path.join(OUT, '12-journal.png'), fullPage: true });
   await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-  await page.click('a[href="#/dashboard"]');
+  await goHash(page, 'dashboard'); // «Статистика по днях» opens from «Статистика»
   await page.waitForSelector('.chart-svg');
   await sleep(300);
   await page.screenshot({ path: path.join(OUT, '13-dashboard-dark.png'), fullPage: true });
@@ -733,7 +733,7 @@ try {
   await sleep(300);
   await page.screenshot({ path: path.join(OUT, '25-setup.png'), fullPage: true });
   log('setup wizard ok: all 6 steps ticked by themselves');
-  await page.click('a[href="#/sites"]');
+  await goHash(page, 'sites');
   await page.waitForSelector('.site-card');
   await page.screenshot({ path: path.join(OUT, '19-sites.png'), fullPage: true });
   await page.locator('.site-card', { hasText: 'Навчений кліками' }).getByText('⚙ Сценарій').click();
