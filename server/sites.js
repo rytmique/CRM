@@ -34,6 +34,19 @@ export const SITE_FIELDS = [
   { key: 'taskText', group: 'Підказки сайту', label: 'Текст підказки', hint: 'Є «letter» / «лист» — бот пише листом, інакше в чат' },
   { key: 'taskId', group: 'Підказки сайту', label: 'ID у підказці', hint: 'Необов’язково: якщо немає — бот візьме ID з шапки чату' },
   { key: 'taskOpen', group: 'Підказки сайту', label: 'Що клікнути в підказці', hint: 'Порожньо — саму підказку' },
+  { key: 'chanceTab', group: 'Нічна зміна', label: 'Вкладка «Шанс»', hint: 'Де сайт показує чоловіків, яким можна написати першою (трафік)' },
+  { key: 'chanceItem', group: 'Нічна зміна', label: 'Чоловік у «Шансі» (один)', hint: 'Один рядок списку. Клік відкриває його чат' },
+  { key: 'chanceName', group: 'Нічна зміна', label: 'Ім’я в «Шансі»', hint: '.name (вік береться з тексту)' },
+  { key: 'chanceId', group: 'Нічна зміна', label: 'ID у «Шансі»', hint: 'Необов’язково: немає — бот візьме ID з шапки чату' },
+  { key: 'chanceOnline', group: 'Нічна зміна', label: 'Позначка «онлайн» у рядку', hint: 'Зелена крапка тощо. Без неї бот вважає всіх онлайн' },
+  { key: 'allchatTab', group: 'Нічна зміна', label: 'Вкладка «Усі чати» (Аллчат)', hint: 'Постійні діалоги' },
+  { key: 'allchatItem', group: 'Нічна зміна', label: 'Діалог в «Усіх чатах» (один)', hint: 'Клік відкриває чат' },
+  { key: 'allchatName', group: 'Нічна зміна', label: 'Ім’я в діалозі', hint: '.name' },
+  { key: 'allchatId', group: 'Нічна зміна', label: 'ID у діалозі', hint: 'Необов’язково: немає — з шапки чату' },
+  { key: 'allchatMine', group: 'Нічна зміна', label: 'Ознака «останнє повідомлення моє»', hint: 'Напр. .last:has-text("You:"). Якщо в рядку видно, що останнім писав він, — бот чат не відкриває' },
+  { key: 'allchatUnread', group: 'Нічна зміна', label: 'Ознака непрочитаного в діалозі', hint: 'Такі чати бот не відкриває (щоб оператор не пропустив відповідь)' },
+  { key: 'msgItem', group: 'Нічна зміна', label: 'Повідомлення у відкритому чаті', hint: 'Одне повідомлення історії: бот читає останні, щоб писати на тему розмови' },
+  { key: 'msgMine', group: 'Нічна зміна', label: 'Ознака мого повідомлення', hint: 'Клас / селектор, яким сайт позначає її повідомлення (напр. .mine)' },
   { key: 'herCurrent', group: 'Анкети', label: 'Яка анкета зараз (ім’я / ID жінки)', hint: 'Де на сайті видно, від чийого імені зараз працює оператор. Бот звіряє перед роботою' },
   { key: 'herSwitch', group: 'Анкети', label: 'Перемикач анкет (відкрити список жінок)', hint: 'Кнопка або меню, що показує список жінок. Не потрібен, якщо список видно завжди' },
   { key: 'herItem', group: 'Анкети', label: 'Жінка в списку (одна)', hint: 'Один рядок списку жінок — бот клікне потрібну за ID або ім’ям' },
@@ -96,14 +109,14 @@ export function sanitizeSiteConfig(input = {}) {
  */
 export function siteReady(c = {}) {
   if (!c.messageInput) return false;
-  return Boolean(c.taskItem || (c.card && (c.cardId || c.chatId)));
+  return Boolean(c.taskItem || c.chanceItem || c.allchatItem || (c.card && (c.cardId || c.chatId)));
 }
 
 /** What is still missing, in the words of the teaching panel. */
 export function siteMissing(c = {}) {
   const label = (k) => SITE_FIELDS.find((f) => f.key === k)?.label || k;
   const out = [];
-  if (!c.taskItem && !c.card) out.push(`${label('card')} або ${label('taskItem')}`);
+  if (!c.taskItem && !c.card && !c.chanceItem && !c.allchatItem) out.push(`${label('card')} або ${label('taskItem')}`);
   if (c.card && !c.cardId && !c.chatId && !c.taskItem) out.push(label('cardId'));
   if (!c.messageInput) out.push(label('messageInput'));
   return out;
@@ -122,6 +135,24 @@ export function deskSiteConfig(publicUrl) {
     chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs', translateButton: '.btn-translate',
     letterOpen: '.btn-letter', letterSubject: '.letter-subject', letterLeft: '.left-letters',
     findInput: '.find-id', inboxUrl: `${base}/desk.html`, inboxItem: '.chat-item', inboxUnread: '.ci-unread', inboxName: '.ci-name', inboxText: '.ci-last',
+    actions: [{ key: 'like', name: 'Лайк', sel: '.btn-like', where: 'page' }],
+    marks: [],
+  };
+}
+
+/** The demo «night shift» desk (demo-site/shift.html): «Шанс», «Усі чати», letters with photos, a translator. */
+export function shiftSiteConfig(publicUrl) {
+  const base = `${publicUrl.replace(/\/$/, '')}/demo-site`;
+  return {
+    searchUrl: `${base}/shift.html`,
+    chanceTab: '.tab-chance', chanceItem: '.chance-item', chanceName: '.c-name', chanceOnline: '.online-dot',
+    allchatTab: '.tab-all', allchatItem: '.chat-row', allchatName: '.r-name', allchatMine: '.r-last:has-text("You:")', allchatUnread: '.unread',
+    msgItem: '.msgs .msg', msgMine: '.mine',
+    messageInput: '.tr-dst', sendButton: '.btn-send', sentConfirm: '.chat .sent-ok', sendError: '.chat .send-error',
+    chatName: '.ch-name', chatId: '.ch-id', chatLeft: '.left-msgs', translateButton: '.btn-translate',
+    letterOpen: '.btn-letter', letterSubject: '.letter-subject', letterLeft: '.left-letters',
+    attachButton: '.btn-attach', fileInput: '.file-input', attachDone: '.att-preview',
+    inboxUrl: `${base}/shift.html#all`, inboxItem: '.chat-row', inboxUnread: '.unread', inboxName: '.r-name', inboxText: '.r-last',
     actions: [{ key: 'like', name: 'Лайк', sel: '.btn-like', where: 'page' }],
     marks: [],
   };

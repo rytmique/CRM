@@ -813,6 +813,174 @@ async function processTasks(ctx) {
   return done;
 }
 
+// ---------------- the night shift: «Шанс» every N minutes, «Аллчат» a few times a night ----------------
+/** The shift a moment belongs to (its start date): a night 20:00–06:00 is one night across midnight — as the server counts it. */
+function nightKey(human, tz) {
+  const t = tzNow(tz);
+  const from = Number(human.hoursFrom ?? 0);
+  const to = Number(human.hoursTo ?? 0);
+  const back = (from === to && t.h < 6) || (from > to && t.h < to);
+  if (!back) return t.day;
+  const d = new Date(`${t.day}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** The next «Аллчат» pass: the passes left tonight spread over the working time left (never closer than the gap). */
+function nextAllchatAt(ctx, ac) {
+  const left = Math.max(1, ac.perNight - ctx.allchatPasses);
+  const gap = Math.max(ac.gapHours * 3600000, msToWindowEnd(ctx.human, ctx.timezone) / (left + 0.5));
+  return Date.now() + gap * rand(0.85, 1.1);
+}
+
+/** A pass is over: the server stores it and sends the mini report to Telegram. */
+async function finishPass(ctx, mode, t0, res) {
+  const title = mode === 'chance' ? '🎯 Шанс' : '💬 Аллчат';
+  await log(`${title}: готово — ${mode === 'chance' ? 'листів' : 'повідомлень'} ${res.sent}${res.failed ? `, помилок ${res.failed}` : ''}${res.seen ? ` (переглянуто ${res.seen})` : ''}`);
+  await api(`/api/bot/profiles/${ctx.profileId}/pass`, { method: 'POST', body: { mode, startedAt: t0, ...res } }).catch(() => null);
+  return res;
+}
+
+/** «Шанс»: every man online there gets her invite letter with the photo — once (the server remembers who got it). */
+async function chancePass(ctx) {
+  const { tabId, site, profileId, cfg } = ctx;
+  const t0 = Date.now();
+  const res = { seen: 0, sent: 0, failed: 0, skipped: 0, info: { contacted: 0, offline: 0 } };
+  await setState({ message: '🎯 Шанс: відкриваю список' });
+  const o = await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch((e) => ({ ok: false, error: e.message }));
+  if (!o?.ok) { await log(`🎯 Шанс: ${o?.error || 'вкладка не відкрилась'}`, 'warn'); res.failed = 1; res.info.error = o?.error; return finishPass(ctx, 'chance', t0, res); }
+  const list = (await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || [];
+  const todo = cfg.modes.chance.onlineOnly ? list.filter((x) => x.online !== false) : list;
+  res.info.offline = list.length - todo.length;
+  res.seen = todo.length;
+  await log(`🎯 Шанс: у списку ${list.length}, онлайн ${todo.length}`);
+  ctx.chanceDone ||= new Set(); // men this run already looked at (so the next pass does not open them again)
+  for (const item of todo) {
+    if (stopRequested || ctx.limitReached) break;
+    await waitWorkingHours(ctx);
+    if (stopRequested) break;
+    if (await guard(ctx)) { res.info.captcha = 1; if (stopRequested) break; }
+    const key = item.id || `${item.name}|${item.age}`;
+    if (ctx.chanceDone.has(key)) { res.info.contacted++; continue; }
+    await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch(() => null); // the list may have moved
+    const opened = await inTab(tabId, 'openItem', { site, kind: 'chance', item }).catch((e) => ({ ok: false, error: e.message }));
+    if (!opened?.ok) { res.skipped++; await log(`🎯 ${item.name}: ${opened?.error || 'не відкрився'}`, 'warn'); continue; }
+    if (!opened.id) { res.skipped++; await log(`🎯 ${item.name}: не бачу його ID у шапці чату`, 'warn'); continue; }
+    ctx.chanceDone.add(key);
+    const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', candidates: [{ id: opened.id, name: opened.name, age: item.age, online: item.online !== false, via: 'letter' }] } });
+    await setState({ remaining: f.remaining });
+    if (f.remaining <= 0) { ctx.limitReached = true; break; }
+    const man = f.allowed[0];
+    if (!man) { res.info.contacted++; continue; }
+    await setState({ message: `🎯 Шанс: лист для ${man.name || man.id}` });
+    let r;
+    try { r = await runActions(tabId, site, man, man.actions, { where: 'page', typing: ctx.human.typing }); } catch (e) { r = { ok: false, messages: 0, error: e.message, warnings: [] }; }
+    const s = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: r.ok, error: r.error, text: man.text, mode: 'chance', exhausted: r.exhausted } });
+    if (r.ok) {
+      res.sent++;
+      await setState({ sent: state.sent + r.messages, remaining: s.remaining });
+      await log(`🎯 ${man.name || man.id}: ✉ лист ✓${r.attached ? ` 📷${r.attached}` : ''}`);
+    } else {
+      if (!r.exhausted) res.failed++;
+      res.info.error = r.error;
+      await setState({ failed: state.failed + (r.exhausted ? 0 : 1), remaining: s.remaining });
+      await log(`🎯 ${man.name || man.id}: ${r.error}`, 'warn');
+    }
+    await heartbeat();
+    if (s.stop) { ctx.limitReached = true; break; }
+    await afterMan(ctx, s, r.messages);
+  }
+  return finishPass(ctx, 'chance', t0, res);
+}
+
+/** «Аллчат»: into running dialogs, a message on the topic of the talk — never where he waits for an answer. */
+async function allchatPass(ctx) {
+  const { tabId, site, profileId, cfg } = ctx;
+  const ac = cfg.modes.allchat;
+  const t0 = Date.now();
+  const why = { waits: 0, nightLimit: 0, notQuiet: 0, tooSoon: 0, neverReplied: 0 };
+  const REASON = { waits: 'waits', 'night-limit': 'nightLimit', 'not-quiet': 'notQuiet', 'too-soon': 'tooSoon', 'never-replied': 'neverReplied' };
+  const res = { seen: 0, sent: 0, failed: 0, skipped: 0, info: why };
+  await setState({ message: '💬 Аллчат: відкриваю діалоги' });
+  const o = await inTab(tabId, 'openTab', { site, kind: 'allchat' }).catch((e) => ({ ok: false, error: e.message }));
+  if (!o?.ok) { await log(`💬 Аллчат: ${o?.error || 'вкладка не відкрилась'}`, 'warn'); res.failed = 1; why.error = o?.error; return finishPass(ctx, 'allchat', t0, res); }
+  const list = (await inTab(tabId, 'listItems', { site, kind: 'allchat' }).catch(() => null)) || [];
+  res.seen = list.length;
+  await log(`💬 Аллчат: діалогів ${list.length}`);
+  for (const item of list) {
+    if (stopRequested || res.sent >= ac.maxPerPass) break;
+    await waitWorkingHours(ctx);
+    if (stopRequested) break;
+    if (await guard(ctx)) { why.captcha = 1; if (stopRequested) break; }
+    // he wrote last (or an unread message): a live person answers — the chat is not even opened, so the reply stays «new»
+    if (item.unread || item.mine === false) { why.waits++; res.skipped++; continue; }
+    await inTab(tabId, 'openTab', { site, kind: 'allchat' }).catch(() => null);
+    const opened = await inTab(tabId, 'openItem', { site, kind: 'allchat', item }).catch((e) => ({ ok: false, error: e.message }));
+    if (!opened?.ok || !opened.id) { res.skipped++; await log(`💬 ${item.name}: ${opened?.error || 'не бачу його ID у шапці чату'}`, 'warn'); continue; }
+    await nap(rand(900, 1800)); // reads the talk
+    const hist = (await inTab(tabId, 'history', { site }).catch(() => null)) || [];
+    const man = { id: opened.id, name: opened.name };
+    const c = await api(`/api/bot/profiles/${profileId}/allchat/check`, { method: 'POST', body: { man, history: hist } });
+    if (!c.write || c.reply) { const k = REASON[c.reason]; if (k) why[k]++; res.skipped++; continue; }
+    const m = await api(`/api/bot/profiles/${profileId}/allchat/compose`, { method: 'POST', body: { man, history: hist } });
+    if (!m.text) { res.skipped++; continue; }
+    await setState({ message: `💬 Аллчат: пишу ${man.name || man.id} на тему розмови` });
+    let r;
+    try { r = await writeHere(tabId, site, { ...man, text: m.text, files: [], via: 'chat' }, false, ctx.human.typing); } catch (e) { r = { ok: false, error: e.message }; }
+    await api(`/api/bot/profiles/${profileId}/allchat/sent`, { method: 'POST', body: { man, ok: Boolean(r?.ok), error: r?.error, text: m.text } }).catch(() => null);
+    if (r?.ok) { res.sent++; await setState({ sent: state.sent + 1 }); await log(`💬 ${man.name || man.id}: ✓`); } else { res.failed++; why.error = r?.error; await log(`💬 ${man.name || man.id}: ${r?.error || 'не вдалося'}`, 'warn'); }
+    await heartbeat();
+    await afterMan(ctx, null, r?.ok ? 1 : 0);
+  }
+  return finishPass(ctx, 'allchat', t0, res);
+}
+
+/**
+ * The shift on a site with «Шанс» / «Усі чати»: passes by the team's settings, replies watched in between,
+ * the site's hints and follow-ups too if the site has them. Runs until stopped.
+ */
+async function shiftLoop(ctx, rotate) {
+  const { site, cfg } = ctx;
+  const modes = cfg.modes || {};
+  const ch = modes.chance || {};
+  const ac = modes.allchat || {};
+  ctx.nextChance = 0;
+  ctx.nextAllchat = 0;
+  ctx.allchatPasses = 0;
+  ctx.night = nightKey(ctx.human, ctx.timezone);
+  await log(`🌙 Нічна зміна: ${ch.on && site.chanceItem ? `Шанс кожні ${ch.everyMin} хв${ch.onlineOnly ? ' (лише онлайн)' : ''}` : 'Шанс вимкнено'} · ${ac.on && site.allchatItem ? `Аллчат ${ac.perNight}× за ніч` : 'Аллчат вимкнено'}`);
+  while (!stopRequested) {
+    await waitWorkingHours(ctx);
+    if (stopRequested) break;
+    const night = nightKey(ctx.human, ctx.timezone);
+    if (night !== ctx.night) { ctx.night = night; ctx.allchatPasses = 0; ctx.nextAllchat = 0; ctx.chanceDone = new Set(); await log('🌙 Нова ніч — лічильники з нуля'); }
+    let did = false;
+    if (ch.on && site.chanceItem && !ctx.limitReached && Date.now() >= ctx.nextChance) {
+      await chancePass(ctx);
+      ctx.nextChance = Date.now() + ch.everyMin * 60000 * rand(0.9, 1.1);
+      did = true;
+    }
+    if (stopRequested) break;
+    if (ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight && Date.now() >= ctx.nextAllchat) {
+      await allchatPass(ctx);
+      ctx.allchatPasses++;
+      ctx.nextAllchat = nextAllchatAt(ctx, ac);
+      did = true;
+    }
+    if (stopRequested) break;
+    if (ctx.cfg.scenario.followups) await processDue(ctx).catch((e) => log(`Повторні: ${e.message}`, 'warn'));
+    if (site.taskItem && !ctx.limitReached) await processTasks(ctx);
+    if (did) await checkInbox(site, ctx.profileId);
+    const next = Math.min(...[ch.on && site.chanceItem && !ctx.limitReached ? ctx.nextChance : Infinity,
+      ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? ctx.nextAllchat : Infinity, Date.now() + 3 * 60000]);
+    if (rotate && next - Date.now() > 10 * 60000) return 'idle'; // nothing for her for a while: another profile may have work
+    const parts = [ch.on && site.chanceItem && !ctx.limitReached ? `Шанс о ${hhmm(ctx.nextChance)}` : '', ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? `Аллчат о ${hhmm(ctx.nextAllchat)}` : ''].filter(Boolean);
+    await setState({ message: `🌙 Далі: ${parts.join(' · ') || 'лише відповіді'}. Стежу за відповідями` });
+    await waitUntil(next, ctx, 'watching');
+  }
+  return 'stopped';
+}
+
 const SCAN_AHEAD_PAGES = 3;
 
 /**
@@ -868,7 +1036,7 @@ async function scanAhead(ctx) {
 async function loadRun(profileId, test) {
   const cfg = await api(`/api/bot/profiles/${profileId}/config`);
   const site = cfg.site.config;
-  const menFrom = site.taskItem || (site.card && (site.cardId || site.chatId));
+  const menFrom = site.taskItem || site.chanceItem || site.allchatItem || (site.card && (site.cardId || site.chatId));
   if (!menFrom || !site.messageInput) throw new Error('Сайт налаштовано не повністю: звідки брати чоловіків (картка з ID або підказки сайту) і поле вводу. Натисніть 🎯 «Навчити бота»');
   const human = cfg.scenario?.human || { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, breakMinutes: 10, typing: false };
   const ap = await getAutopilot();
@@ -938,8 +1106,15 @@ async function run(profileId, tabId, { rotate = false } = {}) {
     let noGrowth = 0;
     const tried = new Set(); // men already attempted in this run (a failing one is not retried in a loop)
 
+    // A site with «Шанс» / «Усі чати»: the night shift by the team's settings (this is where it works until stopped).
+    const shift = Boolean(site.chanceItem || site.allchatItem);
+    if (shift) {
+      const how = await shiftLoop(ctx, rotate);
+      if (how === 'idle') ctx.idle = true;
+    }
+
     // Operator desk without a list of new men: the site's hints + follow-ups, waiting for new hints in between.
-    if (!site.card) {
+    if (!site.card && !shift) {
       while (!stopRequested && !ctx.limitReached) {
         await waitWorkingHours(ctx);
         await processDue(ctx);
@@ -1347,7 +1522,21 @@ async function autopilotTick() {
   start(ap.profileId, null, false, { auto: true, rotate: Boolean(rotate) });
 }
 
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'autopilot') autopilotTick().catch(() => {}); });
+/** «▶️ Старт» pressed in the panel or in Telegram: the bot starts by itself (its browser must be open and logged in). */
+async function controlTick() {
+  if (running || !(await getAuth())) return;
+  const c = await api('/api/bot/control').catch(() => null);
+  const list = c?.start || [];
+  if (!list.length || running) return;
+  await log(`▶️ Запуск з панелі / Telegram: ${list.map((x) => x.name).join(', ')}`);
+  const { rotate } = await chrome.storage.local.get('rotate');
+  start(list[0].id, null, false, { auto: true, rotate: Boolean(rotate) || list.length > 1 });
+}
+
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name !== 'autopilot') return;
+  autopilotTick().then(() => controlTick()).catch(() => {});
+});
 chrome.alarms.get('autopilot').then((a) => { if (!a) chrome.alarms.create('autopilot', { periodInMinutes: 1 }); });
 
 /**

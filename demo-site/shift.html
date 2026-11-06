@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DemoDate — Operator shift</title><link rel="stylesheet" href="demo.css"><script src="shift.js"></script>
+<style>
+  .shift { display: grid; grid-template-columns: 300px 1fr; gap: 12px; height: calc(100vh - 90px); }
+  .shift aside, .shift section { background: #fff; border-radius: 12px; padding: 10px; overflow: auto; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; } .tab { flex: 1; padding: 7px; border-radius: 9px; border: 1px solid #e3d5da; background: #fff; cursor: pointer; font: inherit; }
+  .tab.on { background: #c2255c; color: #fff; border-color: #c2255c; }
+  .chance-item, .chat-row { display: flex; gap: 8px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid #f0e6ea; margin-bottom: 6px; }
+  .chance-item.on, .chat-row.on { background: #fdecf2; }
+  .ava { width: 34px; height: 34px; border-radius: 50%; background: #eadbe1; display: grid; place-items: center; font-weight: 600; position: relative; }
+  .online-dot { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%; background: #2fb344; border: 2px solid #fff; }
+  .c-name, .r-name { font-weight: 600; } .c-country, .r-last { color: #8a7a90; font-size: 12px; }
+  .unread { margin-left: auto; background: #c2255c; color: #fff; border-radius: 99px; padding: 0 7px; font-size: 11px; }
+  .chat { display: grid; grid-template-rows: auto 1fr auto; gap: 8px; }
+  .chat-head { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid #f0e6ea; padding-bottom: 8px; }
+  .chat-head > div { margin-right: auto; } .ch-id { color: #8a7a90; font-size: 12px; }
+  .msgs { display: grid; gap: 6px; align-content: start; }
+  .msg { border-radius: 10px; padding: 6px 10px; max-width: 75%; } .msg.his { background: #f6f0f3; justify-self: start; } .msg.mine { background: #fde2ec; justify-self: end; }
+  .msg.letter { border: 1px dashed #c2255c; } .msg small { display: block; color: #8a7a90; }
+  .tr { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; } .tr textarea { min-height: 80px; font: inherit; padding: 8px; border: 1px solid #e3d5da; border-radius: 8px; }
+  .letter-subject { width: 100%; font: inherit; padding: 8px; border: 1px solid #e3d5da; border-radius: 8px; margin-bottom: 6px; }
+  .composer .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; } .composer .status { margin-right: auto; }
+  .atts { display: flex; gap: 6px; flex-wrap: wrap; } .att-preview img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
+  .btn-attach { cursor: pointer; font-size: 18px; }
+</style></head>
+<body>
+<header class="top"><span class="logo">♥ DemoDate</span><b>Operator</b><span class="who">Kate, 29 · ID 5000000001</span></header>
+<main>
+  <div class="banner">Варіант сайту — «нічна зміна»: вкладка «Шанс» (онлайн-чоловіки), «Усі чати» (постійні діалоги), лист з фото й перекладом.</div>
+  <div class="shift">
+    <aside class="side">
+      <div class="tabs"><button class="tab tab-chance" type="button" data-tab="chance">Шанс</button><button class="tab tab-all" type="button" data-tab="all">Усі чати</button></div>
+      <div class="list list-chance"></div>
+      <div class="list list-all" hidden></div>
+    </aside>
+    <section class="chat">
+      <div class="chat-head"><div><b class="ch-name">—</b><div class="ch-id"></div></div>
+        <button class="btn-like" type="button" title="Like">♡</button><button class="btn-letter" type="button" title="Letter">✉</button><button class="btn-chat-mode" type="button" title="Chat">💬</button></div>
+      <div class="msgs"></div>
+      <div class="composer">
+        <input class="letter-subject" placeholder="Subject" hidden>
+        <div class="tr"><textarea class="tr-src" placeholder="Українська"></textarea><button class="btn-translate" type="button" title="Translate">ПЕРЕКЛАСТИ</button><textarea class="tr-dst" placeholder="English"></textarea></div>
+        <div class="atts"></div>
+        <div class="row"><label class="btn-attach" title="Photo">📷<input type="file" class="file-input" accept="image/*" multiple hidden></label>
+          <span class="left-msgs"></span><span class="left-letters" hidden></span><span class="status"></span><button class="btn-send" type="button">Send</button></div>
+      </div>
+    </section>
+  </div>
+  <p><button id="reset" type="button">Почати демо заново</button></p>
+</main>
+</body></html>

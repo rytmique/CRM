@@ -406,6 +406,55 @@
     return { ok: true, id: task.id || c.id || '', name: task.name || firstName(c.name) };
   }
 
+  // ---------- the night shift: «Шанс» (men to write to first) and «Усі чати» (running dialogs) ----------
+  const has = (el, sel) => Boolean(sel && (selfMatch(el, sel) || qs(el, sel)));
+
+  /** Opens a tab of the site («Шанс» / «Усі чати») and waits for its list. */
+  async function openTab({ site, kind }) {
+    const item = site[`${kind}Item`];
+    const tab = site[`${kind}Tab`] ? qsa(document, site[`${kind}Tab`]).find(visible) : null;
+    if (tab && !qsa(document, item).some(visible)) { await humanClick(tab); await sleep(rand(600, 1200)); }
+    const ok = await waitFor(() => qsa(document, item).some(visible), 8000, 200);
+    return ok ? { ok: true } : { ok: false, error: `список «${kind === 'chance' ? 'Шанс' : 'Усі чати'}» не видно` };
+  }
+
+  /** The men of a tab: name, age, ID if shown, online (chance), who wrote last and unread (dialogs). */
+  function listItems({ site, kind }) {
+    return qsa(document, site[`${kind}Item`]).filter(visible).slice(0, 200).map((el, index) => {
+      const all = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const nameText = extract(el, site[`${kind}Name`]) || (all.match(/[^\s,][^,]{0,40}?,\s*\d{2}\b/) || [''])[0];
+      const age = Number.parseInt((nameText.match(/\b(1[89]|[2-9]\d)\b/) || [])[0], 10);
+      const out = { index, name: nameText.split(',')[0].trim(), age: Number.isFinite(age) ? age : null, id: site[`${kind}Id`] ? normId(extract(el, site[`${kind}Id`])) : '' };
+      if (kind === 'chance') out.online = site.chanceOnline ? has(el, site.chanceOnline) : null;
+      if (kind === 'allchat') {
+        out.unread = site.allchatUnread ? has(el, site.allchatUnread) : false;
+        out.mine = site.allchatMine ? has(el, site.allchatMine) : null;
+      }
+      return out;
+    }).filter((x) => x.name || x.id);
+  }
+
+  /** Opens one man of a tab (found again by place and name — lists move) and tells who opened (ID from the chat header). */
+  async function openItem({ site, kind, item, dry }) {
+    const list = qsa(document, site[`${kind}Item`]).filter(visible);
+    const named = (x) => !item.name || norm(x.textContent).includes(norm(item.name));
+    const el = (list[item.index] && named(list[item.index]) ? list[item.index] : null) || list.find(named);
+    if (!el) return { ok: false, error: 'його вже немає в списку' };
+    if (dry) flash(el, '🧪 відкриваю');
+    await humanClick(el);
+    const c = await waitChat({ site, name: item.name, id: item.id });
+    if (!c.ok) return { ok: false, wrongChat: true, error: `відкрився чат іншого чоловіка (${c.name || c.id || 'невідомо'}) — не пишу` };
+    return { ok: true, id: item.id || c.id || '', name: item.name || firstName(c.name) };
+  }
+
+  /** The last messages of the open chat (oldest first): whose and what — to write on the topic of the talk. */
+  function history({ site, limit = 12 }) {
+    if (!site.msgItem) return [];
+    return qsa(document, site.msgItem).filter(visible).slice(-limit).map((el) => ({
+      mine: has(el, site.msgMine), text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 600),
+    })).filter((m) => m.text);
+  }
+
   /** No page of his own: type his ID into the site's search and open his chat. */
   async function findMan({ site, id, name }) {
     const input = qsa(document, site.findInput).find(visible);
@@ -588,7 +637,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
-    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, openTab, listItems, openItem, history,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

@@ -519,7 +519,13 @@ export default function botRoutes(db, cfg) {
       fresh.push(find.get(p.id, man.id));
     }
     // he answered after an «Аллчат» message: counted for that message too
-    for (const raw of list) { const man = readMan(raw); if (man) markAllchatReply(p.id, man.id, t); }
+    // (a dialog list without IDs: matched by his name, like the letters above)
+    const acByName = db.prepare('SELECT man_id FROM allchat_log WHERE profile_id = ? AND ok = 1 AND lower(man_name) = lower(?) ORDER BY at DESC LIMIT 1');
+    for (const raw of list) {
+      const man = readMan(raw);
+      const id = man?.id || (raw?.name ? acByName.get(p.id, String(raw.name).split(',')[0].trim().slice(0, 80))?.man_id : null);
+      if (id) markAllchatReply(p.id, id, t);
+    }
     if (fresh.length) notifyReplies(db, p, settings, fresh, req.user);
     res.json({ ok: true, new: fresh.length, negative, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name, mood: m.reply_mood })) });
   });
