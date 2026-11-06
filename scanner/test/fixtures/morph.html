@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>morph</title></head>
+<body><div id="app"></div>
+<script>
+// A page whose structure keeps changing into new shapes: tests the per-page screen limit.
+let n = 0;
+setInterval(() => {
+  n++;
+  const app = document.getElementById('app');
+  const box = document.createElement('section');
+  box.className = `shape${n}`;
+  for (let i = 0; i < (n % 5) + 1; i++) { const d = document.createElement('div'); d.className = `cell${(n + i) % 97}`; box.append(d); }
+  app.replaceChildren(box);
+}, 250);
+</script>
+<form><input type="password" class="pwd" placeholder="Password"><input type="text" class="login" placeholder="Login"></form>
+</body></html>
