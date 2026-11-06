@@ -7,10 +7,12 @@ import { openDb, platformSet } from '../server/db.js';
 import { createApp, ensureAdmin } from '../server/app.js';
 import { setTelegramApi } from '../server/telegram.js';
 import { shiftKey } from '../server/reports.js';
+import { pollOnce } from '../server/tgbot.js';
 
 let server, base, db, tg, tgBase;
 const tokens = {};
 const tgSent = [];
+const tgUpdates = [];
 
 async function call(method, url, body, who) {
   const res = await fetch(base + url, {
@@ -37,7 +39,8 @@ before(async () => {
       const method = req.url.split('/').pop();
       if (method === 'sendMessage') tgSent.push(JSON.parse(body || '{}'));
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ ok: true, result: method === 'getUpdates' ? [] : { message_id: tgSent.length } }));
+      const result = method === 'getUpdates' ? tgUpdates.splice(0) : method === 'getMe' ? { username: 'NightTestBot' } : { message_id: tgSent.length };
+      res.end(JSON.stringify({ ok: true, result }));
     });
   });
   await new Promise((r) => tg.listen(0, r));
@@ -183,4 +186,35 @@ test('a night shift is one «night» across midnight', () => {
   assert.equal(shiftKey(Date.parse('2026-11-07T03:00:00Z'), tz, human), '2026-11-06');
   assert.equal(shiftKey(Date.parse('2026-11-07T21:00:00Z'), tz, human), '2026-11-07');
   assert.equal(shiftKey(Date.parse('2026-11-07T10:00:00Z'), tz, { hoursFrom: 9, hoursTo: 18 }), '2026-11-07');
+});
+
+test('Telegram: the admin sets one bot; each person links with one tap and controls only their own bots', async () => {
+  await login('admin2', 'root@test', 'rootpass123');
+  const set = await call('PUT', '/api/admin/telegram', { token: '123:ABC' }, 'admin2');
+  assert.equal(set.status, 200, JSON.stringify(set.data));
+  assert.equal(set.data.bot, 'NightTestBot');
+  await login('ira2', 'ira@night', 'irapass1');
+  const link = await call('POST', '/api/me/telegram/link', {}, 'ira2');
+  assert.equal(link.status, 200, JSON.stringify(link.data));
+  assert.match(link.data.url, /^https:\/\/t\.me\/NightTestBot\?start=[\w-]+$/);
+  const msg = (chat, text, id) => ({ update_id: id, message: { chat: { id: chat, type: 'private' }, text } });
+  tgSent.length = 0;
+  tgUpdates.push(msg(5555, `/start ${link.data.code}`, 1));
+  await pollOnce(db, 0);
+  assert.match(tgSent[0].text, /Підключено: <b>Ira<\/b> \(оператор\)/);
+  assert.equal((await call('GET', '/api/me/telegram', undefined, 'ira2')).data.linked, true);
+  // the link works once
+  tgUpdates.push(msg(6666, `/start ${link.data.code}`, 2));
+  await pollOnce(db, 0);
+  assert.match(tgSent[1].text, /застаріло/);
+  // buttons: report, start (only her own profile)
+  tgUpdates.push(msg(5555, '📊 Звіт', 3), msg(5555, '▶️ Старт', 4), msg(7777, '⏹ Стоп', 5));
+  await pollOnce(db, 0);
+  assert.match(tgSent[2].text, /Звіт за ніч/);
+  assert.match(tgSent[2].text, /Kate/);
+  assert.doesNotMatch(tgSent[2].text, /Maria/, 'an operator sees only her own profiles');
+  assert.match(tgSent[3].text, /Запускаю \(1\): Kate/);
+  assert.match(tgSent[4].text, /не підключено/, 'a stranger cannot control anything');
+  const kate = db.prepare("SELECT start_at FROM profiles WHERE name = 'Kate'").get();
+  assert.ok(kate.start_at);
 });

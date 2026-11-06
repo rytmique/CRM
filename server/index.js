@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { openDb } from './db.js';
 import { runLearning } from './learning.js';
+import { startTelegramBot } from './tgbot.js';
 import { createApp, ensureAdmin } from './app.js';
 import { seedTestData } from './seed.js';
 import { hashPassword } from './auth.js';
@@ -82,6 +83,9 @@ const server = app.listen(PORT, HOST, () => {
 const learn = () => runLearning(db, console).catch((e) => console.error('learning:', e.message));
 setTimeout(learn, 60000).unref();
 setInterval(learn, 30 * 60000).unref();
+
+// The platform's Telegram bot (reports, start/stop): runs once the admin saved its token in the panel.
+startTelegramBot(db, console);
 
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {

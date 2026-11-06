@@ -10,6 +10,7 @@ import { latestBotVersion } from '../version.js';
 import { bad, notFound, str, int, mergeSettings } from '../util.js';
 import { getSettings, today, BOT_ONLINE_MS, planOf } from '../services.js';
 import { ownerLink, operatorLink, pendingUsers, approveUser, rejectUser, stopBots, setUserActive, setPlan, mergeSolo } from '../team.js';
+import { setPlatformBot, platformToken } from '../tgbot.js';
 import { billingReport, referralReward, currentMonth, validMonth } from '../billing.js';
 
 const DAY = 86400000;
@@ -276,6 +277,25 @@ export default function pultRoutes(db) {
       platformSet(db, 'minBotVersion', v);
     }
     res.json({ requireBuild: platformGet(db, 'requireBuild', '0') === '1', minBotVersion: platformGet(db, 'minBotVersion', '') });
+  });
+
+  // ---------- the platform's Telegram bot and closed features ----------
+  const tgView = () => ({ on: Boolean(platformToken(db)), bot: platformGet(db, 'tgBotName', ''),
+    linked: db.prepare("SELECT COUNT(*) AS n FROM users WHERE tg_chat_id IS NOT NULL AND tg_chat_id != ''").get().n });
+  r.get('/telegram', (_req, res) => res.json(tgView()));
+  /** The token from @BotFather: one bot for everyone (each person links their own Telegram from the panel). */
+  r.put('/telegram', async (req, res, next) => {
+    try {
+      const out = await setPlatformBot(db, req.body?.token);
+      if (!out.ok) throw bad(out.error);
+      res.json(tgView());
+    } catch (e) { next(e); }
+  });
+  r.get('/features', (_req, res) => res.json({ autoReply: platformGet(db, 'autoReply', '0') === '1' }));
+  /** 🔒 «the bot answers his reply itself»: closed for everyone until opened here. */
+  r.put('/features', (req, res) => {
+    if (req.body?.autoReply !== undefined) platformSet(db, 'autoReply', req.body.autoReply ? '1' : '0');
+    res.json({ autoReply: platformGet(db, 'autoReply', '0') === '1' });
   });
 
   return r;

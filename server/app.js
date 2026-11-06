@@ -23,6 +23,7 @@ import statsRoutes from './routes/stats.js';
 import billingRoutes from './routes/billing.js';
 import botRoutes, { setAutoReplyGate } from './routes/bot.js';
 import controlRoutes from './routes/control.js';
+import meRoutes from './routes/me.js';
 import scenarioRoutes from './routes/scenarios.js';
 import promptRoutes from './routes/prompts.js';
 
@@ -77,6 +78,7 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
     res.set('Cache-Control', 'no-store');
     res.send(extensionZip(cfg.publicUrl, build));
   });
+  api.use('/me', meRoutes(db));
   api.use('/admin', adminRoutes(db, cfg));
   api.use('/admin', pultRoutes(db, cfg));
   api.use((req, _res, next) => (req.user.role === 'admin' ? next(new HttpError(403, 'Цей розділ доступний лише обліковим записам агенції')) : next()));

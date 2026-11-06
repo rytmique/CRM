@@ -25,7 +25,7 @@ export function shiftKey(t = now(), tz = 'UTC', human = {}) {
 
 /** The Telegram bot that sends: the platform's own (set by the admin) — or the team's, if it set one up. */
 export function tgToken(db, settings) {
-  return platformGet(db, 'tgToken', '') || settings?.telegram?.botToken || '';
+  return platformGet(db, 'tgToken', '') || process.env.TELEGRAM_BOT_TOKEN || settings?.telegram?.botToken || '';
 }
 
 /** Sends a text to people (by user id) who linked their Telegram; returns how many got it. */
