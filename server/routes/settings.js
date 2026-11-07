@@ -38,6 +38,9 @@ export default function settingsRoutes(db) {
       settings: view(s), agencyName: agency?.name || '', defaultPrompt: DEFAULT_PROMPT, promptVars: PROMPT_VARS,
       memory: memoryLines(db, { ai: { sharedMemory: true } }),
       usage: usageOf(req.user.agencyId, dayKey(Date.now(), s.timezone).slice(0, 7)),
+      usageDays: db.prepare(`SELECT day, SUM(calls) AS calls, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM ai_usage
+        WHERE agency_id = ? AND day >= ? GROUP BY day ORDER BY day`).all(req.user.agencyId, dayKey(Date.now() - 29 * 86400000, s.timezone)),
+      models: MODELS,
       platformKey: s.ai.platformKey !== false && Boolean(process.env.ANTHROPIC_API_KEY),
       autoReplyOpen: platformGet(db, 'autoReply', '0') === '1',
     });

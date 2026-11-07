@@ -17,9 +17,10 @@ export default function meRoutes(db) {
   });
   /** My few settings: the master prompt for my texts, how often «Шанс», how many «Аллчат» passes a night. */
   const prefsView = (u) => {
-    const team = u.agency_id ? getSettings(db, u.agency_id).modes : null;
+    const conf = u.agency_id ? getSettings(db, u.agency_id) : null;
+    const team = conf?.modes;
     const p = readPrefs(u.prefs);
-    return { prompt: u.prompt || '', defaultPrompt: DEFAULT_PROMPT, chanceEveryMin: p.chanceEveryMin ?? team?.chance.everyMin ?? 30,
+    return { prompt: u.prompt || '', defaultPrompt: DEFAULT_PROMPT, teamPrompt: conf?.ai?.masterPrompt || '', chanceEveryMin: p.chanceEveryMin ?? team?.chance.everyMin ?? 30,
       allchatPerNight: p.allchatPerNight ?? team?.allchat.perNight ?? 2 };
   };
   const me = (id) => db.prepare('SELECT id, agency_id, prompt, prefs FROM users WHERE id = ?').get(id);
@@ -42,7 +43,9 @@ export default function meRoutes(db) {
     if (b.prompt !== undefined) {
       const p = String(b.prompt ?? '').replace(/\r\n/g, '\n').trim();
       if (p.length > 8000) throw bad('Промпт задовгий (макс. 8000 символів)');
-      db.prepare('UPDATE users SET prompt = ? WHERE id = ?').run(p === DEFAULT_PROMPT.trim() ? '' : p, u.id); // the built-in one = «use the default»
+      const team = (u.agency_id ? getSettings(db, u.agency_id).ai?.masterPrompt : '') || '';
+      // the built-in or the team's one unchanged = «use the default»
+      db.prepare('UPDATE users SET prompt = ? WHERE id = ?').run(p === DEFAULT_PROMPT.trim() || (team && p === team.trim()) ? '' : p, u.id);
     }
     res.json(prefsView(me(u.id)));
   });

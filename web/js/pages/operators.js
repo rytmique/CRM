@@ -45,7 +45,7 @@ export default async function operatorsPage(main) {
             load();
           }) }, '✕ Відхилити'))))) : null,
       h('div.card.table-wrap', team.length ? h('table.table.hover',
-        h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Анкет'), h('th.num', 'Ботів зараз'), h('th.num', 'Інвайтів сьогодні'), h('th.num', 'Відповідей сьогодні'), h('th', 'Останній вхід'), h('th', 'Статус'), h('th', ''))),
+        h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Анкет'), h('th.num', 'Ботів зараз'), h('th.num', 'Надіслано сьогодні'), h('th.num', 'Відповідей сьогодні'), h('th', 'Останній вхід'), h('th', 'Статус'), h('th', ''))),
         h('tbody', team.map((o) => h('tr', { onclick: () => openForm(o), tabindex: 0 },
           h('td', h('b', o.name), h('div.small.muted', o.email)),
           h('td.num', fmtInt(o.profiles)),
@@ -69,7 +69,6 @@ export default async function operatorsPage(main) {
       field('Ім’я *', input('name', o?.name, { required: true })),
       field('Email / логін *', input('email', o?.email, { required: true, autocomplete: 'off' })),
       field(o ? 'Новий пароль' : 'Пароль *', input('password', '', { type: 'text', minlength: 6, required: !o, autocomplete: 'new-password', placeholder: o ? 'залиште порожнім, щоб не міняти' : 'мінімум 6 символів' })),
-      field('Telegram chat id', input('tg_chat_id', o?.tg_chat_id), 'Куди слати сповіщення про відповіді'),
       o ? h('label.check.span-2', h('input', { type: 'checkbox', name: 'active', checked: Boolean(o.active) }), 'Активний (вимкнений не зможе увійти)') : null);
     const save = h('button.btn.primary', o ? 'Зберегти' : 'Створити');
     const actions = [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), save];
@@ -87,7 +86,7 @@ export default async function operatorsPage(main) {
       if (o && !data.password) delete data.password;
       if (o) await patch(`/api/operators/${o.id}`, data);
       else await post('/api/operators', data);
-      toast(o ? 'Збережено' : 'Оператора створено. Передайте йому логін і пароль для розширення.');
+      toast(o ? 'Збережено' : 'Оператора створено. Передайте логін і пароль — він увійде в бота.');
       m.close();
       load();
     }).catch(() => {});

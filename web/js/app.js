@@ -1,27 +1,18 @@
 import { h, toast, busy } from './ui.js';
 import { api, post, session, setUnauthorizedHandler } from './api.js';
-import dashboard from './pages/dashboard.js';
-import profiles from './pages/profiles.js';
 import operators from './pages/operators.js';
-import journal from './pages/journal.js';
-import sites from './pages/sites.js';
-import settings from './pages/settings.js';
-import extension from './pages/extension.js';
 import adminAgencies from './pages/admin-agencies.js';
 import adminLicenses from './pages/admin-licenses.js';
 import adminMemory from './pages/admin-memory.js';
-import setup from './pages/setup.js';
-import billing from './pages/billing.js';
 import adminBilling from './pages/admin-billing.js';
 import adminOverview from './pages/admin-overview.js';
 import adminAgency from './pages/admin-agency.js';
 import adminRegistrations from './pages/admin-registrations.js';
 import adminDevices from './pages/admin-devices.js';
-import prompts from './pages/prompts.js';
-import bot from './pages/bot.js';
-import stats from './pages/stats.js';
-import basicSettings from './pages/basic-settings.js';
 import adminPlatform from './pages/admin-platform.js';
+import home from './pages/home.js';
+import ai from './pages/ai.js';
+import mySettings from './pages/my-settings.js';
 import { renderJoin } from './pages/join.js';
 import { downloadBot } from './pages/extension.js';
 import { get } from './api.js';
@@ -54,34 +45,16 @@ function icon(name) {
 
 // [key, label, icon, page, { hidden: not in the menu but opens by link, parent: menu item to highlight }]
 const NAV = {
-  // only what matters every day; the rest opens by links from «Налаштування» / «Статистика»
+  // as little as possible: the bot finds the profiles on the site by itself
   owner: [
-    ['bot', 'Бот', 'bot', bot],
-    ['stats', 'Статистика', 'stats', stats],
-    ['profiles', 'Анкети', 'profiles', profiles],
+    ['home', 'Головна', 'dashboard', home],
+    ['ai', 'ШІ', 'bot', ai],
     ['team', 'Команда', 'operators', operators],
-    ['billing', 'Оплата за бота', 'licenses', billing],
-    ['settings', 'Налаштування', 'settings', basicSettings],
-    ['dashboard', 'Статистика по днях', 'dashboard', dashboard, { hidden: true, parent: 'stats' }],
-    ['journal', 'Журнал', 'journal', journal, { hidden: true, parent: 'stats' }],
-    ['prompts', 'Промпти', 'prompts', prompts, { hidden: true, parent: 'settings' }],
-    ['sites', 'Сайти', 'sites', sites, { hidden: true, parent: 'settings' }],
-    ['settings-advanced', 'Розширені налаштування', 'settings', settings, { hidden: true, parent: 'settings' }],
-    ['operators', 'Команда', 'operators', operators, { hidden: true, parent: 'team' }],
-    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'bot' }],
-    ['extension', 'Бот-розширення', 'extension', extension, { hidden: true, parent: 'bot' }],
+    ['settings', 'Налаштування', 'settings', mySettings],
   ],
   operator: [
-    ['bot', 'Бот', 'bot', bot],
-    ['stats', 'Статистика', 'stats', stats],
-    ['profiles', 'Мої анкети', 'profiles', profiles],
-    ['prompts', 'Мій промпт', 'prompts', prompts],
-    ['billing', 'Мій заробіток', 'licenses', billing],
-    ['dashboard', 'Статистика по днях', 'dashboard', dashboard, { hidden: true, parent: 'stats' }],
-    ['journal', 'Журнал', 'journal', journal, { hidden: true, parent: 'stats' }],
-    ['sites', 'Сайти', 'sites', sites, { hidden: true, parent: 'bot' }],
-    ['setup', 'Підключення', 'extension', setup, { hidden: true, parent: 'bot' }],
-    ['extension', 'Бот-розширення', 'extension', extension, { hidden: true, parent: 'bot' }],
+    ['home', 'Головна', 'dashboard', home],
+    ['settings', 'Налаштування', 'settings', mySettings],
   ],
   admin: [
     ['overview', 'Огляд', 'dashboard', adminOverview],
@@ -197,14 +170,7 @@ async function route() {
     try { session.user = (await api('/api/auth/me')).user; } catch { return renderLogin(); }
   }
   const items = NAV[session.user.role] || [];
-  let key = (location.hash.replace(/^#\/?/, '').split('?')[0]) || items[0][0];
-  // A brand-new user lands in the setup wizard ("за руку") instead of an empty dashboard.
-  if (!location.hash && session.user.role !== 'admin') {
-    try {
-      const s = await get('/api/stats/setup');
-      if (!s.profiles.length) key = 'setup'; // nothing yet: start with the wizard
-    } catch { /* the dashboard then */ }
-  }
+  const key = (location.hash.replace(/^#\/?/, '').split('?')[0]) || items[0][0];
   const item = items.find((i) => i[0] === key) || items[0];
   cleanup?.();
   cleanup = null;

@@ -185,19 +185,25 @@ export default function statsRoutes(db) {
   });
 
   /** Per night and mode: what the bot wrote, how many answered, the conversion; the AI used. Operators — their own profiles. */
+  /**
+   * The night shift per night and mode. Operators: their own. Team lead: ?who=all (the team, default) | mine | <operator id>,
+   * plus the team per person for the period.
+   */
   r.get('/shift', (req, res) => {
     const u = req.user;
     const settings = getSettings(db, u.agencyId);
     const n = int(req.query.nights, { min: 1, max: 60, field: 'ночей' }) || 7;
-    const scope = profileScope(u);
+    const who = u.role === 'operator' ? 'mine' : String(req.query.who || 'all');
+    const opId = who === 'mine' ? u.id : /^\d+$/.test(who) ? Number(who) : null;
+    const scope = opId ? { where: 'p.agency_id = ? AND p.operator_id = ?', params: [u.agencyId, opId] } : profileScope(u);
     const nights = lastDays(n, settings.timezone);
     const marks = nights.map(() => '?').join(',');
     const rows = db.prepare(`SELECT m.night, m.mode, COUNT(*) AS sent, SUM(m.replied_at IS NOT NULL) AS replies FROM messages m JOIN profiles p ON p.id = m.profile_id
       WHERE ${scope.where} AND m.status = 'sent' AND m.night IN (${marks}) GROUP BY m.night, m.mode`).all(...scope.params, ...nights);
     const chats = db.prepare(`SELECT a.night, COUNT(*) AS sent, SUM(a.replied_at IS NOT NULL) AS replies FROM allchat_log a JOIN profiles p ON p.id = a.profile_id
       WHERE ${scope.where} AND a.ok = 1 AND a.night IN (${marks}) GROUP BY a.night`).all(...scope.params, ...nights);
-    const ai = u.role === 'operator'
-      ? db.prepare(`SELECT day, calls, input_tokens AS input, output_tokens AS output FROM ai_usage WHERE agency_id = ? AND user_id = ? AND day IN (${marks})`).all(u.agencyId, u.id, ...nights)
+    const ai = opId
+      ? db.prepare(`SELECT day, calls, input_tokens AS input, output_tokens AS output FROM ai_usage WHERE agency_id = ? AND user_id = ? AND day IN (${marks})`).all(u.agencyId, opId, ...nights)
       : db.prepare(`SELECT day, SUM(calls) AS calls, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM ai_usage WHERE agency_id = ? AND day IN (${marks}) GROUP BY day`).all(u.agencyId, ...nights);
     const pct = (a, b) => (b ? Math.round((a / b) * 1000) / 10 : 0);
     const out = nights.map((night) => {
@@ -213,14 +219,36 @@ export default function statsRoutes(db) {
     });
     // the latest night per profile (who works how)
     const last = nights[nights.length - 1];
-    const prev = nights[nights.length - 2];
-    const profiles = db.prepare(`SELECT p.id, p.name, p.bot_state, p.bot_last_seen,
+    const prev = nights[nights.length - 2] || last;
+    const profiles = db.prepare(`SELECT p.id, p.name, p.bot_state, p.bot_last_seen, p.operator_id, COALESCE(o.name, '') AS operator,
         (SELECT COUNT(*) FROM messages m WHERE m.profile_id = p.id AND m.status = 'sent' AND m.mode = 'chance' AND m.night IN (?, ?)) AS chance,
         (SELECT COUNT(*) FROM allchat_log a WHERE a.profile_id = p.id AND a.ok = 1 AND a.night IN (?, ?)) AS allchat,
         (SELECT COUNT(*) FROM messages m WHERE m.profile_id = p.id AND m.replied_at IS NOT NULL AND m.night IN (?, ?)) + (SELECT COUNT(*) FROM allchat_log a WHERE a.profile_id = p.id AND a.replied_at IS NOT NULL AND a.night IN (?, ?)) AS replies
-      FROM profiles p WHERE ${scope.where} ORDER BY p.name LIMIT 200`).all(last, prev, last, prev, last, prev, last, prev, ...scope.params)
+      FROM profiles p LEFT JOIN users o ON o.id = p.operator_id WHERE ${scope.where} ORDER BY p.name LIMIT 200`).all(last, prev, last, prev, last, prev, last, prev, ...scope.params)
       .map((p) => ({ ...p, online: Boolean(p.bot_last_seen && now() - p.bot_last_seen < BOT_ONLINE_MS) }));
-    res.json({ nights: out, profiles });
+    let people;
+    let operators;
+    if (u.role !== 'operator') {
+      operators = db.prepare("SELECT id, name, role FROM users WHERE agency_id = ? AND pending = 0 AND role IN ('owner','operator') ORDER BY role = 'owner' DESC, name").all(u.agencyId);
+      // the team per person over the whole period (whose profiles wrote, who answered, the AI each used)
+      const sentBy = db.prepare(`SELECT p.operator_id AS id, SUM(m.mode = 'chance') AS chance, SUM(m.mode != 'chance' OR m.mode IS NULL) AS other, SUM(m.replied_at IS NOT NULL) AS replies
+        FROM messages m JOIN profiles p ON p.id = m.profile_id WHERE p.agency_id = ? AND m.status = 'sent' AND m.night IN (${marks}) GROUP BY p.operator_id`).all(u.agencyId, ...nights);
+      const chatBy = db.prepare(`SELECT p.operator_id AS id, COUNT(*) AS sent, SUM(a.replied_at IS NOT NULL) AS replies FROM allchat_log a JOIN profiles p ON p.id = a.profile_id
+        WHERE p.agency_id = ? AND a.ok = 1 AND a.night IN (${marks}) GROUP BY p.operator_id`).all(u.agencyId, ...nights);
+      const aiBy = db.prepare(`SELECT user_id AS id, SUM(calls) AS calls, SUM(input_tokens + output_tokens) AS tokens FROM ai_usage WHERE agency_id = ? AND day IN (${marks}) GROUP BY user_id`).all(u.agencyId, ...nights);
+      const online = db.prepare('SELECT operator_id AS id, COUNT(*) AS n FROM profiles WHERE agency_id = ? AND bot_last_seen > ? GROUP BY operator_id').all(u.agencyId, now() - BOT_ONLINE_MS);
+      const counts = db.prepare('SELECT operator_id AS id, COUNT(*) AS n FROM profiles WHERE agency_id = ? GROUP BY operator_id').all(u.agencyId);
+      people = operators.map((o) => {
+        const s = sentBy.find((x) => x.id === o.id) || {};
+        const c = chatBy.find((x) => x.id === o.id) || {};
+        const g = aiBy.find((x) => x.id === o.id) || {};
+        const sent = (s.chance || 0) + (s.other || 0) + (c.sent || 0);
+        const replies = (s.replies || 0) + (c.replies || 0);
+        return { id: o.id, name: o.name, role: o.role, profiles: counts.find((x) => x.id === o.id)?.n || 0, bots: online.find((x) => x.id === o.id)?.n || 0,
+          chance: s.chance || 0, allchat: c.sent || 0, sent, replies, conv: pct(replies, sent), ai: { calls: g.calls || 0, tokens: g.tokens || 0 } };
+      });
+    }
+    res.json({ who, nights: out, profiles, people, operators });
   });
 
   return r;
