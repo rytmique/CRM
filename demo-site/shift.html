@@ -4,7 +4,7 @@
 <style>
   .shift { display: grid; grid-template-columns: 300px 1fr; gap: 12px; height: calc(100vh - 90px); }
   .shift aside, .shift section { background: #fff; border-radius: 12px; padding: 10px; overflow: auto; }
-  .tabs { display: flex; gap: 6px; margin-bottom: 8px; } .tab { flex: 1; padding: 7px; border-radius: 9px; border: 1px solid #e3d5da; background: #fff; cursor: pointer; font: inherit; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; } .tab { flex: 1; padding: 7px; border-radius: 9px; border: 1px solid #e3d5da; background: #fff; color: #1f1a24; cursor: pointer; font: inherit; }
   .tab.on { background: #c2255c; color: #fff; border-color: #c2255c; }
   .chance-item, .chat-row { display: flex; gap: 8px; align-items: center; padding: 8px; border-radius: 10px; cursor: pointer; border: 1px solid #f0e6ea; margin-bottom: 6px; }
   .chance-item.on, .chat-row.on { background: #fdecf2; }
@@ -23,8 +23,8 @@
   .composer .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; } .composer .status { margin-right: auto; }
   .atts { display: flex; gap: 6px; flex-wrap: wrap; } .att-preview img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
   .btn-attach { cursor: pointer; font-size: 18px; }
-  .her-box { position: relative; } .her-list { position: absolute; right: 0; top: 30px; background: #fff; border: 1px solid #e3d5da; border-radius: 10px; padding: 6px; z-index: 5; min-width: 200px; box-shadow: 0 6px 20px rgba(0,0,0,.12); }
-  .her-item { padding: 7px 9px; border-radius: 8px; cursor: pointer; } .her-item:hover, .her-item.on { background: #fdecf2; }
+  .her-box { position: relative; } .her-list { position: absolute; right: 0; top: 30px; background: #fff; color: #1f1a24; text-align: left; border: 1px solid #e3d5da; border-radius: 10px; padding: 6px; z-index: 5; min-width: 200px; box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+  .her-item { padding: 7px 9px; border-radius: 8px; cursor: pointer; } .her-item small { color: #8a7a90; } .her-item:hover, .her-item.on { background: #fdecf2; }
 </style></head>
 <body>
 <header class="top"><span class="logo">♥ DemoDate</span><b>Operator</b><span class="who her-now"></span>
