@@ -52,6 +52,7 @@ function profileBrief(p) {
     p.interests ? `Interests: ${p.interests}` : '',
     p.looking_for ? `Looking for: ${p.looking_for}` : '',
     p.tone ? `Tone of voice: ${p.tone}` : '',
+    p.site_about ? `From her profile on the site:\n${String(p.site_about).slice(0, 1500)}` : '',
   ];
   return lines.filter(Boolean).join('\n');
 }
@@ -82,7 +83,7 @@ function mapError(e) {
 }
 
 /** The built-in base prompt; agencies can replace it with their own master prompt. */
-export const DEFAULT_PROMPT = SYSTEM_PROMPT;
+export const DEFAULT_PROMPT = SYSTEM_PROMPT; // (the base invite of search sites; the night shift uses MASTER_PROMPT)
 
 /** Placeholders a master prompt may use. {name} {age} {country} are NOT here: they stay in the invite for the man's data. */
 export const PROMPT_VARS = [
@@ -416,6 +417,148 @@ export async function generateHook({ profile, settings, man = {}, recent = new S
 export function withHook(hook, letter) {
   const body = String(letter || '').trim().replace(/^(hi|hello|hey|dear|good (morning|evening|afternoon|day))\b[^.!?\n]*[.!?]*\s*/i, '');
   return `${String(hook || '').trim()} ${body}`.trim();
+}
+
+// ---------- «Шанс»: an invite with a hook, then a letter — both written for this man ----------
+/**
+ * The default master prompt (the style). Built from the agency's best invites and letters: a CAPS headline as the hook,
+ * his own details, questions with a choice, playful flirt. The hard rules below are added to it and cannot be edited.
+ */
+export const MASTER_PROMPT = `You write for a woman on an international dating site. Her messages get replies because every one of them feels written for one man only.
+
+THE HOOK — the first 5 characters decide everything: in his list he sees only them.
+- Start with a short headline in CAPITAL LETTERS, 2-5 words, ending with "?", "!" or ".", built from something real about him: his name, his hobby, his town, a detail of his profile. The shape of good headlines (never copy them): "FISHING OR ME?", "RON, STILL BUSY?", "STARGAZING CAMPERS?", "ART OR PEOPLE?".
+- Never start with "Hi", "Hello", "Dear", a space, an emoji or a punctuation mark.
+
+THE INVITE (a chat message) — about 250 characters (200-300):
+- the headline, then 2-3 short sentences: one concrete detail from his profile (a hobby, his work, a place near his town, his own words about himself) and why it caught her eye;
+- one or two easy questions he can answer in one line: a choice between two things, or how far he is from a place he knows;
+- playful, flirty, a little teasing; confident and warm, never needy.
+
+THE LETTER (sent right after the invite) — 700-1100 characters, one flowing text:
+- open with his name and a feeling, e.g. that something in his manner or his smile stayed with her;
+- weave in 2-3 details from his profile (hobbies, what he cooks, art, nature, places around his town);
+- one or two details about her from her profile, so he feels who writes;
+- 2-3 questions with a choice in them ("painting or photography?", "breakfast or dinner?", "something cosy or a new recipe?"), one of them about the places around his town;
+- a dreamy, romantic note — a slow walk, a cosy evening, his smile — tender and flirtatious;
+- end with a soft call to answer, e.g. that even one sincere line from him would make her day.
+
+Every invite and every letter is new: another headline, another opening, other questions. Specific compliments, curiosity about his life, light romantic tension.`;
+
+const CHANCE_RULES = `You write two texts for a woman on an international dating site, for one man she has not talked to yet: an invite (a chat message) and a letter that is sent right after it. Follow her style guide below, and these rules always:
+- Use only the facts given about him and about her. Never invent his job, hobbies, looks, city, family or anything else.
+- Never say or hint that she is in his city or country, travelling to him or near him, or that they can meet today or soon; never propose a date or a meeting in person.
+- Never claim that they talked before, that she has been waiting for his letters, or that she knows him.
+- No sexual content, nothing about bed or bodies.
+- No contact details, links, other apps or messengers, money or gifts.
+- The invite starts with the CAPS headline (the hook) and is 200-300 characters; the letter is 700-1100 characters and does not repeat the invite.
+
+Reply with JSON only, no explanation: {"invite": "...", "letter": "..."}`;
+
+/** Texts that break the rules no matter what the style says (checked after the AI and on the templates). */
+const CLAIMS = [
+  /\b(i am|i'm|i will be|i'll be|i'm now|i am now)\s+(now\s+)?(in|near|around|visiting|coming to|travel+ing (to|in|around|through))\b[^.?!]{0,40}\b(your|you)\b/i,
+  /\b(meet|see)\s+(you|me|each other|up)\b[^.?!]{0,30}\b(today|tonight|tomorrow|soon|this week|this weekend|in person)\b/i,
+  /\blet'?s meet\b|\bmeet in person\b|\bpersonal meeting\b/i,
+  /\b(in|into) (my |your )?bed\b|\bbedroom\b|\bnaked\b|\bsex(ual|y)?\b|\blingerie\b/i,
+  /\b(waiting for|checking for) (your|his) (letters?|messages?|name)\b|\bwe talked (before|last)\b/i,
+];
+export const chanceProblems = (t) => [...FORBIDDEN, ...CLAIMS].some((re) => re.test(String(t || '')));
+const capsHook = (t) => { const h = String(t || '').trim().slice(0, 5); return /\p{L}/u.test(h) && h === h.toUpperCase() && !/^[\s"'«»“”\-–—.,:;!?()]/.test(h); };
+
+/** His details, as the bot read them from his profile page: «Header: value» lines and free texts. */
+export function manFacts(man = {}) {
+  const lines = String(man.about || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const pair = (re) => lines.map((l) => /^([^:]{2,40}):\s*(.+)$/.exec(l)).find((m) => m && re.test(m[1]))?.[2] || '';
+  const hobbies = pair(/hobb|interest|leisure|free time|like to do|passion/i).split(/[,;/]|\band\b/).map((x) => x.trim().toLowerCase()).filter((x) => x && x.length < 30).slice(0, 4);
+  const aboutMe = pair(/about me|myself|self.?summary|who am i|my self/i) || lines.find((l) => !l.includes(':') && l.length > 40) || '';
+  const work = pair(/occupation|profession|work|job/i);
+  return { name: String(man.name || '').split(/[\s,]+/)[0] || '', age: man.age || null, place: String(man.place || '').split(',')[0].trim(), hobbies, aboutMe: aboutMe.slice(0, 300), work: work.slice(0, 60) };
+}
+const herFacts = (p) => {
+  const about = String(p.site_about || p.bio || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const self = about.find((l) => /^(about me|about myself|my self)/i.test(l))?.replace(/^[^:]+:\s*/, '') || about.find((l) => !l.includes(':') && l.length > 40) || '';
+  const hob = (about.find((l) => /^(hobb|interest)/i.test(l)) || '').replace(/^[^:]+:\s*/, '');
+  return { name: p.name, age: p.age, city: p.city, self: self.split(/(?<=[.!?])\s/)[0]?.slice(0, 200) || '', hobbies: hob || p.interests || '' };
+};
+const pickN = (list, n) => list[((n % list.length) + list.length) % list.length];
+
+/** Without AI (or when it fails): an invite with a CAPS headline and a letter, both made of his details, different every time. */
+export function templateChance(profile = {}, man = {}, seed = 0, recent = []) {
+  const f = manFacts(man);
+  const h = herFacts(profile);
+  const hob = f.hobbies[0];
+  const N = (f.name || 'YOU').toUpperCase();
+  const heads = [
+    hob && `${hob.toUpperCase()} OR ME?`, f.place && `${f.place.toUpperCase()}, REALLY?`, `${N}, CAUGHT YOU!`, hob && `MORE THAN ${hob.toUpperCase()}?`,
+    `${N}, ONE QUESTION?`, 'CAN I BE BOLD?', 'GUILTY SMILE!', f.place && `WHY ${f.place.toUpperCase()}?`, 'TEA OR TROUBLE?', `${N}, ARE YOU REAL?`,
+  ].filter(Boolean);
+  const detail = hob ? `I saw that you love ${f.hobbies.slice(0, 2).join(' and ')}` : f.aboutMe ? `Your words "${f.aboutMe.split(/(?<=[.!?])\s/)[0].slice(0, 70)}" made me smile` : f.place ? `${f.place} sounds like a place with stories` : 'Your smile in the photo made me curious';
+  const asks = [
+    hob ? `Is ${hob} your way to relax, or your way to escape?` : 'Are you more of a morning person or a night owl?',
+    f.place ? `What is your favourite spot around ${f.place}?` : 'Tea by the window or a walk in the rain — what would you choose?',
+    'Tell me, what made you smile today?',
+    hob ? `Would you teach me ${hob}, or would I only distract you? 😉` : 'Would you rather talk all night or say a lot with one look? 😉',
+  ];
+  let invite = '';
+  for (let i = 0; i < heads.length && !invite; i++) {
+    const head = pickN(heads, seed + i);
+    const t = `${head} ${detail} — and I had to write. ${pickN(asks, seed + i)} ${pickN(asks, seed + i + 1)}`.replace(/\s+/g, ' ').trim();
+    if (!recent.some((r) => String(r).slice(0, 5).toUpperCase() === t.slice(0, 5).toUpperCase())) invite = t;
+  }
+  if (!invite) invite = `${pickN(heads, seed)} ${detail} — and I had to write. ${pickN(asks, seed)}`;
+  const openers = [
+    `${f.name || 'Hey you'}, something in your profile stayed with me today, and I caught myself smiling for no reason.`,
+    `${f.name || 'You'}, I promised myself to be brave today, so here is my letter.`,
+    `${f.name || 'Hello'}, there is something calm and kind in your eyes, and I could not just scroll past.`,
+    `${f.name || 'You'}, I read your profile twice, and the second time I was already smiling.`,
+  ];
+  const his = hob ? `You love ${f.hobbies.slice(0, 2).join(' and ')} — I can almost picture you there, focused and happy, and I like that picture a lot.`
+    : f.aboutMe ? `When you wrote "${f.aboutMe.slice(0, 90)}", I felt a real person behind the words.`
+    : f.place ? `I keep wondering what an ordinary evening in ${f.place} looks like for you.` : 'I keep wondering what an ordinary evening looks like for you.';
+  const me = [`I am ${h.name}${h.age ? `, ${h.age}` : ''}${h.city ? `, from ${h.city}` : ''}.`, h.self, h.hobbies ? `I love ${String(h.hobbies).split(/[,;]/).slice(0, 2).join(' and ').trim()}.` : ''].filter(Boolean).join(' ');
+  const dreams = [
+    'I imagine a slow evening walk, the air a little cool, and you telling me something that makes me laugh.',
+    'I like to imagine a cosy evening, a warm drink in my hands and a man who listens with his eyes.',
+    'Maybe it is silly, but I already imagine your smile when you read this.',
+  ];
+  const qs = [
+    f.place ? `What is the most beautiful place around ${f.place}, the one you would show first?` : 'Which place in your town would you show me first?',
+    hob ? `When you are into ${hob}, do you prefer company or quiet?` : 'Do you prefer quiet evenings at home or going out?',
+    'Breakfast or dinner — which would you rather cook for someone special?',
+    'Are you more of a painter or a photographer of your memories?',
+    'What made you decide to look for something real at this point of your life?',
+  ];
+  const closings = ['Even one sincere line from you would make my day.', 'Write me just a few words — I will be waiting with a smile.', 'One honest line from you will mean more than you think.'];
+  const letter = [pickN(openers, seed), his, me, pickN(dreams, seed), `${pickN(qs, seed)} ${pickN(qs, seed + 2)} And ${pickN(qs, seed + 4).replace(/^\w/, (c) => c.toLowerCase())}`, pickN(closings, seed)]
+    .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  return { invite, letter, source: 'template', model: null, hook: invite.slice(0, 5) };
+}
+
+/** The invite and the letter for this man: AI writes both by her style + the rules; checked, else the templates. */
+export async function generateChance({ profile, settings, man = {}, seed = 0, recent = [] }) {
+  const apiKey = keyFor(settings);
+  if (!apiKey) return templateChance(profile, man, seed, recent);
+  const language = profile.language || settings.ai.language || 'English';
+  const f = manFacts(man);
+  const about = [f.name && `First name: ${f.name}`, f.age && `Age: ${f.age}`, f.place && `Lives in: ${man.place}`, f.work && `Work: ${f.work}`,
+    f.hobbies.length && `Hobbies: ${f.hobbies.join(', ')}`, man.about && `His profile on the site:\n${String(man.about).slice(0, 1400)}`].filter(Boolean).join('\n') || 'Only his first name is known.';
+  const style = resolvePrompt({ profile, settings });
+  const system = `${CHANCE_RULES}\n\nHer style guide:\n${style.text}`;
+  const avoid = recent.length ? `Her recent invites started like this — start differently: ${recent.slice(0, 12).map((r) => `"${String(r).slice(0, 24)}"`).join(', ')}` : '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const out = await callClaude({ apiKey, model: settings.ai.model || 'claude-opus-5-5', system, language, profile, settings, about,
+        instructions: [settings.ai.instructions, avoid, attempt ? 'The previous answer broke a rule (a meeting, being near him, sexual content, contacts, or a wrong length). Write it again following every rule.' : ''].filter(Boolean).join('\n'), max: 4000 });
+      const j = JSON.parse((out.text.match(/\{[\s\S]*\}/) || ['{}'])[0]);
+      const invite = String(j.invite || '').trim();
+      const letter = String(j.letter || '').trim();
+      const ok = capsHook(invite) && invite.length >= 150 && invite.length <= 360 && letter.length >= 500 && letter.length <= 1600
+        && !chanceProblems(invite) && !chanceProblems(letter) && !recent.some((r) => String(r).slice(0, 5).toUpperCase() === invite.slice(0, 5).toUpperCase());
+      if (ok) return { invite, letter, source: 'ai', model: out.model, hook: invite.slice(0, 5) };
+    } catch { /* AI down or a bad answer */ }
+  }
+  return templateChance(profile, man, seed, recent);
 }
 
 // ---------- «Аллчат»: a message on the topic of a running talk ----------
