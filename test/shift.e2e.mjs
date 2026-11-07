@@ -1,6 +1,8 @@
 // The night shift end to end, in a real Chromium with the real bot (the copy downloaded from the panel):
-// ▶ from the panel → the bot starts by itself → «Шанс»: letters with her photo to online men only → «Аллчат»: a message
-// on the topic only into quiet dialogs (never where he waits for an answer) → mini reports in Telegram → ⏹ from the panel.
+// the bot window has only login, «🧪 Тестовий режим» and ▶ / ⏹. The bot reads the women on the site by itself (Kate, Olivia →
+// her profiles in the panel), the test walks the way for both and sends nothing; ▶ → for both women: «Шанс» letters (with the photo
+// set in the panel) to online men only, «Аллчат» only into quiet dialogs (never where he waits for an answer), the site switched
+// to each in turn → mini reports in Telegram → ⏹ from the panel.
 // Usage: node test/shift.e2e.mjs   (screenshots in $E2E_OUT or ./e2e-out/shift)
 import fs from 'node:fs';
 import os from 'node:os';
@@ -72,7 +74,7 @@ const loginApi = async (email, password) => (await api('POST', '/api/auth/login'
 let context;
 const consoleErrors = [];
 try {
-  // ---------- data: a team, the night-shift site, Kate and her photo for «Шанс» ----------
+  // ---------- data: a team, the night-shift site (two women on it), Ira. No profiles: the bot finds them ----------
   const admin = await loginApi('root@shift', 'rootpass123');
   await api('POST', '/api/admin/agencies', { name: 'Shift team', ownerName: 'Lead', ownerEmail: 'lead@shift', ownerPassword: 'leadpass1', licenses: 3, days: 30 }, admin);
   const owner = await loginApi('lead@shift', 'leadpass1');
@@ -85,13 +87,9 @@ try {
       thinkFrom: 0, thinkTo: 1, actionGapFrom: 0, actionGapTo: 1, pageGapFrom: 0, pageGapTo: 1, reactFrom: 0, reactTo: 1, idleChance: 0 },
   } }, owner);
   const op = await api('POST', '/api/operators', { name: 'Ira', email: 'ira@shift', password: 'irapass1' }, owner);
-  const kate = (await api('POST', '/api/profiles', { name: 'Kate', age: 29, operator_id: op.id, site_id: siteId, daily_limit: 40, min_delay: 5, max_delay: 6 }, owner));
-  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f0300050001ff0a2db4000000000049454e44ae426082', 'hex');
-  const up = await fetch(`${BASE}/api/profiles/${kate.id}/media?steps=300`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-file-name': 'kate-chance.png', authorization: `Bearer ${owner}` }, body: png });
-  if (up.status !== 201) fail(`photo upload: ${up.status} ${await up.text()}`);
-  // the dialogs of the demo desk have been quiet for hours (as seen by the bot before) — «Аллчат» may write there
-  for (const id of ['8000001', '8000002', '8000003', '8000004', '8000005', '8000006']) db.prepare("INSERT INTO dialogs (profile_id, man_id, fp, fp_at) VALUES (?,?,'',?)").run(kate.id, id, Date.now() - 10 * 3600000);
-  // Ira linked her Telegram to the platform bot
+  const ira = await loginApi('ira@shift', 'irapass1');
+  // Ira: «Шанс» every 20 minutes (her own setting)
+  await api('PUT', '/api/me/prefs', { chanceEveryMin: 20, allchatPerNight: 2 }, ira);
   platformSet(db, 'tgToken', 'SHIFT:TOKEN');
   db.prepare("UPDATE users SET tg_chat_id = '424242' WHERE id = ?").run(op.id);
   log('data ready');
@@ -112,106 +110,147 @@ try {
   context.on('weberror', (e) => consoleErrors.push(`pageerror: ${e.error().message}`));
   const sw = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
   const extId = new URL(sw.url()).host;
+  // the operator opened the site (as Kate)
+  const desk = await context.newPage();
+  await desk.goto(`${BASE}/demo-site/shift.html`);
+  await desk.waitForSelector('.her-now');
   const popup = await context.newPage();
+  await popup.setViewportSize({ width: 380, height: 640 });
   await popup.goto(`chrome-extension://${extId}/popup.html`);
   await popup.waitForSelector('#login-form');
+  await popup.screenshot({ path: path.join(OUT, 'popup-login.png') });
   await popup.fill('#server', BASE);
   await popup.fill('#email', 'ira@shift');
   await popup.fill('#password', 'irapass1');
   await popup.click('#login-form button[type=submit]');
-  await popup.waitForSelector('#profile option[value]', { state: 'attached' });
+  await popup.waitForSelector('#main-view:not([hidden])');
   await popup.evaluate(() => chrome.storage.local.set({ speed: 5 }));
-  log('bot logged in');
-
-  // ---------- ▶ from the panel: the bot starts by itself within a minute ----------
-  const started = await api('POST', '/api/bots/start', {}, owner);
-  if (started.started.length !== 1) fail(`start: ${JSON.stringify(started)}`);
+  // nothing but on / off and the test mode
+  for (const gone of ['#profile', '#rotate', '#autopilot', '#teach', '#probe', '#report', '#speed', '#inbox']) if (await popup.$(gone)) fail(`the bot window still has ${gone}`);
+  await popup.screenshot({ path: path.join(OUT, 'popup-main.png') });
+  log('bot logged in: only ▶ / 🧪');
   const readState = () => popup.evaluate(async () => (await chrome.storage.local.get('state')).state);
+  const tabOfDesk = async () => popup.evaluate(async (u) => (await chrome.tabs.query({})).find((t) => t.url?.includes(u))?.id, '/demo-site/shift.html');
+  // the bot is started with the site tab active (as when the person clicks the bot icon over the site)
+  const press = async (test) => {
+    await popup.evaluate(async ({ test, tab }) => new Promise((res) => chrome.runtime.sendMessage({ type: 'start', tabId: tab, test }, res)), { test, tab: await tabOfDesk() });
+  };
+  const deskState = () => desk.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith('shift_')).map((k) => [k, localStorage.getItem(k)])));
+
+  // ---------- 🧪 the test: both women, nothing sent ----------
+  const beforeTest = await deskState();
+  await popup.check('#test-mode');
+  if ((await popup.textContent('#start')).trim() !== '🧪 Запустити тест') fail('the button does not say «test»');
+  await press(true);
   let st;
   const t0 = Date.now();
-  while (Date.now() - t0 < 100000) {
-    st = await readState();
-    if (st?.status && st.status !== 'stopped' && st.profileId === kate.id && st.startedAt >= t0 - 5000) break;
-    await sleep(1000);
+  await sleep(1500);
+  while (Date.now() - t0 < 240000) { st = await readState(); if (st?.test && ['stopped', 'error'].includes(st.status)) break; await sleep(1000); }
+  const testLog = (st?.log || []).map((l) => l.text).reverse().join('\n');
+  if (st?.status !== 'stopped') fail(`the test did not pass: ${st?.status}\n${testLog}`);
+  await popup.screenshot({ path: path.join(OUT, 'popup-test.png') });
+  const profs = db.prepare('SELECT * FROM profiles WHERE operator_id = ? ORDER BY id').all(op.id);
+  if (profs.map((p) => `${p.name}:${p.site_profile_id}`).join() !== 'Kate:5000000001,Olivia:5000000002') fail(`profiles from the site: ${JSON.stringify(profs.map((p) => [p.name, p.site_profile_id, p.age]))}\n${testLog}`);
+  if (profs.some((p) => !p.age)) fail('the age of the women was not read');
+  if (!/🧪 Kate: тест пройдено/.test(testLog) || !/🧪 Olivia: тест пройдено/.test(testLog)) fail(`the test did not walk both women:\n${testLog}`);
+  if (!/НІЧОГО не надіслано/.test(testLog)) fail(`the test did not walk a letter:\n${testLog}`);
+  if (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE status = 'sent'").get().n || db.prepare('SELECT COUNT(*) AS n FROM allchat_log').get().n) fail('the test recorded messages');
+  const afterTest = await deskState();
+  for (const [k, v] of Object.entries(afterTest)) {
+    if (!k.startsWith('shift_dialogs')) continue;
+    const mine = (x) => Object.values(JSON.parse(x || '{}')).reduce((n, d) => n + d.msgs.filter((m) => m.mine).length, 0);
+    if (mine(v) !== mine(beforeTest[k] || afterTest[k])) fail(`the test sent something on the site (${k})`);
   }
-  if (!st || st.profileId !== kate.id) fail(`the bot did not start from the panel in time: ${JSON.stringify(st)?.slice(0, 300)}`);
-  log(`started from the panel in ${Math.round((Date.now() - t0) / 1000)} s`);
+  const [kate, olivia] = profs;
+  log('🧪 test: Kate and Olivia found on the site and made profiles, both walked, nothing sent');
 
-  // ---------- both passes run: «Шанс» then «Аллчат» ----------
-  const passes = () => db.prepare('SELECT * FROM passes WHERE profile_id = ? ORDER BY id').all(kate.id);
+  // the team lead sets Kate's photo for «Шанс» in the panel; the dialogs of both have been quiet for hours
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcffff3f0300050001ff0a2db4000000000049454e44ae426082', 'hex');
+  const up = await fetch(`${BASE}/api/profiles/${kate.id}/media?steps=300`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-file-name': 'kate-chance.png', authorization: `Bearer ${ira}` }, body: png });
+  if (up.status !== 201) fail(`photo upload: ${up.status} ${await up.text()}`);
+  for (const [p, shift] of [[kate, 0], [olivia, 100]]) {
+    for (let i = 1; i <= 6; i++) db.prepare("INSERT OR REPLACE INTO dialogs (profile_id, man_id, fp, fp_at) VALUES (?,?,'',?)").run(p.id, String(8000000 + shift + i), Date.now() - 10 * 3600000);
+  }
+
+  // ---------- ▶ on: both women, in turns ----------
+  await popup.uncheck('#test-mode');
+  await press(false);
+  const passes = (pid) => db.prepare('SELECT * FROM passes WHERE profile_id = ? ORDER BY id').all(pid);
   const t1 = Date.now();
-  while (Date.now() - t1 < 360000 && passes().length < 2) {
+  while (Date.now() - t1 < 480000 && (passes(kate.id).length < 2 || passes(olivia.id).length < 2)) {
     st = await readState();
-    if (st?.status === 'error') fail(`bot error: ${st.message}\n${st.log.map((l) => l.text).join('\n')}`);
+    if (st?.status === 'error') fail(`bot error: ${st.message}\n${st.log.map((l) => l.text).reverse().join('\n')}`);
     await sleep(2000);
   }
   st = await readState();
-  const botLog = st.log.map((l) => l.text).join('\n');
-  const ps = passes();
-  if (ps.length < 2) fail(`passes: ${JSON.stringify(ps)}\n${botLog}`);
-  const site1 = context.pages().find((p) => p.url().includes('/demo-site/shift.html'));
-  if (!site1) fail('the site tab is not open');
-  await site1.screenshot({ path: path.join(OUT, 'shift-desk.png') });
-  const dialogs = await site1.evaluate(() => JSON.parse(localStorage.getItem('shift_dialogs') || '{}'));
+  const botLog = st.log.map((l) => l.text).reverse().join('\n');
+  if (passes(kate.id).length < 2 || passes(olivia.id).length < 2) fail(`passes: ${JSON.stringify([passes(kate.id), passes(olivia.id)])}\n${botLog}`);
+  await popup.screenshot({ path: path.join(OUT, 'popup-running.png') });
+  await desk.bringToFront();
+  await desk.screenshot({ path: path.join(OUT, 'shift-desk.png') });
+  const store = await deskState();
+  const dialogsOf = (her) => JSON.parse(store[`shift_dialogs@${her}`] || '{}');
 
-  // «Шанс»: 8 of 12 men are online — each got a letter with the photo and a subject; the 4 offline got nothing
-  const chance = ps.find((p) => p.mode === 'chance');
-  const online = ['7000001', '7000002', '7000004', '7000005', '7000007', '7000008', '7000010', '7000011'];
-  const offline = ['7000003', '7000006', '7000009', '7000012'];
-  for (const id of online) {
-    const letter = dialogs[id]?.msgs?.find((m) => m.mine && m.letter);
-    if (!letter) fail(`no letter to the online man ${id}\n${botLog}`);
-    if (!letter.files?.includes('kate-chance.png')) fail(`the letter to ${id} has no photo: ${JSON.stringify(letter)}`);
-    if (!letter.subject) fail(`the letter to ${id} has no subject`);
-    if (!/Hello [A-Z][a-z]+!/.test(letter.text)) fail(`the letter does not greet him by name: ${letter.text.slice(0, 80)}`);
+  for (const [p, shift, photo] of [[kate, 0, 'kate-chance.png'], [olivia, 100, null]]) {
+    const dialogs = dialogsOf(p.site_profile_id);
+    const online = [1, 2, 4, 5, 7, 8, 10, 11].map((i) => String(7000000 + shift + i));
+    const offline = [3, 6, 9, 12].map((i) => String(7000000 + shift + i));
+    for (const id of online) {
+      const letter = dialogs[id]?.msgs?.find((m) => m.mine && m.letter);
+      if (!letter) fail(`${p.name}: no letter to the online man ${id}\n${botLog}`);
+      if (photo && !letter.files?.includes(photo)) fail(`${p.name}: the letter to ${id} has no photo: ${JSON.stringify(letter)}`);
+      if (!photo && letter.files?.length) fail(`${p.name}: a photo that is not hers: ${JSON.stringify(letter)}`);
+      if (!letter.subject) fail(`the letter to ${id} has no subject`);
+      if (!/Hello [A-Z][a-z]+!/.test(letter.text)) fail(`the letter does not greet him by name: ${letter.text.slice(0, 80)}`);
+    }
+    for (const id of offline) if (dialogs[id]?.msgs?.some((m) => m.mine)) fail(`${p.name}: wrote to the offline man ${id}`);
+    const before = { 1: 2, 2: 1, 3: 2, 4: 3, 5: 2, 6: 3 };
+    const wrote = Object.keys(before).filter((i) => dialogs[String(8000000 + shift + Number(i))]?.msgs?.slice(before[i]).some((m) => m.mine && !m.letter));
+    if (wrote.sort().join() !== '1,2,5,6') fail(`${p.name}: «Аллчат» wrote to ${wrote.join(', ')}\n${botLog}`);
+    const waiting = dialogs[String(8000003 + shift)];
+    if (waiting.msgs.length !== 2 || !waiting.unread) fail(`${p.name}: touched a dialog where he waits for an answer`);
+    if (dialogs[String(8000004 + shift)].msgs.length !== 3) fail(`${p.name}: wrote where he waits for an answer`);
+    const ch = passes(p.id).find((x) => x.mode === 'chance');
+    if (ch.sent !== 8) fail(`${p.name}: «Шанс» pass ${JSON.stringify(ch)}`);
+    if (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' AND mode = 'chance'").get(p.id).n !== 8) fail(`${p.name}: messages`);
+    if (db.prepare('SELECT COUNT(*) AS n FROM allchat_log WHERE profile_id = ? AND ok = 1').get(p.id).n !== 4) fail(`${p.name}: allchat log`);
   }
-  for (const id of offline) if (dialogs[id]?.msgs?.some((m) => m.mine)) fail(`wrote to the offline man ${id}`);
-  if (chance.sent !== 8) fail(`«Шанс» pass: ${JSON.stringify(chance)}`);
-  log('«Шанс»: 8 letters with the photo to online men, none to the 4 offline');
+  if (!/На сайті анкета Olivia/.test(botLog)) fail(`the site was not switched to Olivia:\n${botLog}`);
+  log('both women: 8 «Шанс» letters each (Kate\'s with her photo) to online men only; «Аллчат» into 4 quiet dialogs each; waiting ones untouched');
 
-  // «Аллчат»: quiet dialogs where her message is last got one more — on the topic; the unread one and his-last one — nothing
-  const allchat = ps.find((p) => p.mode === 'allchat');
-  const before = { '8000001': 2, '8000002': 1, '8000003': 2, '8000004': 3, '8000005': 2, '8000006': 3 };
-  const wrote = Object.keys(before).filter((id) => dialogs[id]?.msgs?.slice(before[id]).some((m) => m.mine && !m.letter));
-  if (wrote.sort().join() !== '8000001,8000002,8000005,8000006') fail(`«Аллчат» wrote to ${wrote.join(', ')}\n${botLog}`);
-  if (dialogs['8000003'].msgs.length !== 2 || dialogs['8000004'].msgs.length !== 3) fail('wrote into a dialog where he waits for an answer');
-  if (!dialogs['8000003'].unread) fail('the unread dialog was opened (the reply must stay «new» for the operator)');
-  const info = JSON.parse(allchat.info || '{}');
-  // (men who just answered Kate's letter wait for an answer too)
-  if (allchat.sent !== 4 || !(info.waits >= 2)) fail(`«Аллчат» pass: ${JSON.stringify(allchat)}`);
-  log('«Аллчат»: 4 quiet dialogs got a message, the 2 waiting for an answer were not touched (the unread one not even opened)');
+  // her «Шанс» interval (20 min) holds across the turns: the next pass of each is ~20 min after her first
+  const next = /Далі: (Kate|Olivia) о (\d\d:\d\d)/.exec(st.message || '');
+  log(`now: ${st.message}`);
+  if (!next) fail(`no «next» in the state: ${st.message}`);
 
-  // mini reports in Ira's Telegram, one per pass
-  for (let i = 0; i < 20 && tgSent.filter((m) => m.chat_id === '424242').length < 2; i++) await sleep(250);
+  // mini reports in Ira's Telegram, one per pass and woman
+  for (let i = 0; i < 20 && tgSent.filter((m) => m.chat_id === '424242').length < 4; i++) await sleep(250);
   const reports = tgSent.filter((m) => m.chat_id === '424242').map((m) => m.text);
-  if (!reports.some((t) => /Шанс/.test(t) && /Листів з фото: <b>8<\/b>/.test(t))) fail(`no «Шанс» report in Telegram: ${JSON.stringify(reports)}`);
-  if (!reports.some((t) => /Аллчат/.test(t) && /<b>4<\/b>/.test(t) && /чекають відповіді людини \d/.test(t))) fail(`no «Аллчат» report: ${JSON.stringify(reports)}`);
-  log('Telegram: a mini report after each pass');
+  for (const name of ['Kate', 'Olivia']) {
+    if (!reports.some((t) => t.includes(name) && /Шанс/.test(t) && /Листів з фото: <b>8<\/b>/.test(t))) fail(`no «Шанс» report for ${name}: ${JSON.stringify(reports)}`);
+    if (!reports.some((t) => t.includes(name) && /Аллчат/.test(t) && /<b>4<\/b>/.test(t))) fail(`no «Аллчат» report for ${name}: ${JSON.stringify(reports)}`);
+  }
+  log('Telegram: a mini report after each pass of each woman');
 
-  // the server knows what was sent and by which mode
-  const byMode = db.prepare("SELECT mode, COUNT(*) AS n FROM messages WHERE profile_id = ? AND status = 'sent' GROUP BY mode").all(kate.id);
-  if (byMode.find((x) => x.mode === 'chance')?.n !== 8) fail(`messages by mode: ${JSON.stringify(byMode)}`);
-  if (db.prepare('SELECT COUNT(*) AS n FROM allchat_log WHERE profile_id = ? AND ok = 1').get(kate.id).n !== 4) fail('allchat log');
-
-  // replies come in (the demo answers a few seconds later); the inbox check counts them
-  await sleep(8000);
-  await popup.bringToFront();
-  await popup.click('#inbox').catch(() => {});
-  await sleep(5000);
+  // the panel: both women working (one writes, the other waits for her turn)
+  const bots = (await api('GET', '/api/bots', null, ira)).bots;
+  if (bots.length !== 2 || bots.some((b) => b.state === 'off')) fail(`bots in the panel: ${JSON.stringify(bots)}`);
+  await sleep(6000); // replies come in a few seconds later
   const stats = await api('GET', '/api/stats/shift?nights=2', null, owner);
   const night = stats.nights.find((x) => x.chance.sent);
   log(`stats: ${JSON.stringify(night)}`);
-  if (!night || night.chance.sent !== 8 || night.allchat.sent !== 4) fail(`stats: ${JSON.stringify(stats.nights)}`);
-  if (night.chance.replies < 1) fail(`no replies to the letters counted: ${JSON.stringify(night)}`);
-  if (night.allchat.replies < 1) fail(`no replies to «Аллчат» counted (dialog list without IDs → by name): ${JSON.stringify(night)}`);
-  await popup.screenshot({ path: path.join(OUT, 'shift-popup.png') });
+  if (!night || night.chance.sent !== 16 || night.allchat.sent !== 8) fail(`stats: ${JSON.stringify(stats.nights)}`);
+  const ira2 = stats.people.find((x) => x.name === 'Ira');
+  if (ira2?.sent !== 24) fail(`the team by person: ${JSON.stringify(stats.people)}`);
 
   // ---------- ⏹ from the panel: the bot stops at its next heartbeat ----------
   await api('POST', '/api/bots/stop', {}, owner);
   const t2 = Date.now();
-  while (Date.now() - t2 < 60000) { st = await readState(); if (['stopped', 'error'].includes(st?.status)) break; await sleep(1000); }
+  while (Date.now() - t2 < 90000) { st = await readState(); if (['stopped', 'error'].includes(st?.status)) break; await sleep(1000); }
   if (st.status !== 'stopped') fail(`stop from the panel: ${st.status}`);
   log('stopped from the panel');
+  await popup.bringToFront();
+  await popup.screenshot({ path: path.join(OUT, 'popup-stopped.png') });
   if (consoleErrors.length) fail(`errors on pages: ${consoleErrors.join(' | ')}`);
   console.log(`\nSHIFT E2E OK — screenshots in ${OUT}`);
 } finally {

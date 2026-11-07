@@ -6,7 +6,7 @@ import { insertInvite, getSettings } from './services.js';
 import { templateInvite } from './ai.js';
 import { dayKey } from './util.js';
 import { sanitizeScenario } from './scenario.js';
-import { deskSiteConfig } from './sites.js';
+import { deskSiteConfig, shiftSiteConfig } from './sites.js';
 
 const DAY = 86400000;
 
@@ -84,6 +84,10 @@ export function seedTestData(db, cfg, { password = 'test12345' } = {}) {
       human: { hoursFrom: 0, hoursTo: 0, perHour: 0, breakEvery: 0, typing: true, spread: false },
     })), site.id);
   }
+  // The night shift with two women on one desk («Шанс», «Усі чати», the switcher): the bot finds Kate and Olivia by itself.
+  db.prepare('INSERT INTO sites (agency_id, name, base_url, config, scenario, created_at) VALUES (?,?,?,?,?,?)').run(
+    agencyId, 'Демо: нічна зміна', `${cfg.publicUrl.replace(/\/$/, '')}/demo-site/`, JSON.stringify(shiftSiteConfig(cfg.publicUrl)),
+    JSON.stringify(sanitizeScenario({ steps: [{ actions: [{ do: 'message', text: 'invite' }] }], human: { windows: '0-24', perHour: 0, breakEvery: 0, typing: true, spread: false } })), t0);
   // "Робочий стіл" like the user's site: hints → chat or letter, ID from the chat header — ready to run.
   if (site) {
     const deskId = Number(db.prepare('INSERT INTO sites (agency_id, name, base_url, config, scenario, created_at) VALUES (?,?,?,?,?,?)').run(

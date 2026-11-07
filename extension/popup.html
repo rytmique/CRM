@@ -15,8 +15,8 @@
 
   <section id="login-view" hidden>
     <form id="login-form">
-      <label>Адреса панелі<input id="server" type="text" required placeholder="http://localhost:3001"></label>
-      <p class="muted small">Те, що в рядку браузера панелі, без /demo-site/… (напр. http://localhost:3001)</p>
+      <label>Адреса панелі<input id="server" type="text" required placeholder="https://ваша-панель.up.railway.app"></label>
+      <p class="muted small">Те, що в рядку браузера, коли відкрита панель</p>
       <label>Логін (email)<input id="email" type="text" required autocomplete="username"></label>
       <label>Пароль<input id="password" type="password" required autocomplete="current-password"></label>
       <button type="submit" class="primary">Увійти</button>
@@ -26,62 +26,27 @@
 
   <section id="main-view" hidden>
     <div id="update" class="update" hidden></div>
-    <label>Анкета
-      <select id="profile"></select>
-    </label>
-    <p id="profile-note" class="muted small"></p>
-    <div id="guide" class="guide" hidden></div>
-    <label class="check" title="Бот проходить увесь шлях на сайті, але не натискає «Надіслати». Ліміт не витрачається.">
+    <p id="hint" class="hint">Відкрийте сайт і увійдіть. Бот сам знайде ваші анкети й працюватиме по всіх.</p>
+    <label class="check" title="Бот проходить увесь шлях на сайті за кожну анкету, але нічого не надсилає. Ліміт не витрачається.">
       <input type="checkbox" id="test-mode">
-      <span>🧪 Тест-режим <span class="muted">— усе, крім натискання «Надіслати»</span></span>
+      <span>🧪 Тестовий режим <span class="muted">— усе, крім «Надіслати»</span></span>
     </label>
-    <label class="check sub" id="test-full-row" hidden title="Після перевірки бот проходить до 15 чоловіків як насправді: підказки, сторінки, текст у полі — але нічого не надсилає й не натискає">
-      <input type="checkbox" id="test-full">
-      <span>Повний прогін <span class="muted">— як насправді, до 15 чоловіків, без відправки</span></span>
-    </label>
-    <label class="speed" title="Множить усі паузи бота й час друку. Швидше — більший ризик, що сайт насторожиться">
-      <span>Темп</span>
-      <input type="range" id="speed" min="1" max="5" step="1" value="3">
-      <b id="speed-text">звичайний</b>
-    </label>
-    <label class="check" title="Коли в анкети ліміт вичерпано або немає роботи — бот сам перемикає на сайті наступну жінку й працює за неї">
-      <input type="checkbox" id="rotate">
-      <span>🔁 Міняти анкети <span class="muted">— ліміт або немає роботи → наступна (і на сайті теж)</span></span>
-    </label>
-    <label class="check" title="Бот сам вмикається в робочі дні й години зі сценарію і сам вимикається після. Браузер має бути відкритий.">
-      <input type="checkbox" id="autopilot">
-      <span>⏰ Автопілот <span class="muted" id="autopilot-text">— сам вмикається й вимикається за розкладом</span></span>
-    </label>
-
-    <div class="row">
-      <button id="start" class="primary">▶ Старт</button>
-      <button id="stop" class="danger" hidden>■ Стоп</button>
-      <button id="inbox" title="Перевірити вхідні зараз">💌</button>
-      <button id="probe" title="Перевірити, чи бот бачить чоловіків на поточній сторінці">🔍</button>
-      <button id="report" title="📋 Звіт для розробника: що навчено, що бот бачить, останні події — без імен, ID і даних сайту">📋</button>
-    </div>
-    <button id="teach" class="teach" title="Показати боту на сайті, де картки, кнопки й поле вводу">🎯 Навчити бота на цьому сайті</button>
+    <button id="start" class="primary big">▶ Увімкнути</button>
+    <button id="stop" class="danger big" hidden>⏹ Вимкнути</button>
 
     <div id="status" class="card">
-      <div class="status-line"><span id="dot" class="dot"></span><b id="status-text">Не запущено</b></div>
+      <div class="status-line"><span id="dot" class="dot"></span><b id="status-text">Вимкнено</b></div>
       <div id="status-msg" class="muted small"></div>
-      <div id="pending" class="muted small" hidden></div>
       <div class="stats">
         <div><b id="s-sent">0</b><span id="s-sent-label">надіслано</span></div>
         <div><b id="s-replies">0</b><span>відповідей</span></div>
-        <div><b id="s-remaining">—</b><span>лишилось сьогодні</span></div>
+        <div><b id="s-profile">—</b><span>зараз анкета</span></div>
       </div>
     </div>
 
-    <details id="invite-box">
-      <summary>Поточний інвайт</summary>
-      <p id="invite" class="invite"></p>
-    </details>
-
     <ol id="log" class="log"></ol>
-    <p id="main-info" class="notice" role="status"></p>
     <p id="main-error" class="error" role="alert"></p>
-    <a id="panel-link" href="#" target="_blank" class="small">Відкрити панель керівника →</a>
+    <a id="panel-link" href="#" target="_blank" class="small">Відкрити панель →</a>
   </section>
 
   <script src="popup.js"></script>

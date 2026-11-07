@@ -153,6 +153,7 @@ export function shiftSiteConfig(publicUrl) {
     letterOpen: '.btn-letter', letterSubject: '.letter-subject', letterLeft: '.left-letters',
     attachButton: '.btn-attach', fileInput: '.file-input', attachDone: '.att-preview',
     inboxUrl: `${base}/shift.html#all`, inboxItem: '.chat-row', inboxUnread: '.unread', inboxName: '.r-name', inboxText: '.r-last',
+    herCurrent: '.her-now', herSwitch: '.her-switch', herItem: '.her-item', herItemId: '@data-her-id', herItemName: '.her-name',
     actions: [{ key: 'like', name: 'Лайк', sel: '.btn-like', where: 'page' }],
     marks: [],
   };

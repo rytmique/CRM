@@ -518,6 +518,46 @@
     return done ? { ok: true } : { ok: false, error: `сайт не перемкнув на ${name || id} (зараз: ${textOf(site.herCurrent) || '—'})` };
   }
 
+  /** "Kate, 29 · ID 5000000001" → { id, name, age } (whatever of it the text has). */
+  function parseHer(text) {
+    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    const id = (t.match(/\d{5,}/) || [''])[0];
+    const rest = t.replace(/\b(?:ID|id)\b[:\s#№]*\d{5,}/g, ' ').replace(/\d{5,}/g, ' ');
+    const name = (rest.split(/[,·|•(\-–—\d]/)[0] || '').trim().slice(0, 60);
+    const age = Number((rest.match(/\b(1[89]|[2-9]\d)\b/) || [])[1]) || null;
+    return { id, name, age };
+  }
+  /** All the women of this operator on the site (the list of the switcher), and the one working now. Clicks only to open / close the list. */
+  async function herList({ site }) {
+    const current = site.herCurrent && textOf(site.herCurrent) ? parseHer(textOf(site.herCurrent)) : null;
+    if (!site.herItem) return { hers: current ? [current] : [], current };
+    let rows = qsa(document, site.herItem).filter(visible);
+    let opened = false;
+    if (!rows.length && site.herSwitch) {
+      const sw = qsa(document, site.herSwitch).find(visible);
+      if (sw) {
+        await humanClick(sw);
+        opened = true;
+        rows = (await waitFor(() => { const l = qsa(document, site.herItem).filter(visible); return l.length ? l : null; }, 6000, 200)) || [];
+      }
+    }
+    const hers = [];
+    for (const el of rows) {
+      const p = parseHer(el.textContent);
+      const id = site.herItemId ? normId(extract(el, site.herItemId)) : p.id;
+      const named = site.herItemName ? parseHer(extract(el, site.herItemName)) : p;
+      const h = { id: id || '', name: named.name || p.name, age: named.age || p.age };
+      if ((h.id || h.name) && !hers.some((x) => (h.id ? x.id === h.id : x.name === h.name))) hers.push(h);
+    }
+    if (opened) { // close the list again, as a person would
+      await sleep(rand(300, 700));
+      const sw = qsa(document, site.herSwitch).find(visible);
+      if (sw && qsa(document, site.herItem).some(visible)) await humanClick(sw);
+    }
+    if (!hers.length && current) hers.push(current);
+    return { hers, current };
+  }
+
   /** Between men: scroll the list a bit and look around, like a person (opens nothing, so unread stays unread). */
   async function idle({ site, seconds = 8 }) {
     const list = qsa(document, site.inboxItem || site.card || site.taskItem).filter(visible);
@@ -637,7 +677,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
-    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, openTab, listItems, openItem, history,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, openTab, listItems, openItem, history,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

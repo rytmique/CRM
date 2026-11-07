@@ -157,19 +157,33 @@ export default function botRoutes(db, cfg) {
 
   // ---------- one button for everything: the bot finds the women on the site itself and works for all of them ----------
   /** The site this person works on (the one their profiles use, else the team's newest) and their profiles there. */
-  const workSite = (user) => {
+  const workSite = (user, tabUrl = '') => {
+    // the site open in the bot's tab, when it is one of the team's (the closest start page wins)
+    let tab = null;
+    try { tab = tabUrl ? new URL(tabUrl) : null; } catch { tab = null; }
+    if (tab) {
+      const score = (s) => {
+        let u;
+        try { u = new URL(configOf(s).searchUrl || s.base_url); } catch { return 0; }
+        if (u.origin !== tab.origin) return 0;
+        if (u.pathname === tab.pathname) return 3;
+        return tab.pathname.startsWith(u.pathname.replace(/[^/]*$/, '')) ? 1 + (u.pathname.replace(/[^/]*$/, '').length / 1000) : 0.5;
+      };
+      const best = db.prepare('SELECT * FROM sites WHERE agency_id = ? ORDER BY id DESC').all(user.agencyId).map((s) => [score(s), s]).filter(([n]) => n > 0).sort((a, b) => b[0] - a[0])[0];
+      if (best) return best[1];
+    }
     const scope = profileScope(user);
     return db.prepare(`SELECT s.* FROM profiles p JOIN sites s ON s.id = p.site_id WHERE ${scope.where} ORDER BY p.bot_beat_at DESC NULLS LAST, p.id DESC LIMIT 1`).get(...scope.params)
       || db.prepare('SELECT * FROM sites WHERE agency_id = ? ORDER BY id DESC LIMIT 1').get(user.agencyId);
   };
+  /** The women this person works as (the team lead too — only their own; the bot never works for someone else's). */
   const myProfiles = (user, siteId) => {
-    const scope = profileScope(user);
     const plan = planOf(db, user.agencyId);
-    return db.prepare(`SELECT p.id, p.name, p.age, p.status, p.site_profile_id, p.site_id FROM profiles p WHERE ${scope.where} AND p.site_id = ? ORDER BY p.id`)
-      .all(...scope.params, siteId).map((p) => ({ ...p, license: accessFor(plan, p) }));
+    return db.prepare('SELECT p.id, p.name, p.age, p.status, p.site_profile_id, p.site_id FROM profiles p WHERE p.agency_id = ? AND p.operator_id = ? AND p.site_id = ? ORDER BY p.id')
+      .all(user.agencyId, user.id, siteId).map((p) => ({ ...p, license: accessFor(plan, p) }));
   };
   r.get('/workspace', (req, res) => {
-    const site = workSite(req.user);
+    const site = workSite(req.user, String(req.query.url || ''));
     if (!site) throw new HttpError(409, 'Сайт команди ще не підключено — напишіть постачальнику.');
     res.json({ site: { id: site.id, name: site.name, base_url: site.base_url, config: configOf(site) }, profiles: myProfiles(req.user, site.id) });
   });
@@ -609,7 +623,7 @@ export default function botRoutes(db, cfg) {
 
   r.post('/profiles/:id/heartbeat', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
-    const state = oneOf(req.body?.state || 'running', ['running', 'paused', 'idle', 'error', 'limit', 'done'], 'state');
+    const state = oneOf(req.body?.state || 'running', ['running', 'paused', 'idle', 'error', 'limit', 'done', 'waiting'], 'state');
     const t = now();
     // Payment counts only real work: time between two "working" beats (no sleeping, waiting for hints, captcha, limit).
     const active = req.body?.active === undefined ? state === 'running' : Boolean(req.body.active) && state === 'running';
@@ -728,9 +742,9 @@ export default function botRoutes(db, cfg) {
 
   /** Started from the panel or Telegram: which of my profiles should start now (the extension asks every minute). */
   r.get('/control', (req, res) => {
-    const scope = profileScope(req.user);
-    const rows = db.prepare(`SELECT p.id, p.name, p.site_id FROM profiles p WHERE ${scope.where} AND p.status = 'active' AND p.start_at IS NOT NULL
-      AND p.start_at > COALESCE(p.bot_beat_at, 0) AND p.start_at > COALESCE(p.stop_at, 0) AND p.start_at > ? ORDER BY p.start_at`).all(...scope.params, now() - 30 * 60000);
+    // only the women of this person: their browser works only as them
+    const rows = db.prepare(`SELECT p.id, p.name, p.site_id FROM profiles p WHERE p.agency_id = ? AND p.operator_id = ? AND p.status = 'active' AND p.start_at IS NOT NULL
+      AND p.start_at > COALESCE(p.bot_beat_at, 0) AND p.start_at > COALESCE(p.stop_at, 0) AND p.start_at > ? ORDER BY p.start_at`).all(req.user.agencyId, req.user.id, now() - 30 * 60000);
     res.json({ start: rows });
   });
 

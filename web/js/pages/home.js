@@ -3,7 +3,7 @@ import { get, post, del, session } from '../api.js';
 import { downloadBot } from './extension.js';
 
 const STATE = {
-  running: ['🟢 пише', 'ok'], watching: ['🟢 стежить за відповідями', 'ok'], waiting: ['🟢 пауза', 'ok'], sleeping: ['🌙 неробочий час', ''],
+  running: ['🟢 пише', 'ok'], watching: ['🟢 стежить за відповідями', 'ok'], waiting: ['🟢 чекає черги', 'ok'], sleeping: ['🌙 неробочий час', ''],
   paused: ['⏸ пауза', 'warn'], blocked: ['🛑 капча — потрібна людина', 'err'], limit: ['🔵 ліміт на сьогодні', ''], error: ['🔴 помилка', 'err'],
   done: ['⚪ завершив', ''], idle: ['⚪ чекає', ''], starting: ['🟡 запускається…', 'warn'], off: ['⚪ вимкнено', ''],
 };

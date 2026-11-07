@@ -64,8 +64,7 @@ extension/
                   ensureHer/rotateProfiles (🔁 зміна анкет: ліміт/немає роботи → наступна жінка того ж сайту)
   content.js      в сторінці сайту: селектори (+ :has-text("…") і списки через кому), cardsOf (+ info: текст картки), open/openPage,
                   fill/submit/compose, typeText (друк по літері), humanClick, clickAction, view, inbox (+ текст), probe, blocked
-  picker.js       панель «🎯 Навчити бота»: вибір елементів мишкою → селектори, автопошук ID/імені/«Написати»
-  popup.*         логін, вибір анкети, тест-режим, ⏰ Автопілот, Старт/Стоп, 🎯 Навчити
+  popup.*         ЛИШЕ: логін, 🧪 Тестовий режим, ▶ Увімкнути / ⏹ Вимкнути, статус і журнал (+ банер оновлення). picker.js, автопілот, зміна анкет, звіт, перевірка — видалено (1.5.0)
 web/js/pages/     join (реєстрація за посиланням #/join/<token>), operators (= «Команда»: посилання, підтвердження, ⏹), prompts (мій промпт, фішки, що залітає, команди),
                   admin-overview (Пульт), admin-agency (картка команди #/agency?id=), admin-registrations, admin-devices (пристрої й копії бота),
                   setup (🚀 Підключення за руку), dashboard (банер майстра), profiles (варіанти інвайтів, файли, повторні, нагадування),
@@ -74,7 +73,7 @@ demo-site/        фейковий сайт знайомств для тесті
                   капча (localStorage.demo_captcha), desk.html — «робочий стіл оператора» як у користувача (список чатів, чат з ID у шапці, підказки, глюк-підказка);
                   desk.html?women=1 — три жінки (вигадані ID 500000000N): .her-now, перемикач, свої підказки/чати (ключі localStorage demo_*@<id>)
 test/api.test.js  node:test по API (19 тестів)
-test/e2e.mjs      Playwright: справжнє розширення в Chromium на демо-сайті (повний сценарій)
+test/shift.e2e.mjs  `npm run e2e`: справжній бот у Chromium на demo-site/shift.html (дві жінки Kate/Olivia, перемикач): тест-режим → ▶ по обох → звіти → ⏹. Старий e2e (навчання кліками, анкети в панелі) видалено
 ```
 
 ## Як працює бот (коротко)
@@ -89,9 +88,9 @@ test/e2e.mjs      Playwright: справжнє розширення в Chromium 
 10. Оплата: heartbeat з `active` (running/waiting, не тест) → `bot_activity` секунди між двома активними «пульсами» (≤150 с). Фіксується на того, хто запустив бота.
 11. Тест: швидкий (`runTest`) + `fullDryRun` (до 15 чоловіків, dry, нічого на сервер); 📋 `buildReport` + `maskText` (без імен/ID/адрес).
 9. Сайт-«робочий стіл» (немає `card`, є `taskItem`): цикл = повторні (`/due`, без `manUrl` — `findMan` за ID у полі пошуку) → `processTasks` (підказки сайту: реакція `react`, `openTask` клік → `waitChat` перевіряє шапку → ID з `chatId` → `/filter` з `via` з підказки → пише) → чекає нових підказок 1–2.5 хв. `writeHere` на таких сайтах завжди перевіряє, що відкритий чат його (`chatName`/`chatId`). Відповіді без ID — сервер матчить за ім’ям.
-12. 🔁 Зміна анкет (галочка в popup, `rotate`): `run(..., {rotate})` повертає 'limit'|'idle'|'stopped' → `rotateProfiles` бере наступну анкету того ж сайту (ліцензія, active, лишок ліміту; idle — відпочинок 10 хв, limit — 24 год) → `ensureHer` (herUrl з {pid} або клік herSwitch → herItem за herItemId/ім’ям → перевірка herCurrent). `writeHere` не пише, якщо `chatHer` показує іншу жінку. ID жінки = `profiles.site_profile_id`.
+12. 🔁 Зміна анкет — тепер ЗАВЖДИ (1.5.0, див. «сьома сесія»); стара схема (галочка в popup, `rotate`): `run(..., {rotate})` повертає 'limit'|'idle'|'stopped' → `rotateProfiles` бере наступну анкету того ж сайту (ліцензія, active, лишок ліміту; idle — відпочинок 10 хв, limit — 24 год) → `ensureHer` (herUrl з {pid} або клік herSwitch → herItem за herItemId/ім’ям → перевірка herCurrent). `writeHere` не пише, якщо `chatHer` показує іншу жінку. ID жінки = `profiles.site_profile_id`.
 13. Швидкість: popup `speed` 1–5 → `speedMul` (×2 … ×0.35) на всі паузи й друк. Стоп: `stopRequested` + `window.__agencyBotStop` у сторінці (typeText/submit перериваються, поле чиститься).
-14. Хто що бачить: NAV у web/js/app.js (owner: Головна, Команда, Анкети, Промпти, Журнал, Оплата, Сайти, Налаштування; приховані маршрути — licenses, setup, extension). Модель/навчання/caps — лише адмін (owner PUT /settings їх ігнорує). Промпт: анкета > оператор (users.prompt, profileSettings) > команда (ai.masterPrompt) > вбудований; фішки users.prompt_examples → у запит як приклади. Ключ: команди > платформи (якщо ai.platformKey).
+14. Хто що бачить: NAV у web/js/app.js — owner: Головна (home.js), ШІ (ai.js), Команда (operators.js), Налаштування (my-settings.js); operator: Головна, Налаштування. Інші сторінки (profiles, sites, scenario, journal, prompts, billing, setup, dashboard, stats, bot, basic-settings, settings) лишились файлами, але в меню їх НЕМАЄ і маршрутів теж. Модель тепер обирає owner (MODELS у routes/settings.js), навчання/caps — лише адмін. Промпт: анкета > оператор (users.prompt, profileSettings) > команда (ai.masterPrompt) > вбудований; фішки users.prompt_examples → у запит як приклади. Ключ: команди > платформи (якщо ai.platformKey).
 16. План команди: адмін задає «анкет у плані» + «до» (або без терміну) у запрошенні / картці команди (PUT /admin/agencies/:id/control {plan}); setPlan (team.js); створення/активація анкети понад план → 400; бот → 402 з поясненням. Міграція plan_v: старим командам план = к-сть ліцензій/анкет, без терміну.
 17. Оновлення бота: бот шле X-Bot-Version (sessions.version), /bot/profiles → bot {latest, min}; popup банер «Є нова версія» → завантажити (fetch /api/extension/download з токеном бота) → розпакувати туди ж → chrome.runtime.reload() (+ запасне посилання на chrome://extensions). minBotVersion (platform) → 426 на config. Після змін у extension/ — підняти version у manifest.json.
 15. Захист: бот логіниться з build (config.js AGENCY_BUILD); вимкнена копія → 403 і сесії видаляються; requireBuild (platform) — лише копії з панелі своєї команди. Віддалений стоп: heartbeat {startedAt, now} → stop, якщо stop_at пізніше старту; 401/403 на heartbeat → бот зупиняється.
@@ -101,7 +100,7 @@ test/e2e.mjs      Playwright: справжнє розширення в Chromium 
 ```bash
 npm install
 npm test                      # API-тести, мають бути всі зелені
-npm run e2e                   # ~30 хв, Chromium вже встановлений у хмарному контейнері; скріни в $E2E_OUT або ./e2e-out
+npm run e2e                   # ~5 хв: нічна зміна з ботом у Chromium (вже встановлений у хмарному контейнері); скріни в $E2E_OUT або ./e2e-out/shift
 npm run test-stand            # тестовий стенд на :3001 (той самий, що start-test.bat)
 ```
 Перед комітом: `npm test` і, якщо чіпав розширення/демо — `npm run e2e`. Синтаксис фронту: `node --check файл.js`.
@@ -166,6 +165,12 @@ npm run test-stand            # тестовий стенд на :3001 (той �
 - Панель: меню тімліда/оператора = Бот (старт/стоп, плитки ночі, налаштування змін, Telegram), Статистика (`/api/stats/shift`: по ночах і режимах, конверсія, ШІ), Анкети (фото «🎯 Шанс»), Команда, Оплата, Налаштування (ключ ШІ, мова, пояс; решта — «Розширені»: старі сторінки за прихованими маршрутами). Адмін: + «Telegram і функції»; блок людей — картка команди.
 - Тести: `test/shift.test.js` (API нічної зміни + Telegram), `npm run e2e-shift` (`test/shift.e2e.mjs`: справжній бот у Chromium — старт з панелі → Шанс лише онлайн з фото → Аллчат лише в замовклі → звіти в Telegram → стоп).
 - Інструкція запуску (Railway + ШІ + Telegram + тімлід + оператор): `docs/guide/platform.html` + `docs/guide/img`, збірка `python3 tools/build-guide.py [out]`.
+
+Листопад 2026 (сьома сесія), на прохання користувача «прибрати все зайве, спростити до максимуму»:
+- **Бот 1.5.0**: вікно = вхід + 🧪 Тестовий режим + ▶/⏹. `start({tabId, test})` → `runAll`: `GET /api/bot/workspace?url=<вкладка>` (сайт команди, що відкритий у вкладці) → `herList` (content.js: читає список жінок із перемикача herSwitch/herItem/herItemId/herItemName або herCurrent) → `POST /api/bot/hers` (нові жінки → анкети ЦЬОГО оператора; чужі не бере; понад план → paused) → працює по всіх по черзі: та, чия робота раніше (`due`), `shiftMemo` тримає її таймери Шансу/Аллчату між перемиканнями, `otherDue` → shiftLoop віддає чергу, коли інша жінка має роботу раніше; інші в черзі шлють heartbeat 'waiting' (не оплачується). Тест = `testAll`: для кожної жінки ensureHer + runTest (+ `shiftDry`: Шанс і Аллчат до 2 чоловіків, текст у поле, нічого не надсилає). ▶ з панелі/Telegram (`controlTick`, alarm 'control') — те саме runAll.
+- Сервер: `users.prefs` (оператор: chanceEveryMin 10–240, allchatPerNight 1–6 → profileSettings), `GET/PUT /api/me/prefs` (+ мастер-промпт users.prompt; teamPrompt), `/api/stats/shift?who=all|mine|<id>` (+ people по людях), `/api/settings` (+ models, usageDays), `/bot/control` і `/bot/workspace` — лише свої анкети (operator_id = я, і в тімліда теж).
+- Демо: `demo-site/shift.html` — завжди дві жінки (Kate 5000000001, Olivia 5000000002), ключі localStorage `shift_*@<id>`; seed стенду додає сайт «Демо: нічна зміна».
+- Оплата/рефералка з меню тімліда й оператора прибрані (сторінки є, повернути — рядок у NAV). Звіт сканера оператора — наступний крок (+ хук-інвайт: перші 5 символів, 3 категорії — docs/PLAN.md етап 2 п.5, НЕ зроблено).
 
 **Не перевірено на реальності:** справжній сайт знайомств (NDA), реальний деплой на Railway, справжні виклики Claude (в тестах мок), автопілот через добу (e2e перевіряє лише старт/стоп).
 

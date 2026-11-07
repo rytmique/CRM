@@ -1,15 +1,22 @@
 // Demo «night shift» desk (shift.html): the «Шанс» tab with online men, «Усі чати» with running dialogs,
 // the open chat with letters (subject, photos), a translator and replies that come in a few seconds later.
 // Everything lives in localStorage (keys shift_*), so the extension can be tested end to end.
+// Two women on one desk (made-up IDs 500000000N): «.her-now», the switcher «⇄ Анкети», each with her own men and chats.
 (() => {
+  const WOMEN = [{ id: '5000000001', name: 'Kate', age: 29 }, { id: '5000000002', name: 'Olivia', age: 31 }];
+  const many = true;
+  const herId = () => (many ? localStorage.getItem('shift_her') || WOMEN[0].id : WOMEN[0].id);
+  const her = () => WOMEN.find((w) => w.id === herId()) || WOMEN[0];
+  const key = (k) => (many ? `${k}@${herId()}` : k); // her own chats, counters
   const store = {
-    get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-    set(k, v) { localStorage.setItem(k, JSON.stringify(v)); },
+    get(k, d) { try { return JSON.parse(localStorage.getItem(key(k))) ?? d; } catch { return d; } },
+    set(k, v) { localStorage.setItem(key(k), JSON.stringify(v)); },
   };
   const NAMES = ['Robert', 'David', 'Michael', 'James', 'William', 'Richard', 'Thomas', 'Steven', 'Paul', 'Andrew', 'Kevin', 'George'];
   const COUNTRIES = ['USA', 'Canada', 'UK', 'Australia', 'Germany', 'Ireland'];
-  /** «Шанс»: 12 men, 8 of them online right now (the green dot). */
-  const CHANCE = NAMES.map((name, i) => ({ id: String(7000001 + i), name, age: 41 + i * 2, country: COUNTRIES[i % COUNTRIES.length], online: i % 3 !== 2 }));
+  /** «Шанс»: 12 men, 8 of them online right now (the green dot); another woman sees other men. */
+  const shift = () => (many ? WOMEN.findIndex((w) => w.id === herId()) * 100 : 0);
+  const chance = () => NAMES.map((name, i) => ({ id: String(7000001 + shift() + i), name, age: 41 + i * 2, country: COUNTRIES[i % COUNTRIES.length], online: i % 3 !== 2 }));
   /** Running dialogs: who wrote last decides whether the bot may write («Аллчат») or a person must answer. */
   const SEED = [
     { id: '8000001', name: 'Brian', age: 52, msgs: [['h', 'I love fishing on the lake near my house'], ['m', 'Fishing sounds so peaceful! What do you usually catch?']] },
@@ -32,7 +39,10 @@
     if (!d) {
       d = {};
       const t = Date.now() - 6 * 3600000;
-      for (const s of SEED) d[s.id] = { id: s.id, name: s.name, age: s.age, unread: Boolean(s.unread), msgs: s.msgs.map(([w, text], i) => ({ mine: w === 'm', text, at: t + i * 60000 })) };
+      for (const s of SEED) {
+        const id = String(Number(s.id) + shift());
+        d[id] = { id, name: s.name, age: s.age, unread: Boolean(s.unread), msgs: s.msgs.map(([w, text], i) => ({ mine: w === 'm', text: text.replace('Kate', her().name), at: t + i * 60000 })) };
+      }
       store.set('shift_dialogs', d);
     }
     return d;
@@ -55,8 +65,24 @@
       document.querySelector('.list-chance').hidden = t !== 'chance';
       document.querySelector('.list-all').hidden = t !== 'all';
     }
+    function renderHer() {
+      const w = her();
+      document.querySelector('.her-now').textContent = `${w.name}, ${w.age} · ID ${w.id}`;
+      const sw = document.querySelector('.her-switch');
+      sw.hidden = !many;
+      document.querySelector('.her-list').replaceChildren(...WOMEN.map((x) => {
+        const row = el('div', { class: `her-item${x.id === w.id ? ' on' : ''}`, 'data-her-id': x.id }, el('b', { class: 'her-name' }, `${x.name}, ${x.age}`), el('small', {}, ` ID ${x.id}`));
+        row.addEventListener('click', () => {
+          document.querySelector('.her-list').hidden = true;
+          if (x.id === herId()) return;
+          localStorage.setItem('shift_her', x.id);
+          setTimeout(() => location.reload(), 300); // the site reloads the desk as her
+        });
+        return row;
+      }));
+    }
     function renderChance() {
-      document.querySelector('.list-chance').replaceChildren(...CHANCE.map((m) => {
+      document.querySelector('.list-chance').replaceChildren(...chance().map((m) => {
         const item = el('div', { class: `chance-item${current?.id === m.id ? ' on' : ''}` },
           el('div', { class: 'ava' }, m.name[0], m.online ? el('span', { class: 'online-dot', title: 'online' }) : null),
           el('div', {}, el('div', { class: 'c-name' }, label(m)), el('div', { class: 'c-country' }, m.country)));
@@ -107,11 +133,11 @@
     /** Some men answer a few seconds later (the inbox shows «new»). */
     function maybeReply(id, kind) {
       const n = Number(id) % 4;
-      if (!(kind === 'letter' ? n === 1 : n === 1 || id === '8000001')) return;
+      if (!(kind === 'letter' ? n === 1 : n === 1 || id === String(8000001 + shift()))) return;
       setTimeout(() => {
         const d = dialogs();
         if (!d[id]) return;
-        d[id].msgs.push({ mine: false, text: kind === 'letter' ? 'Thank you for your letter, Kate! Tell me more about you.' : 'Haha yes, you remember! Tell me about your day.', at: Date.now() });
+        d[id].msgs.push({ mine: false, text: kind === 'letter' ? `Thank you for your letter, ${her().name}! Tell me more about you.` : 'Haha yes, you remember! Tell me about your day.', at: Date.now() });
         if (current?.id !== id) d[id].unread = true;
         save(d);
         renderAll();
@@ -119,6 +145,7 @@
       }, 5000);
     }
 
+    document.querySelector('.her-switch').addEventListener('click', () => { const l = document.querySelector('.her-list'); l.hidden = !l.hidden; });
     document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => { location.hash = b.dataset.tab === 'all' ? '#all' : '#chance'; }));
     window.addEventListener('hashchange', () => { showTab(); renderAll(); });
     box.querySelector('.btn-letter').addEventListener('click', () => { box.dataset.mode = 'letter'; showMode(); });
@@ -164,8 +191,8 @@
       for (const k of Object.keys(localStorage)) if (k.startsWith('shift_')) localStorage.removeItem(k);
       location.reload();
     });
-    showTab(); renderChance(); renderAll(); showMode();
+    renderHer(); showTab(); renderChance(); renderAll(); showMode();
   }
   window.addEventListener('DOMContentLoaded', init);
-  window.__shift = { dialogs, CHANCE };
+  window.__shift = { dialogs, chance, her, WOMEN };
 })();

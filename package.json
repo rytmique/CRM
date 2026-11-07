@@ -11,7 +11,7 @@
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
-    "e2e": "node --disable-warning=ExperimentalWarning test/e2e.mjs",
+    "e2e": "node --disable-warning=ExperimentalWarning test/shift.e2e.mjs",
     "e2e-shift": "node --disable-warning=ExperimentalWarning test/shift.e2e.mjs",
     "test-stand": "TEST_SEED=1 DATA_DIR=data-test PORT=3001 PUBLIC_URL=http://localhost:3001 ADMIN_EMAIL=admin@test ADMIN_PASSWORD=test12345 node --disable-warning=ExperimentalWarning server/index.js",
     "scanner-e2e": "node --disable-warning=ExperimentalWarning scanner/test/scanner.e2e.mjs",

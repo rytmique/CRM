@@ -23,9 +23,12 @@
   .composer .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; } .composer .status { margin-right: auto; }
   .atts { display: flex; gap: 6px; flex-wrap: wrap; } .att-preview img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
   .btn-attach { cursor: pointer; font-size: 18px; }
+  .her-box { position: relative; } .her-list { position: absolute; right: 0; top: 30px; background: #fff; border: 1px solid #e3d5da; border-radius: 10px; padding: 6px; z-index: 5; min-width: 200px; box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+  .her-item { padding: 7px 9px; border-radius: 8px; cursor: pointer; } .her-item:hover, .her-item.on { background: #fdecf2; }
 </style></head>
 <body>
-<header class="top"><span class="logo">♥ DemoDate</span><b>Operator</b><span class="who">Kate, 29 · ID 5000000001</span></header>
+<header class="top"><span class="logo">♥ DemoDate</span><b>Operator</b><span class="who her-now"></span>
+  <span class="her-box"><button class="her-switch" type="button" hidden>⇄ Анкети</button><div class="her-list" hidden></div></span></header>
 <main>
   <div class="banner">Варіант сайту — «нічна зміна»: вкладка «Шанс» (онлайн-чоловіки), «Усі чати» (постійні діалоги), лист з фото й перекладом.</div>
   <div class="shift">
