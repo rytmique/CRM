@@ -982,14 +982,19 @@ async function shiftLoop(ctx, rotate) {
     if (ctx.cfg.scenario.followups && (site.manUrl || site.findInput)) await processDue(ctx).catch((e) => log(`Повторні: ${e.message}`, 'warn'));
     if (site.taskItem && !ctx.limitReached) await processTasks(ctx);
     if (did) await checkInbox(site, ctx.profileId);
-    const next = Math.min(...[ch.on && site.chanceItem && !ctx.limitReached ? ctx.nextChance : Infinity,
-      ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? ctx.nextAllchat : Infinity, Date.now() + 3 * 60000]);
-    keep(next);
-    // another woman has work sooner than her: switch to her (and come back when it is her turn)
-    if (rotate && (ctx.otherDue?.() ?? Infinity) < next - 60000) return 'idle';
+    // her next real work («Шанс» / «Аллчат»); with no work left tonight she is still looked at every 30 min (replies, a new night)
+    const work = Math.min(Date.now() + 30 * 60000, ch.on && site.chanceItem && !ctx.limitReached ? ctx.nextChance : Infinity,
+      ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? ctx.nextAllchat : Infinity);
+    const next = Math.min(work, Date.now() + 3 * 60000); // the inbox is looked at every few minutes while she works
+    keep(work);
+    // another woman's turn has come before her next work: switch to her (she comes back when her work is due);
+    // until then the bot stays as her and watches her replies
+    const other = rotate ? (ctx.otherDue?.() ?? Infinity) : Infinity;
+    if (other < work - 60000 && other <= Date.now() + 30000) return 'idle';
     const parts = [ch.on && site.chanceItem && !ctx.limitReached ? `Шанс о ${hhmm(ctx.nextChance)}` : '', ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? `Аллчат о ${hhmm(ctx.nextAllchat)}` : ''].filter(Boolean);
-    await setState({ message: `🌙 Далі: ${parts.join(' · ') || 'лише відповіді'}. Стежу за відповідями` });
-    await waitUntil(next, ctx, 'watching');
+    const turn = other < work ? `${ctx.otherName?.() || 'інша анкета'} о ${hhmm(other)} · ${ctx.profileName}: ` : '';
+    await setState({ message: `🌙 Далі: ${turn}${parts.join(', ') || 'лише відповіді'}. Стежу за відповідями` });
+    await waitUntil(Math.min(next, other), ctx, 'watching');
   }
   return 'stopped';
 }
@@ -1090,13 +1095,15 @@ async function ensureHer(tabId, site, who = her) {
   return after?.ok ? { ok: true } : { ok: false, error: `сайт не перемкнув на ${who.name} (зараз: ${after?.now || '—'})` };
 }
 
-async function run(profileId, tabId, { rotate = false, otherDue = null } = {}) {
+async function run(profileId, tabId, { rotate = false, otherDue = null, otherName = null, startedAt = null } = {}) {
   const ctx = await loadRun(profileId, false);
-  ctx.otherDue = otherDue;
+  Object.assign(ctx, { otherDue, otherName, profileName: ctx.cfg.profile.name });
   const { cfg, site } = ctx;
   await setState({
     ...EMPTY_STATE, log: state.log, status: 'running', test: false, profileId, profileName: cfg.profile.name, siteName: cfg.site.name,
-    remaining: cfg.limits.remaining, dailyLimit: cfg.limits.dailyLimit, page: 1, inviteText: cfg.invite.text, startedAt: Date.now(), pending: cfg.pending,
+    remaining: cfg.limits.remaining, dailyLimit: cfg.limits.dailyLimit, page: 1, inviteText: cfg.invite.text, pending: cfg.pending,
+    // one run for all her women: the counters go on, and «⏹ from the panel» is compared with the start of the whole run
+    startedAt: startedAt || Date.now(), ...(rotate ? { sent: state.sent || 0, replies: state.replies || 0, failed: state.failed || 0 } : {}),
   });
   const h = ctx.human;
   await log(`Старт: ${cfg.profile.name} на «${cfg.site.name}». Ліміт на сьогодні: ${cfg.limits.remaining}. Спроб на чоловіка: ${cfg.scenario.attempts}`
@@ -1473,10 +1480,11 @@ async function beatQueue(list, cur, due) {
  * The site is switched to her (the switcher of the site), her «Шанс» interval and «Аллчат» passes keep counting across turns.
  */
 async function runAll(tabId) {
+  const startedAt = Date.now();
   const w = await workspace(tabId);
   tabId = w.tabId;
   let list = w.list;
-  await setState({ ...EMPTY_STATE, log: state.log, status: 'running', test: false, tabId, siteName: w.ws.site.name, startedAt: Date.now() });
+  await setState({ ...EMPTY_STATE, log: state.log, status: 'running', test: false, tabId, siteName: w.ws.site.name, startedAt });
   await log(`👩 Анкет: ${list.length} (${list.map((p) => p.name).join(', ')}) — працюю по всіх`);
   const due = new Map(list.map((p) => [p.id, 0]));
   const failed = new Map();
@@ -1495,11 +1503,13 @@ async function runAll(tabId) {
       }
       if (stopRequested) break;
     }
-    const others = () => Math.min(Infinity, ...list.filter((x) => x.id !== p.id).map((x) => due.get(x.id) || 0));
+    const rest = () => list.filter((x) => x.id !== p.id).sort((a, b) => (due.get(a.id) || 0) - (due.get(b.id) || 0));
+    const others = () => (rest()[0] ? due.get(rest()[0].id) || 0 : Infinity);
+    const othersName = () => rest()[0]?.name || '';
     let reason;
     try {
       if (list.length > 1) await beatQueue(list, p.id, due);
-      reason = await run(p.id, tabId, { rotate: list.length > 1, otherDue: others });
+      reason = await run(p.id, tabId, { rotate: list.length > 1, otherDue: others, otherName: othersName, startedAt });
       failed.delete(p.id);
     } catch (e) {
       if (stopRequested) break;

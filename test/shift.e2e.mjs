@@ -177,7 +177,7 @@ try {
   await press(false);
   const passes = (pid) => db.prepare('SELECT * FROM passes WHERE profile_id = ? ORDER BY id').all(pid);
   const t1 = Date.now();
-  while (Date.now() - t1 < 480000 && (passes(kate.id).length < 2 || passes(olivia.id).length < 2)) {
+  while (Date.now() - t1 < 600000 && (passes(kate.id).length < 2 || passes(olivia.id).length < 2)) {
     st = await readState();
     if (st?.status === 'error') fail(`bot error: ${st.message}\n${st.log.map((l) => l.text).reverse().join('\n')}`);
     await sleep(2000);
@@ -218,10 +218,18 @@ try {
   if (!/На сайті анкета Olivia/.test(botLog)) fail(`the site was not switched to Olivia:\n${botLog}`);
   log('both women: 8 «Шанс» letters each (Kate\'s with her photo) to online men only; «Аллчат» into 4 quiet dialogs each; waiting ones untouched');
 
-  // her «Шанс» interval (20 min) holds across the turns: the next pass of each is ~20 min after her first
-  const next = /Далі: (Kate|Olivia) о (\d\d:\d\d)/.exec(st.message || '');
+  // her «Шанс» interval (20 min, her own setting) holds across the turns: the bot waits for the first one due, ~20 min after her pass
+  let next = null;
+  for (let i = 0; i < 60 && !next; i++) { st = await readState(); next = /Далі: (Kate|Olivia) о (\d\d):(\d\d)/.exec(st?.message || ''); if (!next) await sleep(1000); }
   log(`now: ${st.message}`);
   if (!next) fail(`no «next» in the state: ${st.message}`);
+  const who = next[1] === 'Kate' ? kate : olivia;
+  const ended = passes(who.id).find((x) => x.mode === 'chance').ended_at;
+  const at = new Date(ended); at.setHours(Number(next[2]), Number(next[3]), 0, 0);
+  if (at.getTime() < ended) at.setDate(at.getDate() + 1);
+  const mins = (at.getTime() - ended) / 60000;
+  if (mins < 16 || mins > 23) fail(`the next «Шанс» of ${next[1]} is ${mins.toFixed(1)} min after her pass (her setting: 20)`);
+  log(`next «Шанс» of ${next[1]} in ~${Math.round(mins)} min (her setting 20)`);
 
   // mini reports in Ira's Telegram, one per pass and woman
   for (let i = 0; i < 20 && tgSent.filter((m) => m.chat_id === '424242').length < 4; i++) await sleep(250);
