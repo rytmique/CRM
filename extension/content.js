@@ -455,10 +455,26 @@
     }).filter((x) => x.name || x.id);
   }
 
+  /** «Load more» under the list until there are more rows than «until» (a few clicks at most). */
+  async function listMore({ site, kind, until = 0, max = 4 }) {
+    const count = () => qsa(document, site[`${kind}Item`]).filter(visible).length;
+    for (let i = 0; i < max && count() <= until; i++) {
+      const btn = qsa(document, site.listMore).find(visible);
+      if (!btn) break;
+      const n = count();
+      await humanClick(btn);
+      await waitFor(() => count() > n, 6000, 250);
+      await sleep(rand(400, 900));
+    }
+    return { ok: count() > until, count: count() };
+  }
+
   /** Opens one man of a tab (found again by place and name — lists move) and tells who opened (ID from the chat header). */
   async function openItem({ site, kind, item, dry }) {
-    const list = qsa(document, site[`${kind}Item`]).filter(visible);
+    let list = qsa(document, site[`${kind}Item`]).filter(visible);
     const named = (x) => !item.name || norm(x.textContent).includes(norm(item.name));
+    // a row from a «Load more» page is gone after the list was opened again: load it again
+    if (item.index >= list.length && site.listMore) { await listMore({ site, kind, until: item.index }); list = qsa(document, site[`${kind}Item`]).filter(visible); }
     const el = (list[item.index] && named(list[item.index]) ? list[item.index] : null) || list.find(named);
     if (!el) return { ok: false, error: 'його вже немає в списку' };
     if (dry) flash(el, '🧪 відкриваю');
@@ -746,7 +762,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
-    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, galleryPick, openTab, listItems, openItem, history,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, galleryPick, listMore, openTab, listItems, openItem, history,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

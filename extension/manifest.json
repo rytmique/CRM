@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Agency Bot — інвайти з анкет",
   "short_name": "Agency Bot",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Нічна зміна на сайті знайомств: Шанс і Аллчат по всіх анкетах оператора. Переписку веде жива людина.",
   "minimum_chrome_version": "116",
   "permissions": [

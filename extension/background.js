@@ -868,47 +868,61 @@ async function chancePass(ctx) {
   await setState({ message: '🎯 Шанс: відкриваю список' });
   const o = await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch((e) => ({ ok: false, error: e.message }));
   if (!o?.ok) { await log(`🎯 Шанс: ${o?.error || 'вкладка не відкрилась'}`, 'warn'); res.failed = 1; res.info.error = o?.error; return finishPass(ctx, 'chance', t0, res); }
-  const list = ((await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || []).filter(isHers);
-  const todo = cfg.modes.chance.onlineOnly ? list.filter((x) => x.online !== false) : list;
-  res.info.offline = list.length - todo.length;
-  res.seen = todo.length;
-  await log(`🎯 Шанс: у списку ${list.length}, онлайн ${todo.length}`);
   ctx.chanceDone ||= new Set(); // men this run already looked at (so the next pass does not open them again)
-  for (const item of todo) {
-    if (stopRequested || ctx.limitReached) break;
-    await waitWorkingHours(ctx);
-    if (stopRequested) break;
-    if (await guard(ctx)) { res.info.captcha = 1; if (stopRequested) break; }
-    const key = item.id || `${item.name}|${item.age}`;
-    if (ctx.chanceDone.has(key)) { res.info.contacted++; continue; }
-    await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch(() => null); // the list may have moved
-    const opened = await inTab(tabId, 'openItem', { site, kind: 'chance', item }).catch((e) => ({ ok: false, error: e.message }));
-    if (!opened?.ok) { res.skipped++; await log(`🎯 ${item.name}: ${opened?.error || 'не відкрився'}`, 'warn'); continue; }
-    if (!opened.id) { res.skipped++; await log(`🎯 ${item.name}: не бачу його ID у шапці чату`, 'warn'); continue; }
-    ctx.chanceDone.add(key);
-    const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', candidates: [{ id: opened.id, name: opened.name, age: item.age, place: opened.place, online: item.online !== false, via: 'letter' }] } });
-    await setState({ remaining: f.remaining });
-    if (f.remaining <= 0) { ctx.limitReached = true; break; }
-    const man = f.allowed[0];
-    if (!man) { res.info.contacted++; continue; }
-    withGallery(site, man);
-    await setState({ message: `🎯 Шанс: лист для ${man.name || man.id}` });
-    let r;
-    try { r = await runActions(tabId, site, man, man.actions, { where: 'page', typing: ctx.human.typing }); } catch (e) { r = { ok: false, messages: 0, error: e.message, warnings: [] }; }
-    const s = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: r.ok, error: r.error, text: man.text, mode: 'chance', exhausted: r.exhausted } });
-    if (r.ok) {
-      res.sent++;
-      await setState({ sent: state.sent + r.messages, remaining: s.remaining });
-      await log(`🎯 ${man.name || man.id}: ✉ лист ✓${r.attached ? ` 📷${r.attached}` : ''}`);
-    } else {
-      if (!r.exhausted) res.failed++;
-      res.info.error = r.error;
-      await setState({ failed: state.failed + (r.exhausted ? 0 : 1), remaining: s.remaining });
-      await log(`🎯 ${man.name || man.id}: ${r.error}`, 'warn');
+  // the list shows the first ~30: when everyone there is done, «Load more» (a few times) brings the next ones
+  let rows = 0;
+  const counted = new Set();
+  for (let round = 0; round < (site.listMore ? 4 : 1); round++) {
+    if (round) {
+      await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch(() => null);
+      const more = await inTab(tabId, 'listMore', { site, kind: 'chance', until: rows }).catch(() => null); // past what was seen
+      if (!more?.ok) break;
     }
-    await heartbeat();
-    if (s.stop) { ctx.limitReached = true; break; }
-    await afterMan(ctx, s, r.messages);
+    const raw = (await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || [];
+    rows = raw.length;
+    const list = raw.filter(isHers);
+    const todo = cfg.modes.chance.onlineOnly ? list.filter((x) => x.online !== false) : list;
+    res.info.offline = round ? res.info.offline : list.length - todo.length;
+    res.seen = Math.max(res.seen, todo.length);
+    await log(`🎯 Шанс: ${round ? `ще ${round}× «Load more» — ` : ''}у списку ${list.length}, онлайн ${todo.length}`);
+    for (const item of todo) {
+      if (stopRequested || ctx.limitReached) break;
+      await waitWorkingHours(ctx);
+      if (stopRequested) break;
+      if (await guard(ctx)) { res.info.captcha = 1; if (stopRequested) break; }
+      const key = item.id || `${item.name}|${item.age}`;
+      if (ctx.chanceDone.has(key)) { if (!counted.has(key)) { counted.add(key); res.info.contacted++; } continue; }
+      await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch(() => null); // the list may have moved
+      const opened = await inTab(tabId, 'openItem', { site, kind: 'chance', item }).catch((e) => ({ ok: false, error: e.message }));
+      if (!opened?.ok) { res.skipped++; await log(`🎯 ${item.name}: ${opened?.error || 'не відкрився'}`, 'warn'); continue; }
+      if (!opened.id) { res.skipped++; await log(`🎯 ${item.name}: не бачу його ID у шапці чату`, 'warn'); continue; }
+      ctx.chanceDone.add(key);
+      const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', candidates: [{ id: opened.id, name: opened.name, age: item.age, place: opened.place, online: item.online !== false, via: 'letter' }] } });
+      await setState({ remaining: f.remaining });
+      if (f.remaining <= 0) { ctx.limitReached = true; break; }
+      const man = f.allowed[0];
+      if (!man) { res.info.contacted++; continue; }
+      withGallery(site, man);
+      await setState({ message: `🎯 Шанс: лист для ${man.name || man.id}` });
+      let r;
+      try { r = await runActions(tabId, site, man, man.actions, { where: 'page', typing: ctx.human.typing }); } catch (e) { r = { ok: false, messages: 0, error: e.message, warnings: [] }; }
+      const s = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: r.ok, error: r.error, text: man.text, mode: 'chance', exhausted: r.exhausted } });
+      if (r.ok) {
+        res.sent++;
+        await setState({ sent: state.sent + r.messages, remaining: s.remaining });
+        await log(`🎯 ${man.name || man.id}: ✉ лист ✓${r.attached ? ` 📷${r.attached}` : ''}`);
+      } else {
+        if (!r.exhausted) res.failed++;
+        res.info.error = r.error;
+        await setState({ failed: state.failed + (r.exhausted ? 0 : 1), remaining: s.remaining });
+        await log(`🎯 ${man.name || man.id}: ${r.error}`, 'warn');
+      }
+      await heartbeat();
+      if (s.stop) { ctx.limitReached = true; break; }
+      await afterMan(ctx, s, r.messages);
+    }
+
+    if (stopRequested || ctx.limitReached) break;
   }
   return finishPass(ctx, 'chance', t0, res);
 }

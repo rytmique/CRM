@@ -53,6 +53,7 @@
   };
   const last = (x) => x.msgs[x.msgs.length - 1];
   let gallery = null;
+  let chanceShown = 10;
 
   function menu(r) {
     const item = (cls, testid, text, on, path, val) => el('div', { class: `clmn_1_menu_item-OoLICg ${cls}${on ? ' active-pHK3F' : ''}`, 'data-testid': testid, 'aria-label': '', onclick: () => go(path) },
@@ -86,6 +87,7 @@
 
   function list(r) {
     // the letter page has its own column (folders of letters), not the list of chats — as on the real site
+    if (r.section !== 'chance') chanceShown = 10;
     if (r.section === 'letter') {
       return el('div', { class: 'clmn_2_letters-aptDWM', 'data-testid': 'letter-filter-block' },
         el('div', { class: 'letters_folders-W5TzjO', 'data-testid': 'letter-menu' },
@@ -94,10 +96,14 @@
     const all = Object.values(chats());
     const chance = r.section === 'chance';
     const rows = chance ? all.filter((x) => x.chance) : all.filter((x) => x.msgs.length).sort((a, b) => (last(b)?.at || 0) - (last(a)?.at || 0));
+    // «Chance» shows 10 rows and «Load more» (the real one shows ~30); the extra rows are gone once another page was opened
+    const shown = chance ? rows.slice(0, chanceShown) : rows;
+    const more = chance && shown.length < rows.length
+      ? el('div', { class: 'clmn_2_chat_loadmore_btn-YTKsFt', onclick: () => { chanceShown += 10; refreshSide(); } }, 'Load more') : null;
     return el('div', { class: 'clmn_2-UZvWb3 clmn_2_chat-JMJGk8', 'data-testid': 'chat-list-block' },
       el('div', { class: 'clmn_2_chat_top_filters_container-GNfN_U', 'data-testid': 'chat-list-filter' }, el('input', { placeholder: 'Search ID or name', type: 'text' })),
       el('div', { class: 'clmn_2_chat_block_title-X1Fir' }, chance ? 'Chance' : 'Chats'),
-      el('div', { class: 'clmn_2_chat_block_list-kytTFk', 'data-testid': 'chat-list' }, ...rows.map((x) => row(x, chance ? 'chance' : 'chat', x.cid === r.cid))));
+      el('div', { class: 'clmn_2_chat_block_list-kytTFk', 'data-testid': 'chat-list' }, ...shown.map((x) => row(x, chance ? 'chance' : 'chat', x.cid === r.cid)), more));
   }
 
   function header(x, letter) {
