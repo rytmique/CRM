@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DemoDate — Operator desk</title><script src="/demo-site/desk2.js"></script>
+<style>
+  * { box-sizing: border-box; } body { margin: 0; font: 14px/1.4 system-ui, sans-serif; color: #1f1a24; background: #f3eef1; }
+  .wchat_wrap-rzEzhI { display: grid; grid-template-columns: 190px 340px 1fr; height: 100vh; }
+  .clmn_1-R8mlkB { background: #2b2233; color: #fff; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .clmn_1_logo-RbKihh { font-weight: 700; font-size: 18px; padding: 8px 4px 14px; }
+  .clmn_1_mm_chat_wrap-ir_IEt { background: #3a2f44; border-radius: 10px; padding: 10px; cursor: pointer; }
+  .clmn_1_menu_item-OoLICg { padding: 10px; border-radius: 9px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+  .clmn_1_menu_item-OoLICg.active-pHK3F { background: #c2255c; }
+  .clmn_1_menu_item_val-dopI3 { margin-left: auto; background: #e03131; border-radius: 99px; padding: 0 7px; font-size: 11px; }
+  .clmn_2_letters-aptDWM { background: #fff; border-right: 1px solid #eadfe5; padding: 10px; } .letters_folder_item-siJrCt { padding: 10px; border-radius: 9px; } .letters_folder_item-siJrCt.active-prXOql { background: #fdecf2; }
+  .clmn_2-UZvWb3 { background: #fff; border-right: 1px solid #eadfe5; overflow: auto; }
+  .clmn_2_chat_top_filters_container-GNfN_U { padding: 10px; border-bottom: 1px solid #f0e6ea; display: flex; gap: 8px; align-items: center; }
+  .clmn_2_chat_block_title-X1Fir { padding: 10px; font-weight: 700; }
+  .clmn_2_chat_block_item-aYZSKz { display: grid; grid-template-columns: 50px 1fr 120px; gap: 8px; padding: 10px; border-bottom: 1px solid #f6eef2; cursor: pointer; }
+  .clmn_2_chat_block_item-aYZSKz.active-x2Lk9a { background: #fdecf2; }
+  .clmn_2_chat_block_item_left-Ggv0Ds, .chat_head_profile_photo-GMRJz_ { width: 44px; height: 44px; border-radius: 50%; background: #eadbe1; display: grid; place-items: center; font-weight: 600; position: relative; }
+  .online-nD6EbO::after, .online-IFKz1K::after { content: ''; position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; border-radius: 50%; background: #2fb344; border: 2px solid #fff; }
+  .clmn_2_chat_block_item_middle_name-w1HVgD { font-weight: 600; } .clmn_2_chat_block_item_middle_text-jXczoA { color: #7b6f80; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+  .clmn_2_chat_block_item_middle_text-jXczoA.from_man-Q3eR1t { color: #1f1a24; font-weight: 600; }
+  .clmn_2_chat_block_item_profile-f7tZ_T { font-size: 11px; color: #7b6f80; text-align: right; }
+  .clmn_2_chat_loadmore_btn-YTKsFt { padding: 10px; text-align: center; color: #c2255c; cursor: pointer; }
+  .clmn_3-CbfLOz { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; background: #fff; }
+  .clmn_3_chat_empty-Gy8x5R { display: grid; place-items: center; color: #9a8f9e; }
+  .chat_head-doHxxv { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid #f0e6ea; }
+  .chat_head_profile-Nhx5pm { display: flex; gap: 8px; align-items: center; } .chat_head_middle-a_lfy0 { margin: 0 auto; display: flex; gap: 10px; }
+  .chat_head_nav_btn-gDTMMQ { width: 30px; height: 30px; border-radius: 8px; border: 1px solid #eadfe5; display: grid; place-items: center; cursor: pointer; }
+  .chat_head_profile_id-BpbFCY { font-size: 12px; color: #7b6f80; }
+  .clmn_3_chat_scroll-DuQEOh, .letters_chat_list_scroll-wI8MvB { overflow: auto; padding: 14px; display: grid; gap: 8px; align-content: start; }
+  .clmn_3_chat_message-Z3kYBe { max-width: 70%; padding: 8px 12px; border-radius: 12px; } .right-u7r2bI { background: #fde2ec; justify-self: end; } .left-LN1dv5 { background: #f4eef1; justify-self: start; }
+  .letters_chat_item-GioNa4 { border: 1px dashed #c2255c; border-radius: 12px; padding: 10px; max-width: 70%; } .from_you-oZa3M { justify-self: end; } .to_you-myIddH { justify-self: start; }
+  .clmn_3_chat_bottom-gel8h0, .clmn_3_chat_bottom-ojMbQx { border-top: 1px solid #f0e6ea; padding: 10px 16px; }
+  .clmn_3_chat_textarea_double-hsycm_, .clmn_3_chat_textarea_double-e2emqK { display: grid; grid-template-columns: 1fr 44px 1fr; gap: 8px; }
+  textarea { width: 100%; min-height: 80px; font: inherit; padding: 8px; border: 1px solid #e3d5da; border-radius: 8px; }
+  .clmn_3_chat_textarea_translate_info-PkXZJK { font-size: 12px; color: #7b6f80; margin-bottom: 4px; }
+  .clmn_3_chat_textarea_translate_arrow-RB4D_i { width: 36px; height: 36px; border-radius: 50%; background: #c2255c; color: #fff; display: grid; place-items: center; cursor: pointer; margin-top: 30px; }
+  .clmn_3_chat_bottom_nav-DSxiNy { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .clmn_3_chat_bottom_option_btn-QuKoS_ { border: 1px solid #e3d5da; background: #fff; border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+  .chat_typing_right-wqs8Ru { margin-left: auto; color: #7b6f80; font-size: 12px; }
+  .clmn_3_chat_bottom_send_btn-LYXEYH { background: #c2255c; color: #fff; border-radius: 9px; padding: 9px 18px; cursor: pointer; }
+  .letters_attach_files_list-a1B2c3 { display: flex; gap: 6px; margin-top: 6px; } .letters_attach_files_item { width: 44px; height: 44px; border-radius: 6px; background: #eadbe1; display: grid; place-items: center; font-size: 11px; }
+  .ReactModal__Overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: grid; place-items: center; }
+  .ReactModal__Content { background: #fff; border-radius: 14px; padding: 16px; width: 560px; }
+  .upload_popup_tabs_content_middle { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }
+  .upload_popup_tabs_content_item { border: 2px solid transparent; border-radius: 10px; background: #f4eef1; height: 90px; position: relative; display: grid; place-items: center; }
+  .upload_popup_tabs_content_item.selected { border-color: #c2255c; }
+  .upload_popup_tabs_content_item label.no-drag { position: absolute; top: 4px; right: 6px; cursor: pointer; font-size: 18px; }
+  .attach_new_popup_send_btn { background: #c2255c; color: #fff; border-radius: 9px; padding: 9px 18px; cursor: pointer; display: inline-block; }
+  .ot4et-chat-operator-sent-badge { color: #2f9e44; font-size: 11px; }
+  .banner { position: fixed; right: 10px; bottom: 10px; background: #fff7e6; border: 1px solid #f0c27a; border-radius: 8px; padding: 6px 10px; font-size: 12px; }
+</style></head>
+<body><div id="root"></div>
+<!-- as on the real site: the invisible reCAPTCHA v3 badge on every page (it is NOT a captcha for a person) -->
+<div class="grecaptcha-badge" style="width:256px;height:60px;position:fixed;bottom:14px;right:-186px;visibility:hidden"><div class="grecaptcha-logo"><iframe title="reCAPTCHA" width="256" height="60" role="presentation" src="about:blank#https://www.google.com/recaptcha/api2/anchor?ar=1&amp;k=demo"></iframe></div><div class="grecaptcha-error"></div><textarea class="g-recaptcha-response" style="display:none"></textarea></div>
+<div class="banner">Макет за звітом сканера: «Шанс», «Всі чати», лист з фото з галереї, перекладач на два поля. <button id="reset" type="button">Почати заново</button></div>
+</body></html>

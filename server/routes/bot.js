@@ -6,7 +6,7 @@ import {
   getSettings, profileSettings, planOf, accessFor, accessError, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
-import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter, generateTopic, templateTopic, generateReply } from '../ai.js';
+import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter, generateTopic, templateTopic, generateReply, generateHook, withHook, hookKey } from '../ai.js';
 import { reportPass, shiftKey } from '../reports.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
@@ -46,6 +46,8 @@ export default function botRoutes(db, cfg) {
       info: String(m.info ?? '').replace(/\s+/g, ' ').trim().slice(0, 400),
       via: m.via === 'letter' ? 'letter' : m.via === 'chat' ? 'chat' : '',
       online: m.online === true ? true : m.online === false ? false : null,
+      place: String(m.place ?? '').replace(/\s+/g, ' ').trim().slice(0, 80), // his city / country (the chat header)
+      hook: ['personal', 'city', 'flirt'].includes(m.hook) ? m.hook : '',
     };
   };
   const siteHost = (site, config) => hostOf(config?.searchUrl || site?.base_url || '');
@@ -331,13 +333,19 @@ export default function botRoutes(db, cfg) {
     return { ranked, skipped };
   };
 
-  /** «Шанс»: her letter with the invite and the photos chosen for «Шанс» (none chosen → the photos of step 1). */
-  const chanceStep = (ctx, m) => {
+  /**
+   * «Шанс»: her letter with a hook in front written for this man (he sees only the first ~5 characters in his list:
+   * personal / his city / flirt, never the same start as her recent letters), and the photos chosen for «Шанс» (none → step 1).
+   */
+  const chanceStep = async (ctx, m, settings) => {
     const { features, ...man } = m;
-    const text = personalize(fillHer(ctx.followups.get(LETTER_STEP) || templateLetter(ctx.p).text, ctx.p), m);
+    const recent = new Set(db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent' ORDER BY id DESC LIMIT 40").all(ctx.p.id).map((r) => hookKey(r.text)));
+    const seed = [...String(m.id)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, recent.size);
+    const h = await generateHook({ profile: ctx.p, settings, man, recent, seed });
+    const text = personalize(fillHer(withHook(h.hook, ctx.followups.get(LETTER_STEP) || templateLetter(ctx.p).text), ctx.p), m);
     let files = filesForStep(db, ctx.p.id, CHANCE_STEP);
     if (!files.length) files = filesForStep(db, ctx.p.id, 1);
-    return { ...man, url: manUrl(ctx, m.id, m.url), step: 1, mode: 'chance', via: 'letter', text, invite_id: null,
+    return { ...man, hook: h.category, url: manUrl(ctx, m.id, m.url), step: 1, mode: 'chance', via: 'letter', text, invite_id: null,
       actions: [{ do: 'message', via: 'letter', text, files }] };
   };
 
@@ -348,7 +356,7 @@ export default function botRoutes(db, cfg) {
     return { ...man, url: manUrl(ctx, m.id, m.url), step: 1, actions: step.actions, text: first?.text || '', invite_id: step.inviteId };
   };
 
-  r.post('/profiles/:id/filter', (req, res) => {
+  r.post('/profiles/:id/filter', ah(async (req, res) => {
     const { p, settings, remaining } = runnable(req);
     const ctx = stepContext(p);
     if (!ctx.invite) throw new HttpError(409, 'У анкети немає активного інвайту');
@@ -362,9 +370,11 @@ export default function botRoutes(db, cfg) {
     // Test mode in the extension never sends, so it is not bound by the daily limit.
     const cap = req.body?.test ? 5 : remaining;
     skipped.limit = Math.max(0, ranked.length - cap);
-    const allowed = ranked.slice(0, cap).map((m) => (chance ? chanceStep(ctx, m) : firstStep(ctx, m)));
+    const take = ranked.slice(0, cap);
+    const allowed = [];
+    for (const m of take) allowed.push(chance ? await chanceStep(ctx, m, settings) : firstStep(ctx, m)); // (one man at a time in «Шанс»)
     res.json({ allowed, remaining, skipped, hourLeft: hour.left, hourResetAt: hour.resetAt });
-  });
+  }));
 
   // ---------- scanning ahead: the best men of several pages first ----------
   const POOL_TTL = 6 * HOUR; // "online" and the like go stale
@@ -517,18 +527,18 @@ export default function botRoutes(db, cfg) {
     const next = !ok ? { stage: 'active', next_at: null } : mode === 'chance' ? { stage: 'done', next_at: null } : after(scenario, 0, t);
     const features = manFeatures(man, siteHost(site, configOf(site)));
     const written = db.prepare(`INSERT INTO messages (agency_id, profile_id, operator_id, site_id, man_id, man_name, man_age, man_country, invite_id, text, status, error, day, sent_at,
-        step, stage, next_at, man_url, last_at, man_info, features, mode, night)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)
+        step, stage, next_at, man_url, last_at, man_info, features, mode, night, hook)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(profile_id, man_id) DO UPDATE SET
         status = excluded.status, error = excluded.error, day = excluded.day, sent_at = excluded.sent_at,
         text = excluded.text, invite_id = excluded.invite_id, operator_id = excluded.operator_id,
         man_name = excluded.man_name, man_age = excluded.man_age, man_country = excluded.man_country,
         step = 1, stage = excluded.stage, next_at = excluded.next_at, man_url = excluded.man_url, last_at = excluded.last_at,
-        man_info = excluded.man_info, features = excluded.features, mode = excluded.mode, night = excluded.night
+        man_info = excluded.man_info, features = excluded.features, mode = excluded.mode, night = excluded.night, hook = excluded.hook
       WHERE messages.status = 'failed'`)
       .run(p.agency_id, p.id, req.user.id, p.site_id, man.id, man.name, man.age, man.country, validInvite,
         str(req.body?.text, { max: 3000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t,
-        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features), mode, shiftKey(t, settings.timezone, scenario.human));
+        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features), mode, shiftKey(t, settings.timezone, scenario.human), man.hook);
     if (ok && written.changes) learnSent(db, features);
     db.prepare('DELETE FROM pool WHERE profile_id = ? AND man_id = ?').run(p.id, man.id);
     const limits = limitsFor(p, settings);

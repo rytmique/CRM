@@ -25,6 +25,7 @@ export const SITE_FIELDS = [
   { key: 'chatName', group: 'Відправка', label: 'Ім’я в шапці відкритого чату', hint: 'Запобіжник: бот пише, лише якщо тут ім’я саме цього чоловіка' },
   { key: 'chatId', group: 'Відправка', label: 'ID у шапці відкритого чату', hint: 'Якщо в картці немає ID — бот візьме його звідси (число з 5+ цифр)' },
   { key: 'translateButton', group: 'Відправка', label: 'Кнопка «Перекласти»', hint: 'Необов’язково: якщо сайт перекладає текст — бот натисне її після тексту й зачекає переклад' },
+  { key: 'chatPlace', group: 'Відправка', label: 'Його місто / країна в шапці чату', hint: 'Необов’язково: для гачка «місто» в листі Шансу' },
   { key: 'chatLeft', group: 'Відправка', label: 'Лічильник «Залишилося N повідомлень»', hint: 'Необов’язково: бот читає число в чаті; 0 — цьому чоловіку в чат більше не пише' },
   { key: 'sentConfirm', group: 'Відправка', label: 'Ознака успішної відправки', hint: 'Необов’язково: елемент, що з’являється після відправки' },
   { key: 'sendError', group: 'Відправка', label: 'Ознака помилки відправки', hint: 'Необов’язково: напр. «немає кредитів», «ліміт»' },
@@ -45,6 +46,8 @@ export const SITE_FIELDS = [
   { key: 'allchatId', group: 'Нічна зміна', label: 'ID у діалозі', hint: 'Необов’язково: немає — з шапки чату' },
   { key: 'allchatMine', group: 'Нічна зміна', label: 'Ознака «останнє повідомлення моє»', hint: 'Напр. .last:has-text("You:"). Якщо в рядку видно, що останнім писав він, — бот чат не відкриває' },
   { key: 'allchatUnread', group: 'Нічна зміна', label: 'Ознака непрочитаного в діалозі', hint: 'Такі чати бот не відкриває (щоб оператор не пропустив відповідь)' },
+  { key: 'listHerId', group: 'Нічна зміна', label: 'ID жінки в рядку списку', hint: 'Якщо в одному списку чати всіх її анкет: бот бере в кожної анкети лише її рядки (і з них же дізнається, які анкети є)' },
+  { key: 'listHerName', group: 'Нічна зміна', label: 'Ім’я жінки в рядку списку', hint: 'Разом з ID: ім’я й вік анкети' },
   { key: 'msgItem', group: 'Нічна зміна', label: 'Повідомлення у відкритому чаті', hint: 'Одне повідомлення історії: бот читає останні, щоб писати на тему розмови' },
   { key: 'msgMine', group: 'Нічна зміна', label: 'Ознака мого повідомлення', hint: 'Клас / селектор, яким сайт позначає її повідомлення (напр. .mine)' },
   { key: 'herCurrent', group: 'Анкети', label: 'Яка анкета зараз (ім’я / ID жінки)', hint: 'Де на сайті видно, від чийого імені зараз працює оператор. Бот звіряє перед роботою' },
@@ -60,6 +63,11 @@ export const SITE_FIELDS = [
   { key: 'letterSend', group: 'Листи', label: 'Кнопка «Надіслати лист»', hint: 'Порожньо — та сама «Надіслати», що й у чаті' },
   { key: 'letterLeft', group: 'Листи', label: 'Лічильник «Залишилося N листів»', hint: 'Необов’язково: 0 — листа цьому чоловіку не пише' },
   { key: 'letterConfirm', group: 'Листи', label: 'Ознака, що лист пішов', hint: 'Необов’язково' },
+  { key: 'galleryOpen', group: 'Листи', label: 'Кнопка «Додати фото» (галерея анкети)', hint: 'Якщо фото до листа беруться з її галереї на сайті' },
+  { key: 'galleryItem', group: 'Листи', label: 'Фото в галереї (одне)', hint: 'Бот вибирає кілька з перших' },
+  { key: 'gallerySelect', group: 'Листи', label: 'Позначка «вибрати» на фото', hint: 'Порожньо — клік по самому фото' },
+  { key: 'galleryConfirm', group: 'Листи', label: 'Кнопка «Прикріпити вибрані»', hint: 'У вікні галереї' },
+  { key: 'galleryCount', group: 'Листи', label: 'Скільки фото чіпляти до листа Шансу', hint: '1–5, за замовчуванням 2' },
   { key: 'manUrl', group: 'Профіль чоловіка', label: 'URL профілю чоловіка', hint: 'Шаблон з {id}, напр. https://site.com/profile/{id}. Потрібен для повторних спроб і перегляду профілю' },
   { key: 'findInput', group: 'Профіль чоловіка', label: 'Пошук чоловіка за ID (поле)', hint: 'Якщо в нього немає своєї сторінки: бот впише ID сюди й відкриє його чат зі списку' },
   { key: 'findResult', group: 'Профіль чоловіка', label: 'Результат пошуку (що клікнути)', hint: 'Порожньо — перший чат у списку («Діалог у вхідних» або «Картка чоловіка»)' },
@@ -155,6 +163,60 @@ export function shiftSiteConfig(publicUrl) {
     inboxUrl: `${base}/shift.html#all`, inboxItem: '.chat-row', inboxUnread: '.unread', inboxName: '.r-name', inboxText: '.r-last',
     herCurrent: '.her-now', herSwitch: '.her-switch', herItem: '.her-item', herItemId: '@data-her-id', herItemName: '.her-name',
     actions: [{ key: 'like', name: 'Лайк', sel: '.btn-like', where: 'page' }],
+    marks: [],
+  };
+}
+
+/**
+ * A ready profile: the operator's desk with «Шанс» (/chance) and «Всі чати» (/chat), the chats of all her women in one list
+ * (her name and ID in each row), the letter with photos from her gallery on the site, a translator with two boxes
+ * (the right one — English — is what is sent). Built from the operator's scanner report; the address is the team's own.
+ */
+export function deskPresetConfig(baseUrl) {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  const item = '[data-testid="chat-list"] [class*="clmn_2_chat_block_item-"]';
+  // the box that is sent: the right one of the translator (English); without the translator — the only one
+  const box = (scope) => `${scope} [class*="clmn_3_chat_textarea_translate_arrow_wrap"] + [class*="clmn_3_chat_textarea_wrap"] textarea || ${scope} textarea`;
+  return {
+    searchUrl: `${base}/chat`,
+    chanceTab: '[data-testid="main-menu-item-chance"]',
+    chanceItem: item,
+    chanceName: '[data-testid="man-name"]',
+    chanceOnline: '[data-testid="man-photo"][class*="online"]',
+    allchatTab: '[class*="clmn_1_menu_item-"][class*=" chat-"]',
+    allchatItem: item,
+    allchatName: '[data-testid="man-name"]',
+    allchatMine: '[data-testid="content"]:not([class*="from_man"])',
+    allchatUnread: '[class*="unanswered-"]',
+    listHerId: '[data-testid="woman-external_id"]',
+    listHerName: '[data-testid="woman-name"]',
+    msgItem: '[data-testid^="sent-message-"], [data-testid^="received-message-"]',
+    msgMine: '[data-testid^="sent-message-"]',
+    messageInput: box('[data-testid="chat-actions"]'),
+    sendButton: '[data-testid="chat-actions"] [data-testid="send-btn"]',
+    sentConfirm: '[data-testid^="sent-message-"]',
+    chatName: '[data-testid="chat-header"] [data-testid="man-name"]',
+    chatId: '[data-testid="chat-header"] [data-testid="man-external_id"]',
+    chatHer: '[data-testid="chat-header"] [data-testid="woman-external_id"]',
+    chatPlace: '[data-testid="chat-header"] [data-testid="man-place"]',
+    chatLeft: '[data-testid="message-limit"]',
+    letterOpen: '[data-testid="chat-header"] [data-testid="send-letter-btn"]',
+    letterInput: box('[data-testid="letter-actions"]'),
+    letterSend: '[data-testid="letter-actions"] [data-testid="send-btn"]',
+    letterConfirm: '[data-testid^="sent-letter-"]',
+    letterLeft: '[data-testid="letters-limit"]',
+    galleryOpen: '[data-testid="letter-actions"] [data-testid="add-image-btn"]',
+    galleryItem: '[class*="upload_popup_tabs_content_middle"] [class*="upload_popup_tabs_content_item"]',
+    gallerySelect: 'label.no-drag',
+    galleryConfirm: '[class*="attach_new_popup_send_btn"]',
+    galleryCount: '2',
+    attachDone: '[class*="letters_attach_files_item"]',
+    inboxUrl: `${base}/chat`,
+    inboxItem: item,
+    inboxUnread: '[class*="unanswered-"]',
+    inboxName: '[data-testid="man-name"]',
+    inboxText: '[data-testid="content"]',
+    actions: [],
     marks: [],
   };
 }

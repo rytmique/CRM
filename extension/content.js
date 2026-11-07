@@ -37,6 +37,11 @@
 
   const qsa = (root, sel) => {
     if (!sel || !root) return [];
+    if (sel.includes('||')) { // "a || b": the first alternative that finds something visible (unlike "a, b": all, in page order)
+      const alts = sel.split('||').map((x) => x.trim()).filter(Boolean);
+      for (const a of alts) { const r = qsa(root, a); if (r.some((el) => visible(el))) return r; }
+      return qsa(root, alts[alts.length - 1]);
+    }
     try {
       const parts = splitTop(sel);
       if (parts.length === 1) return queryPart(root, parts[0]);
@@ -179,6 +184,11 @@
     for (const type of ['keydown', 'keypress', 'keyup']) {
       el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
     }
+  }
+
+  function pressEscape() {
+    const t = document.activeElement || document.body;
+    for (const type of ['keydown', 'keyup']) t.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
   }
 
   /** Test mode: outline an element and show a short label next to it. */
@@ -359,7 +369,8 @@
   function chatHeader({ site }) {
     const name = site.chatName ? (qsa(document, site.chatName).find(visible)?.textContent || '').replace(/\s+/g, ' ').trim() : '';
     const idText = site.chatId ? (qsa(document, site.chatId).find(visible)?.textContent || '') : '';
-    return { name, id: (idText.match(DIGITS) || [''])[0] };
+    const place = site.chatPlace ? (qsa(document, site.chatPlace).find(visible)?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    return { name, id: (idText.match(DIGITS) || [''])[0], place };
   }
 
   /** Safety: is the open chat really his? (by ID when both are known, else by first name) */
@@ -410,10 +421,19 @@
   const has = (el, sel) => Boolean(sel && (selfMatch(el, sel) || qs(el, sel)));
 
   /** Opens a tab of the site («Шанс» / «Усі чати») and waits for its list. */
+  const isActive = (el) => [...el.classList].some((c) => /^active|[-_]active/i.test(c)) || el.getAttribute('aria-selected') === 'true' || el.getAttribute('aria-current') === 'page';
   async function openTab({ site, kind }) {
     const item = site[`${kind}Item`];
     const tab = site[`${kind}Tab`] ? qsa(document, site[`${kind}Tab`]).find(visible) : null;
-    if (tab && !qsa(document, item).some(visible)) { await humanClick(tab); await sleep(rand(600, 1200)); }
+    // «Шанс» and «Усі чати» may show the same kind of rows: then only an active tab says which list is on the screen
+    const shared = site.chanceItem && site.chanceItem === site.allchatItem;
+    const seen = qsa(document, item).some(visible);
+    if (tab && (shared ? !isActive(tab) || !seen : !seen)) {
+      const before = qsa(document, item).filter(visible)[0];
+      await humanClick(tab);
+      await sleep(rand(600, 1200));
+      if (shared) await waitFor(() => isActive(qsa(document, site[`${kind}Tab`]).find(visible) || tab) && qsa(document, item).filter(visible)[0] !== before, 6000, 200);
+    }
     const ok = await waitFor(() => qsa(document, item).some(visible), 8000, 200);
     return ok ? { ok: true } : { ok: false, error: `список «${kind === 'chance' ? 'Шанс' : 'Усі чати'}» не видно` };
   }
@@ -425,6 +445,7 @@
       const nameText = extract(el, site[`${kind}Name`]) || (all.match(/[^\s,][^,]{0,40}?,\s*\d{2}\b/) || [''])[0];
       const age = Number.parseInt((nameText.match(/\b(1[89]|[2-9]\d)\b/) || [])[0], 10);
       const out = { index, name: nameText.split(',')[0].trim(), age: Number.isFinite(age) ? age : null, id: site[`${kind}Id`] ? normId(extract(el, site[`${kind}Id`])) : '' };
+      if (site.listHerId) out.her = normId(extract(el, site.listHerId)); // the chats of all her women in one list: whose row
       if (kind === 'chance') out.online = site.chanceOnline ? has(el, site.chanceOnline) : null;
       if (kind === 'allchat') {
         out.unread = site.allchatUnread ? has(el, site.allchatUnread) : false;
@@ -444,7 +465,7 @@
     await humanClick(el);
     const c = await waitChat({ site, name: item.name, id: item.id });
     if (!c.ok) return { ok: false, wrongChat: true, error: `відкрився чат іншого чоловіка (${c.name || c.id || 'невідомо'}) — не пишу` };
-    return { ok: true, id: item.id || c.id || '', name: item.name || firstName(c.name) };
+    return { ok: true, id: item.id || c.id || '', name: item.name || firstName(c.name), place: c.place || chatHeader({ site }).place || '' };
   }
 
   /** The last messages of the open chat (oldest first): whose and what — to write on the topic of the talk. */
@@ -530,6 +551,16 @@
   /** All the women of this operator on the site (the list of the switcher), and the one working now. Clicks only to open / close the list. */
   async function herList({ site }) {
     const current = site.herCurrent && textOf(site.herCurrent) ? parseHer(textOf(site.herCurrent)) : null;
+    if (!site.herItem && site.listHerId) {
+      // the women are seen in the rows of the chat list (her name and ID in each)
+      const hers = [];
+      for (const el of qsa(document, [site.allchatItem, site.chanceItem].filter(Boolean).join(', '))) {
+        const id = normId(extract(el, site.listHerId));
+        const p = parseHer(site.listHerName ? extract(el, site.listHerName) : '');
+        if (/^\d{5,}$/.test(id) && !hers.some((x) => x.id === id)) hers.push({ id, name: p.name || `ID ${id}`, age: p.age });
+      }
+      return { hers, current };
+    }
     if (!site.herItem) return { hers: current ? [current] : [], current };
     let rows = qsa(document, site.herItem).filter(visible);
     let opened = false;
@@ -556,6 +587,38 @@
     }
     if (!hers.length && current) hers.push(current);
     return { hers, current };
+  }
+
+  /** Photos to a letter from her gallery on the site: opens it, picks a few of the first ones, attaches. In a test only looks. */
+  async function galleryPick({ site, count = 2, dry }) {
+    const btn = qsa(document, site.galleryOpen).find(visible);
+    if (!btn) return { ok: false, error: 'кнопку «Додати фото» не знайдено' };
+    const before = qsa(document, site.attachDone).filter(visible).length;
+    await humanClick(btn);
+    const items = (await waitFor(() => { const l = qsa(document, site.galleryItem).filter(visible); return l.length ? l : null; }, 8000, 250)) || [];
+    if (!items.length) return { ok: false, error: 'галерея анкети порожня або не відкрилась' };
+    const pool = items.slice(0, Math.max(count, 8));
+    const picked = [];
+    while (picked.length < Math.min(count, pool.length)) { const x = pool[Math.floor(Math.random() * pool.length)]; if (!picked.includes(x)) picked.push(x); }
+    if (dry) {
+      for (const el of picked) flash(el, '🧪 це фото бот вибрав би');
+      await sleep(1500);
+      pressEscape();
+      await sleep(400);
+      const overlay = document.querySelector('.ReactModal__Overlay');
+      if (overlay && qsa(document, site.galleryItem).some(visible)) overlay.click();
+      return { ok: true, dry: true, picked: picked.length };
+    }
+    for (const el of picked) {
+      await sleep(rand(400, 900));
+      await humanClick((site.gallerySelect && qs(el, site.gallerySelect)) || el);
+    }
+    const ok = qsa(document, site.galleryConfirm).find(visible);
+    if (!ok) return { ok: false, error: 'кнопку «Прикріпити» в галереї не знайдено' };
+    await sleep(rand(400, 900));
+    await humanClick(ok);
+    const done = site.attachDone ? await waitFor(() => qsa(document, site.attachDone).filter(visible).length >= before + picked.length, 10000, 250) : true;
+    return done ? { ok: true, picked: picked.length } : { ok: false, error: 'фото не прикріпились до листа' };
   }
 
   /** Between men: scroll the list a bit and look around, like a person (opens nothing, so unread stays unread). */
@@ -630,9 +693,10 @@
     return { ok: true, url: location.href };
   }
 
-  async function inbox({ site }) {
+  async function inbox({ site, her = '' }) {
     await waitFor(() => qsa(document, site.inboxItem).length, 5000);
-    const items = qsa(document, site.inboxItem);
+    // one list for all her women: only the rows of the woman the bot works as now
+    const items = qsa(document, site.inboxItem).filter((it) => !her || !site.listHerId || normId(extract(it, site.listHerId)) === String(her));
     const unread = items.filter((it) => !site.inboxUnread || selfMatch(it, site.inboxUnread) || qs(it, site.inboxUnread));
     return {
       total: items.length,
@@ -648,9 +712,14 @@
   const CAPTCHA_FRAME = /recaptcha|hcaptcha|captcha|challenges\.cloudflare\.com|turnstile|arkoselabs|funcaptcha/i;
   const HUMAN_CHECK = /verify (that )?you are (a )?human|i'?m not a robot|are you a robot|підтвердіть,? що ви не робот|подтвердите,? что вы не робот|unusual (traffic|activity)|подозрительн\S* активност/i;
   const RATE = /too many requests|rate limit(ed)?\b|занадто багато запитів|слишком много запросов/i;
+  /** Really on the screen: has a size, not hidden by CSS (visibility / opacity), not the invisible reCAPTCHA badge every page has. */
+  const BADGE = '.grecaptcha-badge, .grecaptcha-logo, .grecaptcha-error, textarea.g-recaptcha-response';
+  const shown = (el) => visible(el) && !el.closest(BADGE)
+    && (el.checkVisibility ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : getComputedStyle(el).visibility !== 'hidden')
+    && el.getBoundingClientRect().width >= 60 && el.getBoundingClientRect().height >= 40;
   function blocked({ site } = {}) {
-    if ([...document.querySelectorAll('iframe')].some((f) => CAPTCHA_FRAME.test(f.src || '') && visible(f))) return { kind: 'captcha', text: 'Сайт показав капчу' };
-    const box = [...document.querySelectorAll('.g-recaptcha, .h-captcha, .cf-turnstile, [class*="captcha" i], [id*="captcha" i]')].find(visible);
+    if ([...document.querySelectorAll('iframe')].some((f) => CAPTCHA_FRAME.test(f.src || '') && !/[?&]size=invisible\b/.test(f.src || '') && shown(f))) return { kind: 'captcha', text: 'Сайт показав капчу' };
+    const box = [...document.querySelectorAll('.g-recaptcha, .h-captcha, .cf-turnstile, [class*="captcha" i], [id*="captcha" i]')].filter((el) => !el.matches(BADGE)).find(shown);
     if (box) return { kind: 'captcha', text: 'Сайт показав капчу' };
     const text = (document.body?.innerText || '').slice(0, 4000);
     if (HUMAN_CHECK.test(text)) return { kind: 'captcha', text: 'Сайт просить підтвердити, що ви людина' };
@@ -677,7 +746,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
-    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, openTab, listItems, openItem, history,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, galleryPick, openTab, listItems, openItem, history,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

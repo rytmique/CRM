@@ -194,6 +194,7 @@ try {
   for (const [p, shift, photo] of [[kate, 0, 'kate-chance.png'], [olivia, 100, null]]) {
     const dialogs = dialogsOf(p.site_profile_id);
     const online = [1, 2, 4, 5, 7, 8, 10, 11].map((i) => String(7000000 + shift + i));
+    const starts = new Set();
     const offline = [3, 6, 9, 12].map((i) => String(7000000 + shift + i));
     for (const id of online) {
       const letter = dialogs[id]?.msgs?.find((m) => m.mine && m.letter);
@@ -201,9 +202,11 @@ try {
       if (photo && !letter.files?.includes(photo)) fail(`${p.name}: the letter to ${id} has no photo: ${JSON.stringify(letter)}`);
       if (!photo && letter.files?.length) fail(`${p.name}: a photo that is not hers: ${JSON.stringify(letter)}`);
       if (!letter.subject) fail(`the letter to ${id} has no subject`);
-      if (!/Hello [A-Z][a-z]+!/.test(letter.text)) fail(`the letter does not greet him by name: ${letter.text.slice(0, 80)}`);
+      if (/^(Hello|Hi|Hey|Dear)\b|^\s/.test(letter.text)) fail(`the letter does not start with a hook: ${letter.text.slice(0, 80)}`);
+      starts.add(letter.text.slice(0, 5).toLowerCase());
     }
     for (const id of offline) if (dialogs[id]?.msgs?.some((m) => m.mine)) fail(`${p.name}: wrote to the offline man ${id}`);
+    if (starts.size < 8) fail(`${p.name}: the hooks repeat: ${[...starts].join(' | ')}`);
     const before = { 1: 2, 2: 1, 3: 2, 4: 3, 5: 2, 6: 3 };
     const wrote = Object.keys(before).filter((i) => dialogs[String(8000000 + shift + Number(i))]?.msgs?.slice(before[i]).some((m) => m.mine && !m.letter));
     if (wrote.sort().join() !== '1,2,5,6') fail(`${p.name}: «Аллчат» wrote to ${wrote.join(', ')}\n${botLog}`);

@@ -387,6 +387,7 @@ const MIGRATIONS = [
   ['users', 'tg_code', 'TEXT'],
   // the shift («night») a message was sent in: the stats per night and mode
   ['messages', 'night', "TEXT NOT NULL DEFAULT ''"],
+  ['messages', 'hook', "TEXT NOT NULL DEFAULT ''"],
   // the operator's own few settings: how often «Шанс», how many «Аллчат» passes a night (over the team's)
   ['users', 'prefs', "TEXT NOT NULL DEFAULT '{}'"],
 ];

@@ -101,7 +101,11 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
     res.status(403).type('text/plain; charset=utf-8').send('Бот завантажується лише з панелі після входу: «⬇ Бот».');
   });
 
-  if (demoSite) app.use('/demo-site', express.static(path.join(ROOT, 'demo-site')));
+  if (demoSite) {
+    // the operator desk mock is a one-page app with its own addresses (/chat, /chance/<id>, /letter/<id>)
+    app.get(/^\/demo-site\/desk2(\/.*)?$/, (req, res) => res.sendFile(path.join(ROOT, 'demo-site', 'desk2.html')));
+    app.use('/demo-site', express.static(path.join(ROOT, 'demo-site')));
+  }
   app.use(express.static(path.join(ROOT, 'web'), { index: 'index.html', extensions: ['html'] }));
 
   app.use((err, req, res, _next) => {

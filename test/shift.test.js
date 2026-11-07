@@ -8,6 +8,7 @@ import { createApp, ensureAdmin } from '../server/app.js';
 import { setTelegramApi } from '../server/telegram.js';
 import { shiftKey } from '../server/reports.js';
 import { pollOnce } from '../server/tgbot.js';
+import { templateHook, hookOk, withHook, hookKey } from '../server/ai.js';
 
 let server, base, db, tg, tgBase;
 const tokens = {};
@@ -94,7 +95,9 @@ test('night shift: «Шанс», «Аллчат», reports, start/stop and stats
   assert.equal(robert.mode, 'chance');
   assert.equal(robert.actions.length, 1);
   assert.equal(robert.actions[0].via, 'letter');
-  assert.match(robert.actions[0].text, /^Hello Robert!/, 'the letter greets him by name');
+  assert.doesNotMatch(robert.actions[0].text, /^(Hello|Hi|Hey|Dear)\b/, 'a hook first, not «Hello»');
+  assert.match(robert.actions[0].text, /^\S/);
+  assert.ok(['personal', 'city', 'flirt'].includes(robert.hook), `the hook category: ${robert.hook}`);
   assert.deepEqual(robert.actions[0].files.map((x) => x.name), ['chance.png']);
   const sent = await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: robert, ok: true, text: robert.text, mode: 'chance' }, 'bot');
   assert.equal(sent.status, 200);
@@ -277,4 +280,47 @@ test('the operator sets only her own: master prompt, «Шанс» interval, «А
   const chloe = n.data.profiles[0];
   const cfg2 = await call('GET', `/api/bot/profiles/${chloe.id}/config`, undefined, 'ninaBot');
   assert.equal(cfg2.data.modes.chance.everyMin, 30, 'Nina keeps the team value');
+});
+
+test('«Шанс» hook: the first 5 characters under each man, 3 categories, only his facts, never the same start', async () => {
+  // the checks
+  assert.equal(hookOk('Hello Robert, how are you?', {}), false, 'no «Hello»');
+  assert.equal(hookOk(' Oops… I smiled at you', {}), false, 'no space first');
+  assert.equal(hookOk('Denver! You are 45 and so kind', { age: 52 }), false, 'no numbers he did not give');
+  assert.equal(hookOk('Oops… I smiled at your photo', {}, new Set(['oops…'])), false, 'not the start of her recent letters');
+  assert.equal(hookOk('Oops… I smiled at your photo', {}), true);
+  // templates: a city only when he gave one; a different start for every man
+  assert.equal(templateHook({ name: 'Tom', place: 'Denver' }, new Set(), 0).category, 'city');
+  assert.notEqual(templateHook({ name: 'Tom' }, new Set(), 0).category, 'city');
+  const recent = new Set();
+  for (let i = 0; i < 12; i++) {
+    const h = templateHook({ name: '' }, recent, i);
+    assert.ok(!recent.has(hookKey(h.hook)) || recent.size >= 8, `a repeated start: ${h.hook}`);
+    recent.add(hookKey(h.hook));
+  }
+  assert.ok(recent.size >= 8, 'at least the 8 flirt starts');
+  // her letter: her own greeting goes, the hook leads
+  assert.equal(withHook('Psst… may I tell you a secret?', 'Hello {name}! I am Kate.\nI love tea.'), 'Psst… may I tell you a secret? I am Kate.\nI love tea.');
+
+  // through the API: men in a row get different starts; his city from the chat header goes into the hook
+  await login('admin4', 'root@test', 'rootpass123');
+  const ag = await call('POST', '/api/admin/agencies', { name: 'Hooks', ownerName: 'Lead', ownerEmail: 'lead@hooks', ownerPassword: 'leadpass1', licenses: 3, days: 30 }, 'admin4');
+  assert.equal(ag.status, 201);
+  await login('lead4', 'lead@hooks', 'leadpass1');
+  const siteId = (await call('GET', '/api/sites', undefined, 'lead4')).data.sites[0].id;
+  const p = (await call('POST', '/api/profiles', { name: 'Mila', age: 30, site_id: siteId }, 'lead4')).data;
+  await login('lead4bot', 'lead@hooks', 'leadpass1', 'bot');
+  assert.equal((await call('GET', `/api/bot/profiles/${p.id}/config`, undefined, 'lead4bot')).status, 200);
+  const starts = new Set();
+  for (let i = 0; i < 6; i++) {
+    const f = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', candidates: [{ id: String(910000 + i), name: ['Tom', 'Bob', 'Sam', 'Max', 'Leo', 'Ian'][i], age: 50, place: i % 2 ? 'Denver, USA' : '', online: true }] }, 'lead4bot');
+    assert.equal(f.status, 200, JSON.stringify(f.data));
+    const man = f.data.allowed[0];
+    if (i % 2) assert.ok(man.text.startsWith('Denver') || man.hook !== 'city', 'the city hook is his city');
+    await call('POST', `/api/bot/profiles/${p.id}/sent`, { man, ok: true, text: man.text, mode: 'chance' }, 'lead4bot');
+    starts.add(hookKey(man.text));
+  }
+  assert.equal(starts.size, 6, `different starts: ${[...starts].join(' | ')}`);
+  const cats = db.prepare("SELECT hook FROM messages WHERE profile_id = ? AND mode = 'chance'").all(p.id).map((r) => r.hook);
+  assert.ok(cats.every((c) => ['personal', 'city', 'flirt'].includes(c)), `stored categories: ${cats}`);
 });

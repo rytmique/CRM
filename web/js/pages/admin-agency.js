@@ -15,8 +15,8 @@ export default async function adminAgency(main, { navigate }) {
   async function load() {
     const c = await get(`/api/admin/agencies/${id}/card`);
     const a = c.agency;
-    const tabs = [['people', `Люди (${c.people.length})`], ['caps', 'План і ліміти'], ['ai', 'ШІ'], ['devices', 'Пристрої']];
-    const panel = { people: peoplePanel, caps: capsPanel, ai: aiPanel, devices: devicesPanel }[tab](c);
+    const tabs = [['people', `Люди (${c.people.length})`], ['site', 'Сайт'], ['caps', 'План і ліміти'], ['ai', 'ШІ'], ['devices', 'Пристрої']];
+    const panel = { people: peoplePanel, site: sitePanel, caps: capsPanel, ai: aiPanel, devices: devicesPanel }[tab](c);
     page.replaceChildren(...[ // (DOM replaceChildren would print «null» for missing parts)
       h('div.page-head',
         h('h1', h('a.muted', { href: '#/agencies', title: 'Усі команди' }, '← '), a.name, ' ', a.active ? badge('працює', 'ok') : badge('призупинена', 'err'),
@@ -99,6 +99,27 @@ export default async function adminAgency(main, { navigate }) {
             }) }, 'Блок')
             : h('button.btn.sm', { title: 'Розблокувати', onclick: act(`/api/admin/users/${u.id}/unblock`, 'Розблоковано') }, 'Розблокувати'),
         ].filter(Boolean))))))) : empty('Людей ще немає.'));
+  }
+
+  /** The team's site: its address + a ready profile (the bot then needs nothing to be taught). */
+  function sitePanel(c) {
+    const url = input('siteUrl', '', { placeholder: 'https://сайт-команди.com', autocomplete: 'off' });
+    const save = h('button.btn.primary', 'Поставити готовий профіль');
+    save.addEventListener('click', () => busy(save, async () => {
+      const r = await put(`/api/admin/agencies/${c.agency.id}/site`, { url: url.value, preset: 'desk' });
+      toast(r.updated ? 'Профіль сайту оновлено' : 'Сайт додано — бот команди працюватиме на ньому');
+      load();
+    }).catch(() => {}));
+    return h('div.stack',
+      h('section.card.stack',
+        h('h3', 'Готовий профіль сайту'),
+        h('p.small.muted', '«Робочий стіл оператора»: Шанс, Всі чати, лист з фото з галереї анкети, перекладач. Зібрано зі звіту сканера оператора. Впиши адресу сайту (лише домен) — і все: команді нічого налаштовувати не треба.'),
+        field('Адреса сайту', url, 'Та сама адреса — профіль просто оновиться'),
+        h('div.row-wrap', save)),
+      h('section.card.table-wrap', c.sites?.length ? h('table.table',
+        h('thead', h('tr', h('th', 'Сайт команди'), h('th', 'Адреса'), h('th', 'Додано'))),
+        h('tbody', c.sites.map((x) => h('tr', h('td', x.name), h('td', h('code', x.base_url)), h('td', ago(x.created_at))))))
+        : empty('Сайтів ще немає.')));
   }
 
   function capsPanel(c) {

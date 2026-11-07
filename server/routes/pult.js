@@ -11,6 +11,7 @@ import { bad, notFound, str, int, mergeSettings } from '../util.js';
 import { getSettings, today, BOT_ONLINE_MS, planOf } from '../services.js';
 import { ownerLink, operatorLink, pendingUsers, approveUser, rejectUser, stopBots, setUserActive, setPlan, mergeSolo } from '../team.js';
 import { setPlatformBot, platformToken } from '../tgbot.js';
+import { deskPresetConfig, sanitizeSiteConfig } from '../sites.js';
 import { billingReport, referralReward, currentMonth, validMonth } from '../billing.js';
 
 const DAY = 86400000;
@@ -112,7 +113,32 @@ export default function pultRoutes(db) {
       plan: { profiles: plan.profiles, used: plan.used, until: plan.until },
       link: link ? { token: link.token, uses: link.uses } : null,
       models: MODELS,
+      sites: db.prepare('SELECT id, name, base_url, created_at FROM sites WHERE agency_id = ? ORDER BY id DESC').all(a.id),
     });
+  });
+
+  /**
+   * The team's site from a ready profile («готовий сайт»): the admin gives its address, the selectors come from the profile
+   * built from a scanner report. Same address again — the profile is updated; the team does nothing.
+   */
+  const PRESETS = { desk: deskPresetConfig };
+  r.put('/agencies/:id/site', (req, res) => {
+    const a = agencyOr404(req.params.id);
+    const make = PRESETS[String(req.body?.preset || 'desk')];
+    if (!make) throw bad('Невідомий профіль сайту');
+    let url;
+    try { url = new URL(String(req.body?.url || '').trim()); } catch { throw bad('Вкажіть адресу сайту, напр. https://site.com'); }
+    if (!/^https?:$/.test(url.protocol)) throw bad('Адреса має починатися з https://');
+    // the domain (a path only for a desk that lives under one, like the demo); «…/chat» pasted from the browser is fine too
+    const base = url.origin + url.pathname.replace(/\/(chat|chance|letter)(\/.*)?$/, '').replace(/\/+$/, '');
+    const name = str(req.body?.name, { max: 80 }) || 'Сайт команди';
+    const config = JSON.stringify(sanitizeSiteConfig(make(base)));
+    const have = db.prepare('SELECT id FROM sites WHERE agency_id = ? AND (base_url = ? OR base_url = ?)').get(a.id, base, `${base}/`);
+    let id;
+    if (have) { db.prepare('UPDATE sites SET config = ?, name = ? WHERE id = ?').run(config, name, have.id); id = have.id; } else {
+      id = Number(db.prepare('INSERT INTO sites (agency_id, name, base_url, config, created_at) VALUES (?,?,?,?,?)').run(a.id, name, base, config, now()).lastInsertRowid);
+    }
+    res.json({ ok: true, site: db.prepare('SELECT id, name, base_url FROM sites WHERE id = ?').get(id), updated: Boolean(have) });
   });
 
   /** Caps and AI of a team: only the admin changes these. */
