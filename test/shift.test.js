@@ -8,7 +8,7 @@ import { createApp, ensureAdmin } from '../server/app.js';
 import { setTelegramApi } from '../server/telegram.js';
 import { shiftKey } from '../server/reports.js';
 import { pollOnce } from '../server/tgbot.js';
-import { templateHook, hookOk, withHook, hookKey } from '../server/ai.js';
+const hookKey = (t) => String(t || '').trim().slice(0, 5).toLowerCase();
 
 let server, base, db, tg, tgBase;
 const tokens = {};
@@ -288,26 +288,7 @@ test('the operator sets only her own: master prompt, «Шанс» interval, «А
   assert.equal(cfg2.data.modes.chance.everyMin, 30, 'Nina keeps the team value');
 });
 
-test('«Шанс» hook: the first 5 characters under each man, 3 categories, only his facts, never the same start', async () => {
-  // the checks
-  assert.equal(hookOk('Hello Robert, how are you?', {}), false, 'no «Hello»');
-  assert.equal(hookOk(' Oops… I smiled at you', {}), false, 'no space first');
-  assert.equal(hookOk('Denver! You are 45 and so kind', { age: 52 }), false, 'no numbers he did not give');
-  assert.equal(hookOk('Oops… I smiled at your photo', {}, new Set(['oops…'])), false, 'not the start of her recent letters');
-  assert.equal(hookOk('Oops… I smiled at your photo', {}), true);
-  // templates: a city only when he gave one; a different start for every man
-  assert.equal(templateHook({ name: 'Tom', place: 'Denver' }, new Set(), 0).category, 'city');
-  assert.notEqual(templateHook({ name: 'Tom' }, new Set(), 0).category, 'city');
-  const recent = new Set();
-  for (let i = 0; i < 12; i++) {
-    const h = templateHook({ name: '' }, recent, i);
-    assert.ok(!recent.has(hookKey(h.hook)) || recent.size >= 8, `a repeated start: ${h.hook}`);
-    recent.add(hookKey(h.hook));
-  }
-  assert.ok(recent.size >= 8, 'at least the 8 flirt starts');
-  // her letter: her own greeting goes, the hook leads
-  assert.equal(withHook('Psst… may I tell you a secret?', 'Hello {name}! I am Kate.\nI love tea.'), 'Psst… may I tell you a secret? I am Kate.\nI love tea.');
-
+test('«Шанс»: a CAPS hook in the first 5 characters under each man, only his facts, never the same start or letter', async () => {
   // through the API: men in a row get different starts; his city from the chat header goes into the hook
   await login('admin4', 'root@test', 'rootpass123');
   const ag = await call('POST', '/api/admin/agencies', { name: 'Hooks', ownerName: 'Lead', ownerEmail: 'lead@hooks', ownerPassword: 'leadpass1', licenses: 3, days: 30 }, 'admin4');

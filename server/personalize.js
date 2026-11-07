@@ -15,6 +15,8 @@ export function personalize(text, man = {}) {
     country: String(man.country || '').trim(),
   };
   let out = String(text || '');
+  if (vars.name) out = out.replaceAll('{NAME}', vars.name.toUpperCase()); // a CAPS hook with his name
+  else out = out.replace(/\{NAME\},?\s*/g, '');
   for (const [k, v] of Object.entries(vars)) {
     if (v) out = out.replaceAll(`{${k}}`, v);
     else out = out.replace(new RegExp(`[ \\t]*,?[ \\t]*\\{${k}\\}`, 'g'), '');

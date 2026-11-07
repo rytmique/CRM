@@ -70,7 +70,7 @@ export default async function homePage(main, opts = {}) {
   const shown = owner && who !== 'all' ? bots.filter((b) => byId.has(b.id)) : bots;
   const opStop = (opId) => {
     const ids = shift.profiles.filter((p) => p.operator_id === opId).map((p) => p.id);
-    return ids;
+    return ids.length ? ids : [-1]; // (never an empty list: that would mean the whole team)
   };
   const profilesCard = h('section.card', h('h3', '👩 Анкети'),
     shown.length ? h('div.table-wrap', h('table.table',
@@ -78,7 +78,7 @@ export default async function homePage(main, opts = {}) {
       h('tbody', shown.map((b) => {
         const [label, kind] = STATE[b.state] || [b.state, ''];
         const st = byId.get(b.id) || {};
-        const ids = owner ? opStop(st.operator_id) : [];
+        const ids = owner ? (st.operator_id ? opStop(st.operator_id) : [b.id]) : [];
         return h('tr',
           h('td', h('b', b.name), b.paused ? h('div.small.muted', 'понад план — на паузі') : null),
           owner ? h('td', st.operator || '—') : null,

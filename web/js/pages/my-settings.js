@@ -133,7 +133,7 @@ function photosCard(profiles) {
     await draw().catch(() => strip.replaceChildren(add));
   };
   for (const p of profiles.slice(0, 40)) one(p);
-  box.append(list, h('p.small.muted', 'Бот прикріплює ці фото до листа в «Шансі». Немає фото — лист без фото.'));
+  box.append(list, h('p.small.muted', 'Бот прикріплює ці фото до листа в «Шансі». Якщо сайт дає фото з галереї анкети (як «робочий стіл»), бот бере 2 фото звідти — тоді ці не потрібні.'));
   return box;
 }
 

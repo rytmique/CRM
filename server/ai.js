@@ -187,7 +187,10 @@ export async function generateInvite({ profile, settings, previous = '', promptO
     return { text: templateInvite(profile, previous), source: 'template', model: null, promptSource: prompt.source };
   }
   const model = settings.ai.model || 'claude-opus-5-5';
-  const system = fillPromptVars(prompt.text, profile, language);
+  // the team's master prompt is the style of the night shift (an invite + a letter): for one chat message it is a style on top
+  const nightStyle = /THE LETTER|THE INVITE/.test(prompt.text); // the master prompt of «Шанс» (an invite + a letter)
+  const system = !nightStyle ? fillPromptVars(prompt.text, profile, language)
+    : `${SYSTEM_PROMPT}\n\nHer style guide (follow its tone and hooks, but write ONE chat message as described above, never a letter):\n${fillPromptVars(prompt.text, profile, language)}`;
   let out = await callClaude({ apiKey, model, system, language, instructions: settings.ai.instructions, profile, previous, bestExample, memory, examples: settings.ai.examples, settings });
   if (inviteProblems(out.text).length) {
     // One retry, telling the model what went wrong. Contacts/links are never allowed, whatever the prompt says:
@@ -321,104 +324,6 @@ export async function generateLetter({ profile, settings, memory = [] }) {
     if (FORBIDDEN.some((re) => re.test(out.text))) throw new HttpError(422, 'ШІ згенерував лист із контактами/посиланнями. Спробуйте ще раз.');
   }
   return { text: out.text.slice(0, 3000), source: 'ai', model: out.model };
-}
-
-// ---------- «Шанс»: a hook in the first characters, under each man ----------
-// In his list he sees only the first ~5 characters of her letter: they have to make him open it.
-const HOOK_PROMPT = `You write the very first words of a woman's first letter to a man on an international dating site. In his list of messages he sees only the first 5 characters, so those 5 characters must make him curious enough to open it.
-
-Write 3 openings, one per category:
-- "personal": about him — use only his first name and/or age if they are given;
-- "city": about his city or country — only if it is given; otherwise write a second "personal" one;
-- "flirt": light, playful and warm; never sexual.
-
-Each opening:
-- is one sentence of 30-110 characters that leads naturally into her letter;
-- starts right away with a word or an emoji: no space, quote or dash first, and never "Hi", "Hello", "Hey" or "Dear";
-- has first 5 characters that are intriguing on their own (an exclamation, his name, his city, a teasing word);
-- uses only the facts given about him — never invents his job, hobbies, looks or anything else;
-- never includes contact details, links, apps, money, gifts or promises to meet.
-
-Reply with JSON only, no explanation: [{"category":"personal","text":"..."},{"category":"city","text":"..."},{"category":"flirt","text":"..."}]`;
-
-const HOOK_TEMPLATES = {
-  personal: ['{name}, you caught my eye today…', '{name}? I just had to write to you.', '{name}! I have a feeling we would get along.', '{name}, may I steal a minute of your evening?', '{name}… there is something warm about your profile.'],
-  city: ['{place}! I have always dreamed of seeing it.', '{place}? Tell me, is it as beautiful as people say?', '{place} — now I am even more curious about you.', '{place}… I wonder what your evenings there look like.'],
-  flirt: ['Oops… I smiled at your photo for too long 🙈', 'Psst… may I tell you a little secret?', 'Wow, a man with such kind eyes!', 'Shh… do not tell anyone I wrote first 😊', 'Okay, I will be brave and write first…', 'Hmm… you look like a man with stories to tell.', 'Wait — are you always this charming?', 'Guess who could not scroll past you?'],
-};
-const HOOK_BAD_START = /^(hi|hello|hey|hiya|dear|greetings|good (morning|evening|afternoon|day))\b/i;
-export const hookKey = (t) => String(t || '').trim().slice(0, 5).toLowerCase();
-const manFirst = (name) => String(name || '').split(/[\s,]+/)[0] || '';
-
-/** A good hook: starts with a word or emoji, new first 5 characters for her, only his facts, nothing forbidden. */
-export function hookOk(text, man = {}, recent = new Set()) {
-  if (/^\s/.test(String(text || ''))) return false;
-  const t = String(text || '').trim();
-  if (t.length < 12 || t.length > 160) return false;
-  if (/^[\s"'«»“”\-–—.,:;!?()]/.test(t) || HOOK_BAD_START.test(t)) return false;
-  if (recent.has(hookKey(t))) return false;
-  if (FORBIDDEN.some((re) => re.test(t))) return false;
-  if ((t.match(/\d+/g) || []).some((n) => n !== String(man.age || ''))) return false; // no numbers but his age
-  if (/\{|\}/.test(t)) return false;
-  return true;
-}
-
-const tplRe = (t) => new RegExp(`^${t.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{(name|place)\}/g, '.+?')}`, 'i');
-/**
- * Without AI (or when it fails): the templates of the 3 categories, a different start for each man and never the
- * template of one of her last letters («lately» — their texts) with another name in it.
- */
-export function templateHook(man = {}, recent = new Set(), seed = 0, lately = []) {
-  const name = manFirst(man.name);
-  const place = String(man.place || '').split(',')[0].trim();
-  const cats = [place ? 'city' : '', name ? 'personal' : '', 'flirt'].filter(Boolean);
-  const order = cats.map((_, i) => cats[(i + seed) % cats.length]);
-  const used = (tpl) => lately.some((x) => tplRe(tpl).test(String(x || '').trim()));
-  for (const strict of [true, false]) {
-    for (const cat of order) {
-      const list = HOOK_TEMPLATES[cat];
-      for (let i = 0; i < list.length; i++) {
-        const tpl = list[(i + seed) % list.length];
-        if (strict && used(tpl)) continue;
-        const text = tpl.replaceAll('{name}', name).replaceAll('{place}', place);
-        if (hookOk(text, man, recent)) return { hook: text, category: cat, source: 'template', model: null };
-      }
-    }
-  }
-  const any = HOOK_TEMPLATES.flirt[seed % HOOK_TEMPLATES.flirt.length];
-  return { hook: any, category: 'flirt', source: 'template', model: null };
-}
-
-/** The hook for this man: AI writes 3 (personal / city / flirt), the first that passes the checks is taken. */
-export async function generateHook({ profile, settings, man = {}, recent = new Set(), seed = 0, lately = [] }) {
-  const apiKey = keyFor(settings);
-  if (!apiKey) return templateHook(man, recent, seed, lately);
-  const language = profile.language || settings.ai.language || 'English';
-  const about = [manFirst(man.name) && `First name: ${manFirst(man.name)}`, man.age && `Age: ${man.age}`, man.place && `City / country: ${man.place}`].filter(Boolean).join('\n') || 'Nothing is known about him.';
-  const style = resolvePrompt({ profile, settings });
-  const instructions = [settings.ai.instructions, style.source !== 'default' ? `Her style (from her operator) — follow its tone only, the rules above still apply:\n${style.text.slice(0, 1500)}` : '',
-    recent.size ? `Do not start like these recent letters of hers: ${[...recent].slice(0, 15).map((x) => `"${x}"`).join(', ')}` : ''].filter(Boolean).join('\n');
-  try {
-    const out = await callClaude({ apiKey, model: settings.ai.model || 'claude-opus-5-5', system: HOOK_PROMPT, language, profile, settings, about, instructions, max: 2000 });
-    const list = JSON.parse((out.text.match(/\[[\s\S]*\]/) || ['[]'])[0]);
-    const pref = ['city', 'personal', 'flirt'];
-    const order = pref.map((_, i) => pref[(i + seed) % pref.length]);
-    const cands = Array.isArray(list) ? list.filter((x) => x && typeof x.text === 'string') : [];
-    for (const cat of order) {
-      for (const c of cands.filter((x) => x.category === cat)) {
-        const text = c.text.trim();
-        if (cat === 'city' && !man.place) continue; // a city he never gave
-        if (hookOk(text, man, recent)) return { hook: text, category: cat, source: 'ai', model: out.model };
-      }
-    }
-  } catch { /* AI down or a bad answer: the templates */ }
-  return templateHook(man, recent, seed, lately);
-}
-
-/** Her letter with the hook in front: her own greeting line goes (the hook greets him). */
-export function withHook(hook, letter) {
-  const body = String(letter || '').trim().replace(/^(hi|hello|hey|dear|good (morning|evening|afternoon|day))\b[^.!?\n]*[.!?]*\s*/i, '');
-  return `${String(hook || '').trim()} ${body}`.trim();
 }
 
 // ---------- «Шанс»: an invite with a hook, then a letter — both written for this man ----------
@@ -580,8 +485,9 @@ export async function generateChance({ profile, settings, man = {}, seed = 0, re
       const j = JSON.parse((out.text.match(/\{[\s\S]*\}/) || ['{}'])[0]);
       const invite = String(j.invite || '').trim();
       const letter = String(j.letter || '').trim();
+      const braces = /\{(?!name\}|NAME\})[^}]*\}/; // only {name} / {NAME} may stay (they become his name)
       const ok = capsHook(invite) && invite.length >= 150 && invite.length <= 380 && letter.length >= 500 && letter.length <= 1700
-        && !chanceProblems(invite) && !chanceProblems(letter) && !recent.some((r) => String(r).slice(0, 5).toUpperCase() === invite.slice(0, 5).toUpperCase());
+        && !braces.test(invite) && !braces.test(letter) && !chanceProblems(invite) && !chanceProblems(letter) && !recent.some((r) => String(r).slice(0, 5).toUpperCase() === invite.slice(0, 5).toUpperCase());
       if (ok) return { invite, letter, type: HOOK_TYPES.includes(j.type) ? j.type : 'flirt', source: 'ai', model: out.model, hook: invite.slice(0, 5) };
     } catch { /* AI down or a bad answer */ }
   }

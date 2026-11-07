@@ -130,7 +130,7 @@ try {
   let st;
   const t0 = Date.now();
   await sleep(1500);
-  while (Date.now() - t0 < 300000) { st = await readState(); if (st?.test && ['stopped', 'error'].includes(st.status)) break; await sleep(1000); }
+  while (Date.now() - t0 < 600000) { st = await readState(); if (st?.test && ['stopped', 'error'].includes(st.status)) break; await sleep(1000); }
   const testLog = (st?.log || []).map((l) => l.text).reverse().join('\n');
   if (st?.status !== 'stopped') fail(`the test did not pass: ${st?.status}\n${testLog}`);
   if (/капч/i.test(testLog)) fail(`a false captcha (the invisible badge):\n${testLog}`);

@@ -365,7 +365,9 @@ export default function botRoutes(db, cfg) {
     const recent = db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent' ORDER BY id DESC LIMIT 40").all(ctx.p.id).map((r) => r.text);
     const winners = db.prepare(`SELECT text FROM messages WHERE agency_id = ? AND mode = 'chance' AND status = 'sent' AND replied_at IS NOT NULL
       AND reply_mood != 'negative' AND sent_at > ? ORDER BY replied_at DESC LIMIT 8`).all(ctx.p.agency_id, now() - 30 * 86400000).map((r) => r.text);
-    const seed = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent'").get(ctx.p.id).n;
+    // her letters so far + his own number: men in a row (and men of a test, where nothing is stored) get other templates
+    const seed = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent'").get(ctx.p.id).n
+      + [...String(m.id)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 1000003, 7);
     const g = await generateChance({ profile: ctx.p, settings, man, seed, recent, winners, wantType: bestHookType(ctx.p.agency_id) });
     const invite = personalize(fillHer(g.invite, ctx.p), m);
     const letter = personalize(fillHer(g.letter, ctx.p), m);
@@ -671,7 +673,8 @@ export default function botRoutes(db, cfg) {
     const msg = `🛑 Анкета <b>${escapeHtml(p.name)}</b>: ${escapeHtml(text)}.\nБот на паузі — відкрийте вкладку сайту й розв’яжіть, далі він продовжить сам.`;
     const token = tgToken(db, settings);
     if (token) sendToUsers(db, settings, [p.operator_id, req.user.id], msg).catch(() => {});
-    res.json({ ok: true, sent: Boolean(token) });
+    if (settings.telegram.botToken && settings.telegram.chatId) sendTelegram(settings.telegram.botToken, settings.telegram.chatId, msg).catch(() => {}); // a team's own chat
+    res.json({ ok: true, sent: Boolean(token || (settings.telegram.botToken && settings.telegram.chatId)) });
   });
 
   r.post('/profiles/:id/heartbeat', (req, res) => {
@@ -833,4 +836,5 @@ function notifyReplies(db, profile, settings, msgs, user) {
   const text = `💌 Нові відповіді для анкети <b>${escapeHtml(profile.name)}</b> (${msgs.length}):\n${lines.join('\n')}\n\nЧас відповідати особисто 🙂`;
   // the one platform bot: to the profile's operator and to whoever runs the bot (each sees their own)
   sendToUsers(db, settings, [profile.operator_id, user.id], text).catch(() => {});
+  if (settings.telegram.botToken && settings.telegram.chatId) sendTelegram(settings.telegram.botToken, settings.telegram.chatId, text).catch(() => {}); // a team's own chat
 }

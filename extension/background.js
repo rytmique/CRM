@@ -925,7 +925,7 @@ async function chanceAfter(ctx, s) {
 }
 
 /** One list with the chats of all her women: only the rows of the woman the bot works as now. */
-const isHers = (x) => !x.her || !her?.id || x.her === String(her.id);
+const isHers = (x) => (!x.her ? true : her?.id ? x.her === String(her.id) : false); // a row of a woman, ours unknown → not ours
 /** A site with her photo gallery: the «Шанс» letter takes a few photos from it (the panel's files cannot be put there). */
 function withGallery(site, man) {
   if (!site.galleryItem) return man;
@@ -1116,7 +1116,7 @@ async function shiftLoop(ctx, rotate) {
     const parts = [ch.on && site.chanceItem && !ctx.limitReached ? `Шанс о ${hhmm(ctx.nextChance)}` : '', ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? `Аллчат о ${hhmm(ctx.nextAllchat)}` : ''].filter(Boolean);
     const turn = other < work ? `${ctx.otherName?.() || 'інша анкета'} о ${hhmm(other)} · ${ctx.profileName}: ` : '';
     await setState({ message: `🌙 Далі: ${turn}${parts.join(', ') || 'лише відповіді'}. Стежу за відповідями` });
-    await waitUntil(Math.min(next, other), ctx, 'watching');
+    await waitUntil(Math.min(next, other > Date.now() ? other : Infinity), ctx, 'watching'); // an overdue turn never makes a busy loop
   }
   return 'stopped';
 }
@@ -1586,7 +1586,9 @@ async function workspace(tabId) {
   const ready = r.profiles.filter((p) => p.license?.valid && p.status === 'active');
   // the site lists women: work only as those it shows now (a profile that is gone from the site is skipped)
   const onSite = seen.length > 0 && seen.some((x) => x.id || x.name) && site.herItem; // (a list of chats shows only the women with chats: not a full list)
-  const list = onSite ? ready.filter((p) => seen.some((x) => (p.site_profile_id && x.id ? x.id === p.site_profile_id : x.name && x.name.toLowerCase() === p.name.toLowerCase()))) : ready;
+  let list = onSite ? ready.filter((p) => seen.some((x) => (p.site_profile_id && x.id ? x.id === p.site_profile_id : x.name && x.name.toLowerCase() === p.name.toLowerCase()))) : ready;
+  // one list for all her women: a profile works only with her site ID (else it would take the rows of other women)
+  if (site.listHerId) list = list.filter((p) => p.site_profile_id);
   if (!list.length) {
     const why = r.profiles.length ? 'усі анкети на паузі або понад план команди' : 'на сайті не видно жодної анкети';
     throw new Error(`Немає з ким працювати: ${why}. Подивіться «Головна» в панелі`);
@@ -1684,10 +1686,16 @@ async function shiftDry(ctx, tabId, problems, quota) {
     const o = await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch((e) => ({ ok: false, error: e.message }));
     if (!o?.ok) problems.push(`🎯 Шанс: ${o?.error || 'вкладка не відкрилась'}`);
     else {
-      const list = ((await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || []).filter(isHers);
+      const want = share('chance');
+      let list = ((await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || []).filter(isHers);
+      // too few of hers on the first page: «Load more», as in the real pass
+      for (let k = 0; k < 3 && site.listMore && list.filter((x) => x.online !== false).length < want; k++) {
+        const rows = ((await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || []).length;
+        if (!(await inTab(tabId, 'listMore', { site, kind: 'chance', until: rows }).catch(() => null))?.ok) break;
+        list = ((await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || []).filter(isHers);
+      }
       const online = list.filter((x) => x.online !== false);
       await log(`✓ 🎯 Шанс: у списку ${list.length}, онлайн ${online.length}`);
-      const want = share('chance');
       let done = 0;
       for (const item of (cfg.modes.chance.onlineOnly ? online : list)) {
         if (stopRequested || done >= want) break;
@@ -1762,7 +1770,7 @@ async function testAll(tabId) {
   const bad = [];
   for (const p of w.list) {
     if (stopRequested) break;
-    try { await runTest(p.id, w.tabId, quota); } catch (e) { bad.push(`${p.name}: ${e.message}`); }
+    try { await runTest(p.id, w.tabId, quota); } catch (e) { if (!/тест знайшов проблем/.test(e.message)) bad.push(`${p.name}: ${e.message}`); else bad.push(''); }
     quota.done++;
   }
   if (stopRequested) return;
@@ -1773,16 +1781,16 @@ async function testAll(tabId) {
     `🎯 Шанс: пройдено ${quota.chanceOk} з ${TEST_CHANCE} (інвайт + лист з фото${quota.profiles ? `, профіль чоловіка прочитано в ${quota.profiles}` : ''})`,
     `💬 Аллчат: пройдено ${quota.allchatOk} з ${TEST_ALLCHAT}`,
     quota.waits.length ? `💌 Чекають відповіді людини: ${quota.waits.length} — ${quota.waits.slice(0, 8).join('; ')}${quota.waits.length > 8 ? '…' : ''}` : '💌 Нових відповідей, що чекають, немає',
-    ...[...bad, ...quota.problems].slice(0, 6).map((x) => `⚠ ${cut(x, 160)}`),
+    ...[...bad.filter(Boolean), ...quota.problems].slice(0, 8).map((x) => `⚠ ${cut(x, 160)}`),
     '',
     ...quota.examples.flatMap((x) => (x.kind === 'chance'
       ? [`🎯 ${x.her} → ${x.him}`, `Інвайт: «${cut(x.invite, 320)}»`, `Лист: «${cut(x.letter, 600)}»`, '']
       : [`💬 ${x.her} → ${x.him}: «${cut(x.text, 300)}»`, ''])),
   ];
-  const ok = !bad.length && !quota.problems.length;
+  const ok = !bad.filter(Boolean).length && !quota.problems.length;
   const rep = await api('/api/bot/test-report', { method: 'POST', body: { ok, lines } }).catch(() => null);
   await log(rep?.sent ? '📲 Звіт тесту надіслано в Telegram' : '📲 Звіт тесту не пішов у Telegram (підключіть Telegram у панелі)', rep?.sent ? 'info' : 'warn');
-  if (bad.length) throw new Error(bad.join(' · '));
+  if (bad.length) throw new Error([...bad.filter(Boolean), ...quota.problems].slice(0, 5).join(' · ') || 'тест знайшов проблеми');
   await setState({ message: `Тест пройдено: Шанс ${quota.chanceOk}, Аллчат ${quota.allchatOk}. Можна вмикати` });
   await log(`🧪 Тест пройдено для всіх анкет ✓ Можна вмикати`, 'reply');
 }
