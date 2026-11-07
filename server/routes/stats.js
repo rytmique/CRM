@@ -251,5 +251,18 @@ export default function statsRoutes(db) {
     res.json({ who, nights: out, profiles, people, operators });
   });
 
+  /** «What works»: «Шанс» invites by the type of their hook — sent, answered, the rate (30 days); and the best answered invites. */
+  r.get('/hooks', (req, res) => {
+    const u = req.user;
+    const scope = profileScope(u);
+    const since = now() - 30 * 86400000;
+    const rows = db.prepare(`SELECT m.hook, COUNT(*) AS sent, SUM(m.replied_at IS NOT NULL AND m.reply_mood != 'negative') AS replies FROM messages m JOIN profiles p ON p.id = m.profile_id
+      WHERE ${scope.where} AND m.mode = 'chance' AND m.status = 'sent' AND m.hook != '' AND m.sent_at > ? GROUP BY m.hook ORDER BY replies * 1.0 / COUNT(*) DESC`).all(...scope.params, since)
+      .map((x) => ({ ...x, conv: x.sent ? Math.round((x.replies / x.sent) * 1000) / 10 : 0 }));
+    const best = db.prepare(`SELECT m.text, m.hook, p.name AS her FROM messages m JOIN profiles p ON p.id = m.profile_id
+      WHERE ${scope.where} AND m.mode = 'chance' AND m.status = 'sent' AND m.replied_at IS NOT NULL AND m.reply_mood != 'negative' AND m.sent_at > ? ORDER BY m.replied_at DESC LIMIT 5`).all(...scope.params, since);
+    res.json({ types: rows, best });
+  });
+
   return r;
 }

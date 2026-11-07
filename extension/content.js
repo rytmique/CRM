@@ -455,6 +455,45 @@
     }).filter((x) => x.name || x.id);
   }
 
+  /**
+   * Opens a profile the way the operator does (the site opens it in a new tab): his photo in the chat header, or — for her —
+   * the profile button in one of her rows of the list. Only clicks; reading happens in that tab.
+   */
+  async function openProfile({ site, sel, her = '' }) {
+    let el = null;
+    if (her && site.listHerId) {
+      const row = qsa(document, [site.allchatItem, site.chanceItem].filter(Boolean).join(', ')).filter(visible)
+        .find((r) => normId(extract(r, site.listHerId)) === String(her));
+      el = row ? qs(row, sel) : null;
+    } else el = qsa(document, sel).find(visible) || null;
+    if (!el) return { ok: false, error: 'кнопку профілю не знайдено' };
+    el.scrollIntoView({ block: 'center' });
+    await sleep(rand(300, 800));
+    // a link: its address is enough (the bot opens it in a tab itself — a script's click opens no new tab)
+    const a = el.closest('a[href]') || el.querySelector?.('a[href]');
+    if (a && !/^javascript:|^#$/.test(a.getAttribute('href') || '')) return { ok: true, href: a.href };
+    await humanClick(el);
+    return { ok: true, href: '' };
+  }
+
+  /** The text of a profile page: «Header: value» lines and the free texts (nothing that says «not specified»). */
+  function profileText({ site }) {
+    let boxes = qsa(document, site.profileBox || 'main').filter(visible);
+    if (!boxes.length) boxes = qsa(document, 'main, [role="main"]').filter(visible).slice(-1); // another page layout (her profile): its main part
+    if (!boxes.length) return { ok: false, text: '' };
+    const raw = boxes.map((b) => b.innerText || b.textContent || '').join('\n');
+    const lines = raw.split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (/not specified|не вказано|не указано|^not \w+$/i.test(l) || l.length < 2) continue;
+      // a heading line followed by its text → "Heading: text"
+      if (!l.includes(':') && l.length < 40 && lines[i + 1] && lines[i + 1].length > 40 && !lines[i + 1].includes(':')) { out.push(`${l.replace(/\s*$/, '')}: ${lines[i + 1]}`); i++; continue; }
+      out.push(l.replace(/\s*:\s*$/, ''));
+    }
+    return { ok: true, text: [...new Set(out)].join('\n').slice(0, 2000) };
+  }
+
   /** «Load more» under the list until there are more rows than «until» (a few clicks at most). */
   async function listMore({ site, kind, until = 0, max = 4 }) {
     const count = () => qsa(document, site[`${kind}Item`]).filter(visible).length;
@@ -762,7 +801,7 @@
 
   window.__agencyBot = {
     scan, open, openPage, fill, submit, compose, send, clickAction, view, next, more, inbox, probe, blocked, leftCount, fillSubject,
-    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, galleryPick, listMore, openTab, listItems, openItem, history,
+    chatHeader, chatIs, waitChat, tasks, openTask, findMan, idle, herIs, chatHerIs, herPick, herList, galleryPick, listMore, openProfile, profileText, openTab, listItems, openItem, history,
     attachedCount, waitAttached, attachCheck,
     util: { qs, qsa, extract, normId, cardsOf, visible, flash, splitTop },
   };

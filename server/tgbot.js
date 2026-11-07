@@ -94,6 +94,11 @@ export async function pollOnce(db, timeoutSec = 25) {
 export function startTelegramBot(db, log = console) {
   let stopped = false;
   (async () => {
+    // a token from .env (a local test): learn the bot's @name once, so the panel's «Підключити Telegram» works at once
+    if (!platformGet(db, 'tgToken', '') && process.env.TELEGRAM_BOT_TOKEN && !platformGet(db, 'tgBotName', '')) {
+      const r = await setPlatformBot(db, process.env.TELEGRAM_BOT_TOKEN).catch((e) => ({ ok: false, error: e.message }));
+      log.log?.(r.ok ? `  Telegram: @${r.name} підключено з .env` : `  Telegram: токен з .env не прийнято (${r.error})`);
+    }
     while (!stopped) {
       if (!platformToken(db)) { await new Promise((r) => setTimeout(r, 15000)); continue; }
       const t = now();

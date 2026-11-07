@@ -1,6 +1,7 @@
 import { h, field, input, busy, toast, fmtInt, dayLabel } from '../ui.js';
 import { get, put } from '../api.js';
 
+const HOOK_NAMES = { name: 'Його ім’я', city: 'Його місто', place: 'Місце біля нього', hobby: 'Його хобі', flirt: 'Флірт', meeting: 'Зустріч' };
 const MODEL_INFO = {
   'claude-opus-5-5': ['Opus', 'найкращі тексти (за замовчуванням)'],
   'claude-sonnet-5-5': ['Sonnet', 'добре й дешевше'],
@@ -11,7 +12,7 @@ const MODEL_INFO = {
 export default async function aiPage(main) {
   const page = h('div.page');
   main.replaceChildren(page);
-  const conf = await get('/api/settings');
+  const [conf, hooks] = await Promise.all([get('/api/settings'), get('/api/stats/hooks').catch(() => ({ types: [], best: [] }))]);
   const s = conf.settings;
   const key = input('apiKey', s.ai.apiKey, { placeholder: 'sk-ant-…', autocomplete: 'off' });
   const language = input('language', s.ai.language, { placeholder: 'English' });
@@ -65,6 +66,14 @@ export default async function aiPage(main) {
           h('td.num', `${total.tokens ? Math.round((tok(u) / total.tokens) * 100) : 0}%`))))))
         : h('p.muted', 'Цього місяця ШІ ще не писав.'),
       h('p.small.muted', 'Точна сума в доларах — у console.anthropic.com → Usage.')),
+    h('section.card', h('h3', '🎣 Що залітає: гачки «Шансу» (30 днів)'),
+      hooks.types.length ? h('div.table-wrap', h('table.table',
+        h('thead', h('tr', h('th', 'Тип гачка'), h('th.num', 'Надіслано'), h('th.num', 'Відповіли'), h('th.num', 'Конверсія'))),
+        h('tbody', hooks.types.map((x) => h('tr', h('td', HOOK_NAMES[x.hook] || x.hook), h('td.num', fmtInt(x.sent)), h('td.num', fmtInt(x.replies)), h('td.num', `${x.conv}%`))))))
+        : h('p.muted', 'Ще мало даних — з’явиться після перших ночей.'),
+      hooks.best.length ? h('div.stack', h('p.small.muted', 'Останні інвайти, на які відповіли (ШІ бачить їх як приклади):'),
+        ...hooks.best.map((b) => h('p.small', h('b', `${b.her}: `), String(b.text).slice(0, 220)))) : null,
+      h('p.small.muted', 'Бот сам частіше пише тип гачка, що відповідає найкраще, але й інші пробує далі.')),
     h('section.card', h('h3', '📅 По днях (30 днів)'),
       days.length ? h('div.bars', days.map((d) => h('div.bar-row', h('span.bar-day', dayLabel(d.day)),
         h('span.bar', h('span.bar-fill', { style: { width: `${Math.round(((d.calls || 0) / peak) * 100)}%` } })),

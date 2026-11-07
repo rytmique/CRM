@@ -256,7 +256,7 @@ export default function botRoutes(db, cfg) {
     }
     const pending = pendingOf(p.id);
     res.json({
-      profile: { id: p.id, name: p.name, age: p.age, site_profile_id: p.site_profile_id },
+      profile: { id: p.id, name: p.name, age: p.age, site_profile_id: p.site_profile_id, about_at: p.site_about_at || null },
       site: { id: site.id, name: site.name, base_url: site.base_url, config: JSON.parse(site.config || '{}') },
       invite: { id: invite.id, text: invite.text },
       variants: variants.length,
@@ -619,13 +619,15 @@ export default function botRoutes(db, cfg) {
     }
     // he answered after an «Аллчат» message: counted for that message too
     // (a dialog list without IDs: matched by his name, like the letters above)
-    const acByName = db.prepare('SELECT man_id FROM allchat_log WHERE profile_id = ? AND ok = 1 AND lower(man_name) = lower(?) ORDER BY at DESC LIMIT 1');
+    const acByName = db.prepare('SELECT man_id, man_name FROM allchat_log WHERE profile_id = ? AND ok = 1 AND lower(man_name) = lower(?) ORDER BY at DESC LIMIT 1');
+    const acFresh = [];
     for (const raw of list) {
       const man = readMan(raw);
-      const id = man?.id || (raw?.name ? acByName.get(p.id, String(raw.name).split(',')[0].trim().slice(0, 80))?.man_id : null);
-      if (id) markAllchatReply(p.id, id, t);
+      const row = man?.id ? { man_id: man.id, man_name: man.name } : raw?.name ? acByName.get(p.id, String(raw.name).split(',')[0].trim().slice(0, 80)) : null;
+      // a new answer to an «Аллчат» message: Telegram too (not twice for a man already counted above)
+      if (row && markAllchatReply(p.id, row.man_id, t).changes && !fresh.some((m) => m.man_id === row.man_id)) acFresh.push({ man_id: row.man_id, man_name: row.man_name || raw?.name || '' });
     }
-    if (fresh.length) notifyReplies(db, p, settings, fresh, req.user);
+    if (fresh.length || acFresh.length) notifyReplies(db, p, settings, [...fresh, ...acFresh], req.user);
     res.json({ ok: true, new: fresh.length, negative, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name, mood: m.reply_mood })) });
   });
 

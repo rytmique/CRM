@@ -842,6 +842,88 @@ function nextAllchatAt(ctx, ac) {
   return Date.now() + gap * rand(0.85, 1.1);
 }
 
+/**
+ * A profile the site opens in a new tab (his photo in the chat header, her profile button in a row): the bot reads it
+ * like a person — a few seconds — closes the tab and goes back to work. A click from a script opens no tab (the browser
+ * blocks such pop-ups), so the bot takes the address the site wanted to open (a link, or what the page passed to
+ * window.open) and opens it itself; «fallback» — the profile address known by his ID.
+ */
+async function readProfile(tabId, site, { sel, her = '', fallback = '', expect = '' }) {
+  if (!site.profileBox || (!sel && !fallback)) return '';
+  await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: () => {
+    if (!window.__agencyOpenHook) {
+      window.__agencyOpenHook = true;
+      const open = window.open;
+      window.open = function (u, ...rest) { window.__agencyOpened = String(u || ''); try { return open.call(window, u, ...rest); } catch { return null; } };
+    }
+    window.__agencyOpened = '';
+  } }).catch(() => null);
+  let done;
+  const created = new Promise((resolve) => {
+    const on = (t) => { if (t.openerTabId === tabId) done(t); };
+    const timer = setTimeout(() => done(null), 1500);
+    done = (t) => { chrome.tabs.onCreated.removeListener(on); clearTimeout(timer); resolve(t); };
+    chrome.tabs.onCreated.addListener(on);
+  });
+  const before = (await chrome.tabs.get(tabId).catch(() => null))?.url;
+  const c = sel ? await inTab(tabId, 'openProfile', { site, sel, her }).catch(() => null) : null;
+  let t = await created; // the site did open a tab itself
+  let target = c?.href || '';
+  if (!t && !target && c?.ok) {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: () => window.__agencyOpened || '' }).catch(() => [null]);
+    target = r?.result || '';
+  }
+  if (!t && !target) target = fallback;
+  let text = '';
+  try {
+    if (!t && target) t = await chrome.tabs.create({ url: new URL(target, before || undefined).href, active: true, openerTabId: tabId }).catch(() => null);
+    if (t) {
+      await waitTabComplete(t.id).catch(() => null);
+      await nap(rand(1500, 3500)); // reads the profile
+      for (let i = 0; i < 6 && !text; i++) { text = (await inTab(t.id, 'profileText', { site }).catch(() => null))?.text || ''; if (!text) await sleep(500); }
+    } else if (c?.ok && (await chrome.tabs.get(tabId)).url !== before) {
+      // the same tab went to the profile: read it and come back
+      await waitTabComplete(tabId).catch(() => null);
+      await nap(rand(1500, 3500));
+      text = (await inTab(tabId, 'profileText', { site }).catch(() => null))?.text || '';
+      await chrome.tabs.goBack(tabId).catch(() => {});
+      await waitTabComplete(tabId).catch(() => null);
+      await sleep(800);
+    }
+  } finally {
+    if (t) { await chrome.tabs.remove(t.id).catch(() => {}); await chrome.tabs.update(tabId, { active: true }).catch(() => {}); }
+  }
+  // the profile of someone else (a wrong address): not used
+  const ids = text.match(/\d{5,}/g) || [];
+  if (expect && ids.length && !ids.includes(String(expect))) return '';
+  return text;
+}
+
+/** Her profile on the site, once a week: the AI writes as her, nobody types it in the panel. */
+async function readHer(ctx) {
+  const { tabId, site, cfg } = ctx;
+  if (!site.herProfileOpen || !her?.id) return;
+  if (cfg.profile.about_at && Date.now() - cfg.profile.about_at < 7 * 86400000) return;
+  await inTab(tabId, 'openTab', { site, kind: 'allchat' }).catch(() => null);
+  const text = await readProfile(tabId, site, { sel: site.herProfileOpen, her: her.id, expect: her.id });
+  if (text.length < 20) { await log(`👩 ${cfg.profile.name}: профіль на сайті не прочитався — пишу без нього`, 'warn'); return; }
+  await api(`/api/bot/profiles/${ctx.profileId}/about`, { method: 'POST', body: { text } }).catch(() => null);
+  cfg.profile.about_at = Date.now();
+  await log(`👩 ${cfg.profile.name}: прочитав її профіль на сайті (${text.length} символів) — ШІ пише від її імені`);
+}
+
+/** «Шанс» must be quick but human: a few seconds between men and a short breather now and then (not the hours-long pace). */
+async function chanceAfter(ctx, s) {
+  if (s?.hourLeft === 0) return afterMan(ctx, s, 1); // the hourly cap of the team still counts
+  ctx.chanceRow = (ctx.chanceRow || 0) + 1;
+  const breather = ctx.chanceRow % Math.round(rand(8, 12)) === 0;
+  const ms = (breather ? rand(20, 45) : rand(4, 9)) * 1000 * speedMul * (ctx.slow || 1);
+  if (breather) await setState({ message: '☕ Коротка пауза, як у живої людини' });
+  if (!ctx.test && Math.random() * 100 < pace.idleChance / 2 && ctx.tabId) await inTab(ctx.tabId, 'idle', { site: ctx.site, seconds: Math.round(rand(3, 7)) }).catch(() => null);
+  await waitUntil(Date.now() + ms, ctx, 'waiting');
+  if (!stopRequested) await setState({ status: 'running' });
+}
+
 /** One list with the chats of all her women: only the rows of the woman the bot works as now. */
 const isHers = (x) => !x.her || !her?.id || x.her === String(her.id);
 /** A site with her photo gallery: the «Шанс» letter takes a few photos from it (the panel's files cannot be put there). */
@@ -897,20 +979,28 @@ async function chancePass(ctx) {
       if (!opened?.ok) { res.skipped++; await log(`🎯 ${item.name}: ${opened?.error || 'не відкрився'}`, 'warn'); continue; }
       if (!opened.id) { res.skipped++; await log(`🎯 ${item.name}: не бачу його ID у шапці чату`, 'warn'); continue; }
       ctx.chanceDone.add(key);
-      const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', candidates: [{ id: opened.id, name: opened.name, age: item.age, place: opened.place, online: item.online !== false, via: 'letter' }] } });
-      await setState({ remaining: f.remaining });
-      if (f.remaining <= 0) { ctx.limitReached = true; break; }
+      const cand = { id: opened.id, name: opened.name, age: item.age, place: opened.place, online: item.online !== false, via: 'letter' };
+      const probe = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', probe: true, candidates: [cand] } });
+      await setState({ remaining: probe.remaining });
+      if (probe.remaining <= 0) { ctx.limitReached = true; break; }
+      if (!probe.allowed[0]) { res.info.contacted++; continue; }
+      // his profile, the way the operator looks at it, so the invite and the letter are about him
+      await setState({ message: `🎯 Шанс: дивлюсь профіль ${cand.name || cand.id}` });
+      cand.about = await readProfile(tabId, site, { sel: site.manPhoto, fallback: site.manProfileUrl ? site.manProfileUrl.replaceAll('{id}', encodeURIComponent(cand.id)) : '', expect: cand.id });
+      const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', candidates: [cand] } });
       const man = f.allowed[0];
       if (!man) { res.info.contacted++; continue; }
       withGallery(site, man);
       await setState({ message: `🎯 Шанс: лист для ${man.name || man.id}` });
       let r;
       try { r = await runActions(tabId, site, man, man.actions, { where: 'page', typing: ctx.human.typing }); } catch (e) { r = { ok: false, messages: 0, error: e.message, warnings: [] }; }
-      const s = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: r.ok, error: r.error, text: man.text, mode: 'chance', exhausted: r.exhausted } });
-      if (r.ok) {
+      // the invite went even if the letter did not: he counts as written (no second invite next time)
+      const went = r.ok || r.messages > 0;
+      const s = await api(`/api/bot/profiles/${profileId}/sent`, { method: 'POST', body: { man, ok: went, error: r.error, text: man.text, mode: 'chance', exhausted: r.exhausted } });
+      if (went) {
         res.sent++;
         await setState({ sent: state.sent + r.messages, remaining: s.remaining });
-        await log(`🎯 ${man.name || man.id}: ✉ лист ✓${r.attached ? ` 📷${r.attached}` : ''}`);
+        await log(`🎯 ${man.name || man.id}: 💬 інвайт${r.letters ? ` + ✉ лист${r.attached ? ` 📷${r.attached}` : ''}` : ''} ✓${r.ok ? '' : ` (лист: ${r.error})`}`);
       } else {
         if (!r.exhausted) res.failed++;
         res.info.error = r.error;
@@ -919,7 +1009,7 @@ async function chancePass(ctx) {
       }
       await heartbeat();
       if (s.stop) { ctx.limitReached = true; break; }
-      await afterMan(ctx, s, r.messages);
+      await chanceAfter(ctx, s);
     }
 
     if (stopRequested || ctx.limitReached) break;
@@ -986,6 +1076,7 @@ async function shiftLoop(ctx, rotate) {
   // back to her after another woman: her timers of tonight go on (the «Шанс» interval, how many «Аллчат» passes are left)
   const memo = shiftMemo.get(ctx.profileId);
   if (memo && memo.night === ctx.night) Object.assign(ctx, { nextChance: memo.nextChance, nextAllchat: memo.nextAllchat, allchatPasses: memo.allchatPasses, chanceDone: memo.chanceDone });
+  await readHer(ctx).catch(() => null);
   const keep = (nextAt) => shiftMemo.set(ctx.profileId, { night: ctx.night, nextChance: ctx.nextChance, nextAllchat: ctx.nextAllchat, allchatPasses: ctx.allchatPasses, chanceDone: ctx.chanceDone, nextAt });
   await log(`🌙 Нічна зміна: ${ch.on && site.chanceItem ? `Шанс кожні ${ch.everyMin} хв${ch.onlineOnly ? ' (лише онлайн)' : ''}` : 'Шанс вимкнено'} · ${ac.on && site.allchatItem ? `Аллчат ${ac.perNight}× за ніч` : 'Аллчат вимкнено'}`);
   while (!stopRequested) {
@@ -1011,7 +1102,8 @@ async function shiftLoop(ctx, rotate) {
     // follow-ups of the site's hints (if any) — only where the bot can reach a man again (his page or search by ID)
     if (ctx.cfg.scenario.followups && (site.manUrl || site.findInput)) await processDue(ctx).catch((e) => log(`Повторні: ${e.message}`, 'warn'));
     if (site.taskItem && !ctx.limitReached) await processTasks(ctx);
-    if (did) await checkInbox(site, ctx.profileId);
+    // his answers reach a person (and Telegram) quickly: the inbox after every pass and every few minutes in between
+    if (did || Date.now() - (ctx.lastInbox || 0) > 5 * 60000) { ctx.lastInbox = Date.now(); await checkInbox(site, ctx.profileId); }
     // her next real work («Шанс» / «Аллчат»); with no work left tonight she is still looked at every 30 min (replies, a new night)
     const work = Math.min(Date.now() + 30 * 60000, ch.on && site.chanceItem && !ctx.limitReached ? ctx.nextChance : Infinity,
       ac.on && site.allchatItem && ctx.allchatPasses < ac.perNight ? ctx.nextAllchat : Infinity);
@@ -1293,7 +1385,7 @@ const TEST_MEN = 3;
 /** Test mode: the whole way on the real site, but «Send» and the taught buttons are never pressed; nothing is recorded, no limit is used. */
 const reportTest = (profileId, problems) => api(`/api/bot/profiles/${profileId}/test`, { method: 'POST', body: { ok: !problems.length, problems } }).catch(() => {});
 
-async function runTest(profileId, tabId) {
+async function runTest(profileId, tabId, quota = { chance: 2, allchat: 2, chanceOk: 0, allchatOk: 0, profiles: 0, hers: 0, women: 1, done: 0, examples: [], waits: [], problems: [] }) {
   const ctx = await loadRun(profileId, true);
   const { cfg, site } = ctx;
   await setState({
@@ -1359,7 +1451,14 @@ async function runTest(profileId, tabId) {
   }
   // night shift: «Шанс» and «Аллчат» without sending
   const shiftSite = Boolean(site.chanceItem || site.allchatItem);
-  if (shiftSite) await shiftDry(ctx, tabId, problems);
+  if (shiftSite) {
+    ctx.tabId = tabId;
+    const before = ctx.cfg.profile.about_at;
+    await readHer(ctx).catch(() => null);
+    if (ctx.cfg.profile.about_at && ctx.cfg.profile.about_at !== before) quota.hers++;
+    await shiftDry(ctx, tabId, problems, quota);
+    quota.problems.push(...problems.map((x) => `${cfg.profile.name}: ${x}`));
+  }
   // 1. Search page (sites with a list of new men)
   const scan = site.card ? await inTab(tabId, 'scan', { site }) : null;
   const men = scan?.candidates || [];
@@ -1571,47 +1670,66 @@ async function runAll(tabId) {
 }
 
 // ---------------- 🧪 test mode: the whole way on the real site, for every woman, nothing is sent ----------------
-const DRY_MEN = 2;
-/** «Шанс» and «Аллчат» without sending: opens the lists, his chat, writes the text into the box and leaves it. */
-async function shiftDry(ctx, tabId, problems) {
+const TEST_CHANCE = 10; // the final test: 10 men in «Шанс» and 10 dialogs in «Аллчат», all her women together
+const TEST_ALLCHAT = 10;
+/**
+ * «Шанс» and «Аллчат» without sending: opens the lists, his chat and his profile, writes the invite and the letter
+ * (photos picked in her gallery and left), the «Аллчат» message — and presses nothing. Examples go to the Telegram report.
+ */
+async function shiftDry(ctx, tabId, problems, quota) {
   const { site, profileId, cfg } = ctx;
   const warn = async (text) => log(`⚠ ${text}`, 'warn');
-  if (site.chanceItem && cfg.modes?.chance?.on) {
+  const share = (k) => Math.ceil(quota[k] / Math.max(1, quota.women - quota.done)); // her part of what is left
+  if (site.chanceItem && cfg.modes?.chance?.on && quota.chance > 0) {
     const o = await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch((e) => ({ ok: false, error: e.message }));
     if (!o?.ok) problems.push(`🎯 Шанс: ${o?.error || 'вкладка не відкрилась'}`);
     else {
       const list = ((await inTab(tabId, 'listItems', { site, kind: 'chance' }).catch(() => null)) || []).filter(isHers);
       const online = list.filter((x) => x.online !== false);
       await log(`✓ 🎯 Шанс: у списку ${list.length}, онлайн ${online.length}`);
+      const want = share('chance');
       let done = 0;
       for (const item of (cfg.modes.chance.onlineOnly ? online : list)) {
-        if (stopRequested || done >= DRY_MEN) break;
+        if (stopRequested || done >= want) break;
         await inTab(tabId, 'openTab', { site, kind: 'chance' }).catch(() => null);
         const op = await inTab(tabId, 'openItem', { site, kind: 'chance', item }).catch((e) => ({ ok: false, error: e.message }));
         if (!op?.ok || !op.id) { await warn(`🎯 ${item.name}: ${op?.error || 'не бачу його ID у шапці чату'}`); continue; }
-        const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', test: true, candidates: [{ id: op.id, name: op.name, age: item.age, place: op.place, online: item.online !== false, via: 'letter' }] } });
+        const cand = { id: op.id, name: op.name, age: item.age, place: op.place, online: item.online !== false, via: 'letter' };
+        const probe = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', test: true, probe: true, candidates: [cand] } });
+        if (!probe.allowed[0]) continue; // already written
+        cand.about = await readProfile(tabId, site, { sel: site.manPhoto, fallback: site.manProfileUrl ? site.manProfileUrl.replaceAll('{id}', encodeURIComponent(cand.id)) : '', expect: cand.id });
+        const f = await api(`/api/bot/profiles/${profileId}/filter`, { method: 'POST', body: { mode: 'chance', test: true, candidates: [cand] } });
         const man = f.allowed[0];
-        if (!man) continue; // already written
+        if (!man) continue;
         withGallery(site, man);
         let r;
         try { r = await runActions(tabId, site, man, man.actions, { where: 'page', dry: true }); } catch (e) { r = { ok: false, error: e.message, warnings: [] }; }
-        if (r.ok) { done++; await setState({ sent: state.sent + 1 }); const ph = r.attached || man.actions?.[0]?.files?.length || 0; await log(`✓ 🎯 ${man.name || man.id}: лист ${ph ? `з фото (${ph}${man.actions?.[0]?.gallery ? ' з її галереї' : ''})` : 'без фото'}, гачок «${String(man.text || '').slice(0, 40)}…» — НІЧОГО не надіслано`); }
-        else problems.push(`🎯 ${man.name || man.id}: ${r.error}`);
+        if (r.ok) {
+          done++;
+          quota.chance--;
+          quota.chanceOk++;
+          if (cand.about) quota.profiles++;
+          await setState({ sent: state.sent + 1 });
+          await log(`✓ 🎯 ${man.name || man.id}: інвайт «${String(man.text || '').slice(0, 45)}…» + лист (${String(man.letter || '').length} симв., фото ${r.attached || 0}${cand.about ? ', з його профілю' : ''}) — НІЧОГО не надіслано`);
+          if (quota.examples.filter((x) => x.kind === 'chance').length < 2) quota.examples.push({ kind: 'chance', her: cfg.profile.name, him: man.name || man.id, invite: man.text, letter: man.letter });
+        } else problems.push(`🎯 ${man.name || man.id}: ${r.error}`);
         for (const x of r.warnings || []) await warn(x);
       }
       if (!done && online.length) await warn('🎯 Шанс: кожному онлайн уже писали — перевірку листа пропущено');
     }
   }
-  if (site.allchatItem && cfg.modes?.allchat?.on && !stopRequested) {
+  if (site.allchatItem && cfg.modes?.allchat?.on && !stopRequested && quota.allchat > 0) {
     const o = await inTab(tabId, 'openTab', { site, kind: 'allchat' }).catch((e) => ({ ok: false, error: e.message }));
     if (!o?.ok) problems.push(`💬 Аллчат: ${o?.error || 'вкладка не відкрилась'}`);
     else {
       const list = ((await inTab(tabId, 'listItems', { site, kind: 'allchat' }).catch(() => null)) || []).filter(isHers);
-      const waits = list.filter((x) => x.unread || x.mine === false).length;
-      await log(`✓ 💬 Аллчат: діалогів ${list.length}, чекають відповіді людини ${waits} (туди бот не пише)`);
+      const waiting = list.filter((x) => x.unread || x.mine === false);
+      for (const w of waiting) quota.waits.push(`${w.name}${w.age ? `, ${w.age}` : ''} (${cfg.profile.name})`);
+      await log(`✓ 💬 Аллчат: діалогів ${list.length}, чекають відповіді людини ${waiting.length} (туди бот не пише)`);
+      const want = share('allchat');
       let done = 0;
       for (const item of list.filter((x) => !x.unread && x.mine !== false)) {
-        if (stopRequested || done >= DRY_MEN) break;
+        if (stopRequested || done >= want) break;
         await inTab(tabId, 'openTab', { site, kind: 'allchat' }).catch(() => null);
         const op = await inTab(tabId, 'openItem', { site, kind: 'allchat', item }).catch((e) => ({ ok: false, error: e.message }));
         if (!op?.ok || !op.id) { await warn(`💬 ${item.name}: ${op?.error || 'не бачу його ID у шапці чату'}`); continue; }
@@ -1621,26 +1739,51 @@ async function shiftDry(ctx, tabId, problems) {
         const m = await api(`/api/bot/profiles/${profileId}/allchat/compose`, { method: 'POST', body: { man, history: hist } });
         let r;
         try { r = await writeHere(tabId, site, { ...man, text: m.text, files: [], via: 'chat' }, true, false); } catch (e) { r = { ok: false, error: e.message }; }
-        if (r?.ok) { done++; await setState({ sent: state.sent + 1 }); await log(`✓ 💬 ${man.name || man.id}: «${String(m.text).slice(0, 70)}…» — НІЧОГО не надіслано`); }
-        else problems.push(`💬 ${man.name || man.id}: ${r?.error || 'не вдалося'}`);
+        if (r?.ok) {
+          done++;
+          quota.allchat--;
+          quota.allchatOk++;
+          await setState({ sent: state.sent + 1 });
+          await log(`✓ 💬 ${man.name || man.id}: «${String(m.text).slice(0, 70)}…» — НІЧОГО не надіслано`);
+          if (quota.examples.filter((x) => x.kind === 'allchat').length < 1) quota.examples.push({ kind: 'allchat', her: cfg.profile.name, him: man.name || man.id, text: m.text });
+        } else problems.push(`💬 ${man.name || man.id}: ${r?.error || 'не вдалося'}`);
+        await nap(rand(1200, 2500));
       }
     }
   }
 }
 
-/** The test for every woman of hers on the site: switches the site to her, walks the way, presses nothing. */
+/** The test for every woman of hers on the site: walks the whole way, presses nothing, then a report in Telegram. */
 async function testAll(tabId) {
   const w = await workspace(tabId);
   await setState({ ...EMPTY_STATE, log: state.log, status: 'running', test: true, tabId: w.tabId, startedAt: Date.now() });
-  await log(`🧪 Тест-режим: анкет ${w.list.length} (${w.list.map((p) => p.name).join(', ')}). Нічого не надсилається й не натискається`);
+  await log(`🧪 Тест-режим: анкет ${w.list.length} (${w.list.map((p) => p.name).join(', ')}). ${TEST_CHANCE} чоловіків у Шансі + ${TEST_ALLCHAT} діалогів в Аллчаті, нічого не надсилається`);
+  const quota = { chance: TEST_CHANCE, allchat: TEST_ALLCHAT, chanceOk: 0, allchatOk: 0, profiles: 0, hers: 0, women: w.list.length, done: 0, examples: [], waits: [], problems: [] };
   const bad = [];
   for (const p of w.list) {
     if (stopRequested) break;
-    try { await runTest(p.id, w.tabId); } catch (e) { bad.push(`${p.name}: ${e.message}`); }
+    try { await runTest(p.id, w.tabId, quota); } catch (e) { bad.push(`${p.name}: ${e.message}`); }
+    quota.done++;
   }
   if (stopRequested) return;
+  // the report for the team lead in Telegram
+  const cut = (t, n) => { const x = String(t || '').replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n)}…` : x; };
+  const lines = [
+    `👩 Анкети: ${w.list.map((p) => p.name).join(', ')}${quota.hers ? ` · профілі жінок прочитано: ${quota.hers}` : ''}`,
+    `🎯 Шанс: пройдено ${quota.chanceOk} з ${TEST_CHANCE} (інвайт + лист з фото${quota.profiles ? `, профіль чоловіка прочитано в ${quota.profiles}` : ''})`,
+    `💬 Аллчат: пройдено ${quota.allchatOk} з ${TEST_ALLCHAT}`,
+    quota.waits.length ? `💌 Чекають відповіді людини: ${quota.waits.length} — ${quota.waits.slice(0, 8).join('; ')}${quota.waits.length > 8 ? '…' : ''}` : '💌 Нових відповідей, що чекають, немає',
+    ...[...bad, ...quota.problems].slice(0, 6).map((x) => `⚠ ${cut(x, 160)}`),
+    '',
+    ...quota.examples.flatMap((x) => (x.kind === 'chance'
+      ? [`🎯 ${x.her} → ${x.him}`, `Інвайт: «${cut(x.invite, 320)}»`, `Лист: «${cut(x.letter, 600)}»`, '']
+      : [`💬 ${x.her} → ${x.him}: «${cut(x.text, 300)}»`, ''])),
+  ];
+  const ok = !bad.length && !quota.problems.length;
+  const rep = await api('/api/bot/test-report', { method: 'POST', body: { ok, lines } }).catch(() => null);
+  await log(rep?.sent ? '📲 Звіт тесту надіслано в Telegram' : '📲 Звіт тесту не пішов у Telegram (підключіть Telegram у панелі)', rep?.sent ? 'info' : 'warn');
   if (bad.length) throw new Error(bad.join(' · '));
-  await setState({ message: `Тест пройдено для всіх (${w.list.length}). Можна вмикати` });
+  await setState({ message: `Тест пройдено: Шанс ${quota.chanceOk}, Аллчат ${quota.allchatOk}. Можна вмикати` });
   await log(`🧪 Тест пройдено для всіх анкет ✓ Можна вмикати`, 'reply');
 }
 

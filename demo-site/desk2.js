@@ -3,7 +3,14 @@
 // a translator with two boxes (the right one — English — is sent), the letter page with photos from her gallery in a popup.
 // Routes (history API): <base>/chat, <base>/chance, <base>/chat/<cid>, <base>/chance/<cid>, <base>/letter/<cid>. State: localStorage desk2_*.
 (() => {
-  const WOMEN = [{ id: '5000000001', name: 'Kate', age: 29 }, { id: '5000000002', name: 'Olivia', age: 31 }];
+  const WOMEN = [
+    { id: '5000000001', name: 'Kate', age: 29, city: 'Brighton', about: 'I am a kind and cheerful woman, I work as a nurse and love the sea at sunrise.', hobbies: 'yoga, cooking, long walks' },
+    { id: '5000000002', name: 'Olivia', age: 31, city: 'Bristol', about: 'I teach dance to children and believe in true, quiet love.', hobbies: 'dancing, reading, gardening' },
+  ];
+  // what each man tells about himself on his profile page (the bot reads it there)
+  const HOBBIES = ['fishing, camping', 'cooking, jazz', 'art, photography', 'hiking, dogs', 'gardening, old films', 'travel, golf', 'chess, cycling', 'sailing, books', 'woodwork, music', 'running, coffee', 'painting, history', 'motorbikes, the sea'];
+  const ABOUT = ['I am a calm man who loves nature and good jokes.', 'Retired engineer, I love my garden and long drives.', 'I work in arts and communications and love people.',
+    'A simple man with a big heart, I like to cook for friends.', 'Open-minded, I notice beauty in everyday things.', 'I build boats and dream of travelling in a camper.'];
   const NAMES = ['Robert', 'David', 'Michael', 'James', 'William', 'Richard', 'Thomas', 'Steven', 'Paul', 'Andrew', 'Kevin', 'George'];
   const SEED = [
     { n: 1, name: 'Brian', age: 52, msgs: [['h', 'I love fishing on the lake near my house'], ['m', 'Fishing sounds so peaceful! What do you usually catch?']] },
@@ -26,7 +33,7 @@
     WOMEN.forEach((w, k) => {
       NAMES.forEach((name, i) => {
         const id = String(7000001 + k * 100 + i);
-        c[cidOf(w.id, id)] = { cid: cidOf(w.id, id), her: w.id, chance: true, man: { id, name, age: 41 + i * 2, online: i % 3 !== 2 }, msgs: [], left: { msgs: 30, letters: 5 } };
+        c[cidOf(w.id, id)] = { cid: cidOf(w.id, id), her: w.id, chance: true, man: { id, name, age: 41 + i * 2, online: i % 3 !== 2, city: ['Leeds', 'York', 'Bath', 'Derby'][i % 4], hobbies: HOBBIES[i], about: ABOUT[i % ABOUT.length] }, msgs: [], left: { msgs: 30, letters: 5 } };
       });
       for (const s of SEED) {
         const id = String(8000000 + k * 100 + s.n);
@@ -82,7 +89,8 @@
       el('div', { class: 'clmn_2_chat_block_item_profile-f7tZ_T' },
         el('div', { class: 'clmn_2_chat_block_item_profile_photo_wrap-AUZOGC online-nD6EbO', 'data-testid': 'woman-photo' }),
         el('div', { class: 'clmn_2_chat_block_item_profile_name-zcXgCC', 'data-testid': 'woman-name' }, `${w.name}, ${w.age}`),
-        el('div', { class: 'clmn_2_chat_block_item_profile_id-QZZDt6', 'data-testid': 'woman-external_id' }, `ID ${w.id}`)));
+        el('div', { class: 'clmn_2_chat_block_item_profile_id-QZZDt6', 'data-testid': 'woman-external_id' }, `ID ${w.id}`),
+        el('div', { class: 'clmn_2_chat_block_item_profile_prof_btn-UfvQsR', 'data-testid': 'profile-btn', title: 'Profile', onclick: (e) => { e.stopPropagation(); window.open(`${base}/profile-woman/${w.id}`, '_blank'); } }, '👤')));
   }
 
   function list(r) {
@@ -110,7 +118,7 @@
     const w = woman(x.her);
     return el('div', { class: 'chat_head-doHxxv', 'data-testid': 'chat-header' },
       el('div', { class: 'chat_head_profile-Nhx5pm left-a1Wir' },
-        el('div', { class: `chat_head_profile_photo-GMRJz_${x.man.online ? ' online-IFKz1K' : ''}`, 'data-testid': 'man-photo' }, x.man.name[0]),
+        el('div', { class: `chat_head_profile_photo-GMRJz_${x.man.online ? ' online-IFKz1K' : ''}`, 'data-testid': 'man-photo', onclick: () => window.open(`${base}/profile-man/${x.man.id}`, '_blank') }, x.man.name[0]),
         el('div', {}, el('div', { class: 'chat_head_profile_name-bMfsQo', 'data-testid': 'man-name' }, `${x.man.name}, ${x.man.age}`),
           el('div', { class: 'chat_head_profile_id-BpbFCY', 'data-testid': 'man-external_id' }, `ID ${x.man.id}`))),
       el('div', { class: 'chat_head_middle-a_lfy0', 'data-testid': 'options-btn' },
@@ -237,7 +245,29 @@
     wrap.children[1].replaceWith(list(r));
   }
 
+  /** A profile page (his or hers), the layout of the real one: the header block and the «about» block. */
+  function profilePage(kind, id) {
+    const x = kind === 'man' ? Object.values(chats()).find((c) => c.man.id === id)?.man : WOMEN.find((w) => w.id === id);
+    if (!x) return el('div', {}, 'Profile not found');
+    const item = (h, v) => el('li', { class: 'list-item' }, el('span', { class: 'list-item-header' }, `${h}:`), ' ', el('span', { class: 'list-item-value' }, v));
+    return el('div', { class: `column-3 profile_${kind} profile_flex` },
+      el('main', {},
+        el('div', { class: 'main-content', 'data-testid': 'main-content' },
+          el('span', { class: 'info__name', 'data-testid': 'name-age' }, `${x.name}, ${x.age}`),
+          el('span', { class: 'info__id', 'data-testid': `${kind}-id` }, `ID ${x.id}`),
+          el('span', { class: 'place-info', 'data-testid': 'place' }, x.city || 'Not specified'),
+          el('ol', { class: 'list' }, item('Hobbies', x.hobbies || 'Not specified'), item('Smoking', 'Not specified'), item('Education', 'Not specified'))),
+        el('div', { class: 'main-content-about' },
+          el('div', { class: 'node-header' }, 'MY SELF-SUMMARY'), el('div', { class: 'node-about' }, x.about || ''),
+          el('div', { class: 'node-header' }, 'Who AM I looking for'), el('div', { class: 'node-about' }, kind === 'man' ? 'A kind woman who likes to laugh and travel.' : 'A caring, honest man who knows what he wants.'))));
+  }
+
   function render() {
+    const rr = route();
+    if (rr.section === 'profile-man' || rr.section === 'profile-woman') {
+      document.getElementById('root').replaceChildren(profilePage(rr.section === 'profile-man' ? 'man' : 'woman', rr.cid));
+      return;
+    }
     const r = route();
     const x = chats()[r.cid];
     const root = document.getElementById('root');
@@ -249,7 +279,7 @@
 
   window.addEventListener('popstate', render);
   window.addEventListener('DOMContentLoaded', () => {
-    if (!/\/(chat|chance|letter)(\/|$)/.test(location.pathname)) history.replaceState({}, '', `${base}/chat`);
+    if (!/\/(chat|chance|letter|profile-man|profile-woman)(\/|$)/.test(location.pathname)) history.replaceState({}, '', `${base}/chat`);
     document.getElementById('reset')?.addEventListener('click', () => { for (const k of Object.keys(localStorage)) if (k.startsWith('desk2_')) localStorage.removeItem(k); location.href = `${base}/chat`; });
     render();
   });

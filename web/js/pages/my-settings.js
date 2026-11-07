@@ -19,6 +19,14 @@ export default async function settingsPage(main) {
   // ---- the master prompt: mine (operator) / the team's (team lead) ----
   const base = owner ? (prefs.teamPrompt || prefs.defaultPrompt) : (prefs.prompt || prefs.teamPrompt || prefs.defaultPrompt);
   const prompt = textarea('prompt', base, { rows: 12, 'aria-label': 'Мастер-промпт' });
+  // samples of invites and letters: the AI learns their style (separated by a line with ---)
+  const SEP = '\n\n---\n\n';
+  const samples = owner ? (conf.samples || { invites: [], letters: [] }) : (prefs.samples || prefs.teamSamples || { invites: [], letters: [] });
+  const defaults = owner ? conf.defaultSamples : prefs.teamSamples;
+  const invitesBox = textarea('sampleInvites', samples.invites.join(SEP), { rows: 9, 'aria-label': 'Взірці інвайтів' });
+  const lettersBox = textarea('sampleLetters', samples.letters.join(SEP), { rows: 12, 'aria-label': 'Взірці листів' });
+  const split = (t) => String(t || '').split(/\n\s*---\s*\n/).map((x) => x.trim()).filter(Boolean);
+  const resetSamples = h('button.btn.ghost.sm', { type: 'button', onclick: () => { invitesBox.value = defaults.invites.join(SEP); lettersBox.value = defaults.letters.join(SEP); } }, owner ? '↺ Взірці агенції' : '↺ Взірці команди');
   const reset = h('button.btn.ghost.sm', { type: 'button', onclick: () => { prompt.value = owner ? prefs.defaultPrompt : (prefs.teamPrompt || prefs.defaultPrompt); } }, '↺ Стандартний');
 
   // ---- the shift ----
@@ -51,8 +59,10 @@ export default async function settingsPage(main) {
         reports: { eachPass: team.reports.checked },
       } });
       await put('/api/prompts/team', { prompt: prompt.value });
+      await put('/api/settings', { settings: { ai: { samples: { invites: split(invitesBox.value), letters: split(lettersBox.value) } } } });
     } else {
-      await put('/api/me/prefs', { prompt: prompt.value, chanceEveryMin: Number(every.value), allchatPerNight: Number(times.value) });
+      await put('/api/me/prefs', { prompt: prompt.value, chanceEveryMin: Number(every.value), allchatPerNight: Number(times.value),
+        samples: { invites: split(invitesBox.value), letters: split(lettersBox.value) } });
     }
     toast('Збережено. Бот візьме нове при наступному запуску');
   }).catch(() => {}));
@@ -75,6 +85,11 @@ export default async function settingsPage(main) {
       h('section.card.span-2', h('div.row-between', h('h3', owner ? '🧠 Мастер-промпт команди' : '🧠 Мій мастер-промпт'), reset), prompt,
         h('p.small.muted', owner ? 'Стиль текстів для всієї команди. Оператор може переписати собі свій.' : 'Як ШІ пише від імені ваших анкет. Порожньо або «Стандартний» — промпт команди.')),
       shift,
+      h('section.card.span-2', h('div.row-between', h('h3', '📝 Взірці інвайтів і листів'), resetSamples),
+        h('p.small.muted', 'ШІ вчиться на них стилю (не копіює). Кожен взірець — окремо, між ними рядок «---». Ім’я чоловіка можна писати як {name}.'
+          + (owner ? ' Це взірці всієї команди; оператор може поставити собі свої.' : ' Порожньо або «Взірці команди» — беруться взірці тімліда.')),
+        h('div.pair', field('Інвайти (з гачком на початку)', invitesBox), field('Листи', lettersBox)),
+        h('p.small.muted', 'Бот ще й сам вчиться: інвайти, що отримали відповідь, ШІ бачить як приклади, а тип гачка, що відповідає найчастіше, пише частіше.')),
       photosCard(profiles),
       owner ? h('section.card', h('h3', '👥 Команда'), field('Назва', team.name), field('Часовий пояс', team.tz, 'Від нього рахуються ночі, ліміти й звіти (напр. Europe/Kyiv)')) : null,
       passwordCard()),

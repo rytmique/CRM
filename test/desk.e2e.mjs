@@ -137,7 +137,20 @@ try {
   const profs = db.prepare('SELECT * FROM profiles WHERE operator_id = ? ORDER BY id').all(op.id);
   if (profs.map((p) => `${p.name}:${p.site_profile_id}:${p.age}`).sort().join() !== 'Kate:5000000001:29,Olivia:5000000002:31') fail(`women from the rows: ${JSON.stringify(profs.map((p) => [p.name, p.site_profile_id, p.age]))}\n${testLog}`);
   for (const n of ['Kate', 'Olivia']) if (!new RegExp(`🧪 ${n}: тест пройдено`).test(testLog)) fail(`the test of ${n} did not pass:\n${testLog}`);
-  if (!/з її галереї/.test(testLog)) fail(`the test did not walk the photos of her gallery:\n${testLog}`);
+  if (!/фото 2/.test(testLog)) fail(`the test did not walk the photos of her gallery:\n${testLog}`);
+  if (!/з його профілю/.test(testLog)) fail(`the test did not read his profile:\n${testLog}`);
+  // her profile was read on the site (nobody typed it)
+  const abouts = db.prepare('SELECT name, site_about FROM profiles WHERE operator_id = ? ORDER BY id').all(op.id);
+  if (!abouts.every((a) => /nurse|dance/.test(a.site_about))) fail(`her profile from the site: ${JSON.stringify(abouts)}`);
+  // the report of the test in Telegram: 10 «Шанс», the «Аллчат» dialogs, examples of the texts
+  for (let i = 0; i < 40 && !tgSent.some((m) => /Тест бота/.test(m.text)); i++) await sleep(250);
+  const rep = tgSent.find((m) => /Тест бота/.test(m.text));
+  if (!rep || rep.chat_id !== '535353') fail(`no test report in Telegram: ${JSON.stringify(tgSent.map((m) => m.text.slice(0, 80)))}`);
+  if (!/Шанс: пройдено 10 з 10/.test(rep.text)) fail(`the test did not walk 10 «Шанс»: ${rep.text}`);
+  if (!/Аллчат: пройдено [89]\d? з 10|Аллчат: пройдено 10 з 10/.test(rep.text)) fail(`«Аллчат» in the report: ${rep.text}`);
+  if (!/Інвайт: «/.test(rep.text) || !/Лист: «/.test(rep.text)) fail(`no examples in the report: ${rep.text}`);
+  if (!/Чекають відповіді людини: 4/.test(rep.text)) fail(`the waiting dialogs in the report: ${rep.text}`);
+  log(`📲 the test report in Telegram:\n${rep.text.slice(0, 900)}`);
   if (mineCount(await chats()) !== before) fail('the test sent something');
   if (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE status = 'sent'").get().n) fail('the test recorded messages');
   await popup.screenshot({ path: path.join(OUT, 'popup-test.png') });
@@ -168,18 +181,28 @@ try {
   for (const [p, k] of [[kate, 0], [olivia, 1]]) {
     const chatOf = (id) => all[`c${p.site_profile_id.slice(-2)}${id}`];
     const starts = new Set();
+    const letterSet = new Set();
     for (let i = 0; i < 12; i++) {
       const c = chatOf(String(7000001 + k * 100 + i));
       const letters = c.msgs.filter((m) => m.mine && m.letter);
+      const invites = c.msgs.filter((m) => m.mine && !m.letter);
       if (c.man.online) {
-        if (letters.length !== 1) fail(`${p.name}: ${letters.length} letters to the online man ${c.man.name}\n${botLog}`);
+        // first the invite in the chat (a CAPS hook), right after it the letter with 2 photos of her gallery
+        if (invites.length !== 1 || letters.length !== 1) fail(`${p.name}: ${invites.length} invites / ${letters.length} letters to ${c.man.name}\n${botLog}`);
+        if (invites[0].at > letters[0].at) fail('the letter went before the invite');
+        const inv = invites[0].text;
+        if (inv.slice(0, 5) !== inv.slice(0, 5).toUpperCase() || inv.length < 150) fail(`the invite has no CAPS hook / is short: ${inv}`);
         if (letters[0].files?.length !== 2) fail(`${p.name}: the letter to ${c.man.name} has photos ${JSON.stringify(letters[0].files)}`);
-        if (/^(Hello|Hi|Hey|Dear)\b|^\s/.test(letters[0].text)) fail(`the letter does not start with a hook: ${letters[0].text.slice(0, 80)}`);
-        starts.add(letters[0].text.slice(0, 5).toLowerCase());
-        if (/^\[EN\]/.test(letters[0].text)) fail('the letter went through the translator: the left box was written');
+        const his = c.man.hobbies.split(',')[0].trim();
+        if (!new RegExp(`${his}|${c.man.city}`, 'i').test(inv + letters[0].text)) fail(`nothing of his profile in the texts to ${c.man.name} (${his}): ${inv} | ${letters[0].text.slice(0, 200)}`);
+        if (!new RegExp(c.man.name).test(letters[0].text)) fail(`the letter is not his: ${letters[0].text.slice(0, 80)}`);
+        starts.add(inv.slice(0, 5).toLowerCase());
+        letterSet.add(letters[0].text);
+        if (/^\[EN\]/.test(letters[0].text + inv)) fail('the text went through the translator: the left box was written');
       } else if (c.msgs.some((m) => m.mine)) fail(`${p.name}: wrote to the offline man ${c.man.name}`);
     }
     if (starts.size < 8) fail(`${p.name}: the hooks repeat: ${[...starts].join(' | ')}`);
+    if (letterSet.size < 8) fail(`${p.name}: the letters repeat`);
     const seedLen = { 1: 2, 2: 1, 3: 2, 4: 3, 5: 2, 6: 3 };
     const wrote = Object.keys(seedLen).filter((n) => chatOf(String(8000000 + k * 100 + Number(n))).msgs.slice(seedLen[n]).some((m) => m.mine && !m.letter));
     if (wrote.sort().join() !== '1,2,5,6') fail(`${p.name}: «Аллчат» wrote to ${wrote.join(', ')}\n${botLog}`);
@@ -187,11 +210,17 @@ try {
     if (passes(p.id).find((x) => x.mode === 'chance').sent !== 8) fail(`${p.name}: «Шанс» ${JSON.stringify(passes(p.id))}`);
     if (db.prepare('SELECT COUNT(*) AS n FROM allchat_log WHERE profile_id = ? AND ok = 1').get(p.id).n !== 4) fail(`${p.name}: allchat log`);
   }
-  log('both women: 8 «Шанс» letters each with 2 photos of her gallery, online men only, the English box sent; «Аллчат» 4 quiet dialogs each; waiting ones untouched');
+  log('both women: 8 «Шанс» each = an invite (CAPS hook) + a letter of his own with 2 photos of her gallery, online men only, his profile read; «Аллчат» 4 quiet dialogs each; waiting ones untouched');
+  const ex = all[`c01${7000001}`];
+  log(`example → ${ex.man.name}: «${ex.msgs.find((m) => m.mine && !m.letter)?.text}»\n  letter: «${ex.msgs.find((m) => m.letter)?.text.slice(0, 300)}…»`);
 
-  for (let i = 0; i < 20 && tgSent.filter((m) => m.chat_id === '535353').length < 4; i++) await sleep(250);
-  if (tgSent.filter((m) => m.chat_id === '535353').length < 4) fail(`Telegram reports: ${JSON.stringify(tgSent.map((m) => m.text))}`);
-  log('Telegram: a report after each pass');
+  for (let i = 0; i < 20 && tgSent.filter((m) => m.chat_id === '535353' && /Шанс|Аллчат/.test(m.text) && !/Тест бота/.test(m.text)).length < 4; i++) await sleep(250);
+  if (tgSent.filter((m) => m.chat_id === '535353' && !/Тест бота/.test(m.text)).length < 4) fail(`Telegram reports: ${JSON.stringify(tgSent.map((m) => m.text))}`);
+  // his answer → Telegram to the operator (the demo men answer a few seconds after)
+  for (let i = 0; i < 160 && !tgSent.some((m) => /Нові відповіді/.test(m.text)); i++) await sleep(1000);
+  const reply = tgSent.find((m) => /Нові відповіді/.test(m.text));
+  if (!reply || reply.chat_id !== '535353') fail(`no reply alert in Telegram: ${JSON.stringify(tgSent.map((m) => m.text.slice(0, 60)))}`);
+  log(`Telegram: a report after each pass + the reply alert «${reply.text.slice(0, 80)}…»`);
   await popup.bringToFront();
   await popup.screenshot({ path: path.join(OUT, 'popup-running.png') });
 
