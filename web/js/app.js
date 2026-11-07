@@ -14,6 +14,8 @@ import home from './pages/home.js';
 import ai from './pages/ai.js';
 import mySettings from './pages/my-settings.js';
 import { renderJoin } from './pages/join.js';
+import { renderForgot, renderReset, renderTeamName, langSwitch } from './pages/auth-extra.js';
+import { t, getLang, setLang } from './i18n.js';
 import { downloadBot } from './pages/extension.js';
 import { get } from './api.js';
 
@@ -94,12 +96,14 @@ function renderLogin(message) {
   cleanup?.();
   const err = h('p.form-error', { role: 'alert' }, message || '');
   const form = h('form.login-card',
-    h('div.brand.big', h('img', { src: 'favicon.png', alt: '', width: 32, height: 32 }), h('span', 'Agency CRM')),
-    h('p.muted', 'Панель керівника агенції'),
-    h('div.field', h('label', { for: 'l-email' }, 'Email / логін'), h('input#l-email', { name: 'email', autocomplete: 'username', required: true })),
+    h('div.row-between', h('div.brand.big', h('img', { src: 'favicon.png', alt: '', width: 32, height: 32 }), h('span', 'Agency CRM')),
+      langSwitch(() => renderLogin(message))),
+    h('p.muted', 'Вхід для керівників і операторів'),
+    h('div.field', h('label', { for: 'l-email' }, 'Email'), h('input#l-email', { name: 'email', autocomplete: 'username', required: true })),
     h('div.field', h('label', { for: 'l-pass' }, 'Пароль'), h('input#l-pass', { name: 'password', type: 'password', autocomplete: 'current-password', required: true })),
     err,
     h('button.btn.primary.block', { type: 'submit' }, 'Увійти'),
+    h('button.btn.ghost.block', { type: 'button', onclick: () => renderForgot(root, () => renderLogin()) }, 'Забули пароль?'),
     h('p.small.muted.center', 'Немає акаунта? Попросіть у керівника посилання для реєстрації.'));
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -114,7 +118,7 @@ function renderLogin(message) {
       location.hash = '';
       route();
     } catch (ex) {
-      err.textContent = ex.message;
+      err.textContent = t(ex.message);
     }
   });
   root.replaceChildren(h('div.login-wrap', form));
@@ -165,21 +169,27 @@ async function route() {
   // a registration link works with or without being logged in
   const join = /^#\/join\/([\w-]+)/.exec(location.hash);
   if (join) { cleanup?.(); cleanup = null; return renderJoin(root, join[1], { loggedIn: Boolean(session.token), onDone: () => { location.hash = ''; route(); } }); }
+  const reset = /^#\/reset\/([\w-]+)/.exec(location.hash);
+  if (reset) { cleanup?.(); cleanup = null; return renderReset(root, reset[1], () => { location.hash = ''; session.token = ''; session.user = null; route(); }); }
   if (!session.token) return renderLogin();
   if (!session.user) {
     try { session.user = (await api('/api/auth/me')).user; } catch { return renderLogin(); }
   }
+  // the person's language (set in Settings; the bot and Telegram use the same)
+  if (session.user.lang && session.user.lang !== getLang()) setLang(session.user.lang);
+  // a new team lead names the team first
+  if (session.user.teamNameNeeded) { cleanup?.(); cleanup = null; return renderTeamName(root, () => route()); }
   const items = NAV[session.user.role] || [];
   const key = (location.hash.replace(/^#\/?/, '').split('?')[0]) || items[0][0];
   const item = items.find((i) => i[0] === key) || items[0];
   cleanup?.();
   cleanup = null;
   const main = layout(items, item[4]?.parent || item[0]);
-  document.title = `${item[1]} · Agency CRM`;
+  document.title = `${t(item[1])} · Agency CRM`;
   try {
     cleanup = (await item[3](main, { user: session.user, navigate: (k) => { location.hash = `#/${k}`; } })) || null;
   } catch (e) {
-    main.replaceChildren(h('div.page', h('div.empty', h('p', `Не вдалося завантажити: ${e.message}`))));
+    main.replaceChildren(h('div.page', h('div.empty', h('p', `${t('Не вдалося завантажити')}: ${t(e.message)}`))));
     if (e.status !== 401) toast(e.message, 'err');
   }
 }

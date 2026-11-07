@@ -38,6 +38,10 @@ async function call(method, url, body, who) {
   });
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.arrayBuffer();
+  // these tests were written before the shift hours: a new team gets «no shift» (the shift has its own test)
+  if (method === 'POST' && /^\/api\/(admin\/agencies|auth\/join\/)/.test(url) && res.status < 300 && db) {
+    db.prepare(`UPDATE agencies SET settings = json_set(settings, '$.shift', json('{"auto":false,"from":20,"to":8}')) WHERE id = (SELECT MAX(id) FROM agencies)`).run();
+  }
   return { status: res.status, data };
 }
 const login = async (who, email, password, kind = 'web') => {
@@ -95,9 +99,9 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal(sites.data.sites[0].config.card, '.man-card');
 
   // operator
-  const op = await call('POST', '/api/operators', { name: 'Ira', email: 'ira@rose', password: 'irapass' }, 'owner');
+  const op = await call('POST', '/api/operators', { name: 'Ira', email: 'ira@rose', password: 'irapass1' }, 'owner');
   assert.equal(op.status, 201);
-  assert.equal((await call('POST', '/api/operators', { name: 'Dup', email: 'IRA@rose', password: 'irapass' }, 'owner')).status, 400);
+  assert.equal((await call('POST', '/api/operators', { name: 'Dup', email: 'IRA@rose', password: 'irapass1' }, 'owner')).status, 400);
 
   // the team's plan: nothing to hand out, profiles just work while they fit
   assert.deepEqual((await call('GET', '/api/profiles', undefined, 'owner')).data.plan.profiles, 3);
@@ -117,7 +121,7 @@ test('full flow: admin → agency → operator → profile → bot', async () =>
   assert.equal(prof.data.profile.license.daysLeft, 30);
 
   // operator sees only own profile
-  await login('op', 'ira@rose', 'irapass', 'bot');
+  await login('op', 'ira@rose', 'irapass1', 'bot');
   const opProfiles = await call('GET', '/api/profiles', undefined, 'op');
   assert.deepEqual(opProfiles.data.profiles.map((p) => p.name), ['Anna']);
   assert.equal((await call('GET', `/api/profiles/${p2.data.id}`, undefined, 'op')).status, 404);
@@ -462,8 +466,8 @@ test('scenario: follow-ups until reply, three attempts, then dropped', async () 
   assert.deepEqual(j.data.messages.map((m) => m.man_id).sort(), ['700001', '700004']);
 
   // operator teaching: may save only sites of own profiles
-  const op = await call('POST', '/api/operators', { name: 'Op', email: 'op@lily', password: 'oppass1' }, 'lily');
-  await login('lilyop', 'op@lily', 'oppass1', 'bot');
+  const op = await call('POST', '/api/operators', { name: 'Op', email: 'op@lily', password: 'oppass12' }, 'lily');
+  await login('lilyop', 'op@lily', 'oppass12', 'bot');
   assert.equal((await call('PUT', `/api/bot/sites/${site.id}`, { config: { card: '.x' } }, 'lilyop')).status, 403);
   await call('PATCH', `/api/profiles/${p.id}`, { operator_id: op.data.id }, 'lily');
   const teach = await call('GET', `/api/bot/profiles/${p.id}/site`, undefined, 'lilyop');
@@ -597,10 +601,10 @@ test('roles: operator creates own profiles, sites and templates; owner controls'
   await call('POST', '/api/admin/agencies', { name: 'Tulip', ownerName: 'T', ownerEmail: 'owner@tulip', ownerPassword: 'ownerpass1', licenses: 2, days: 30 }, 'admin4');
   await login('tulip', 'owner@tulip', 'ownerpass1');
   const demo = (await call('GET', '/api/sites', undefined, 'tulip')).data.sites[0];
-  const o1 = (await call('POST', '/api/operators', { name: 'Op1', email: 'op1@tulip', password: 'op1pass' }, 'tulip')).data;
-  await call('POST', '/api/operators', { name: 'Op2', email: 'op2@tulip', password: 'op2pass' }, 'tulip');
-  await login('op1', 'op1@tulip', 'op1pass');
-  await login('op2', 'op2@tulip', 'op2pass');
+  const o1 = (await call('POST', '/api/operators', { name: 'Op1', email: 'op1@tulip', password: 'op1pass1' }, 'tulip')).data;
+  await call('POST', '/api/operators', { name: 'Op2', email: 'op2@tulip', password: 'op2pass2' }, 'tulip');
+  await login('op1', 'op1@tulip', 'op1pass1');
+  await login('op2', 'op2@tulip', 'op2pass2');
 
   // sites: an operator adds and teaches their own; someone else's only once their profile uses it
   const opSite = await call('POST', '/api/sites', { name: 'Мій сайт', base_url: 'https://dating.example/' }, 'op1');
@@ -973,23 +977,27 @@ test('invite variants: two bot starts at once still give 3, not 5', async () => 
   assert.equal(inviteStats(db, p.id).length, 3);
 });
 
-test('registration by link: admin → team lead (approved by admin), team lead → operators (approve / reject)', async () => {
+test('registration by link: admin → team lead (in at once, names the team), team lead → operators (approve / reject)', async () => {
   await login('adminR', 'root@test', 'rootpass123');
   // the admin makes a one-time link with 3 licenses
   const link = (await call('POST', '/api/admin/links', { note: 'Ігор, 10 людей', licenses: 3, days: 30 }, 'adminR')).data.link;
   const info = await call('GET', `/api/auth/join/${link.token}`);
   assert.equal(info.data.kind, 'owner');
   assert.equal((await call('POST', `/api/auth/join/${link.token}`, { name: 'Ігор', email: 'bad-email', password: 'longpass1' })).status, 400);
-  const reg = await call('POST', `/api/auth/join/${link.token}`, { name: 'Ігор', email: 'igor@team.ua', password: 'longpass1', agencyName: 'Ігорева команда' });
+  const reg = await call('POST', `/api/auth/join/${link.token}`, { name: 'Ігор', email: 'igor@team.ua', password: 'longpass1', lang: 'ru' });
   assert.equal(reg.status, 201, JSON.stringify(reg.data));
+  // the admin's personal one-time link is the approval: in at once, then the «name your team» screen
+  assert.equal(reg.data.pending, false);
+  assert.ok(reg.data.token, 'logged in right after registering');
+  assert.equal(reg.data.user.teamNameNeeded, true);
+  assert.equal(reg.data.user.lang, 'ru', 'the language chosen on the form');
   assert.equal((await call('GET', `/api/auth/join/${link.token}`)).status, 404, 'one-time: used up');
-  const waiting = await call('POST', '/api/auth/login', { email: 'igor@team.ua', password: 'longpass1' });
-  assert.equal(waiting.status, 403);
-  assert.match(waiting.data.error, /не підтверджено/);
-  const pend = (await call('GET', '/api/admin/registrations', undefined, 'adminR')).data.pending.find((u) => u.email === 'igor@team.ua');
-  assert.equal(pend.role, 'owner');
-  assert.equal((await call('POST', `/api/admin/users/${pend.id}/approve`, {}, 'adminR')).status, 200);
   await login('igor', 'igor@team.ua', 'longpass1');
+  assert.equal((await call('PUT', '/api/auth/team-name', { name: '' }, 'igor')).status, 400);
+  const named = await call('PUT', '/api/auth/team-name', { name: 'Ігорева команда' }, 'igor');
+  assert.equal(named.data.user.teamNameNeeded, false);
+  assert.equal(named.data.user.agencyName, 'Ігорева команда');
+  assert.ok(!(await call('GET', '/api/admin/registrations', undefined, 'adminR')).data.pending.some((u) => u.email === 'igor@team.ua'), 'nothing for the admin to approve');
   const igorPlan = (await call('GET', '/api/profiles', undefined, 'igor')).data.plan;
   assert.equal(igorPlan.profiles, 3, 'the plan of the link starts on approval');
   assert.ok(igorPlan.until > Date.now() + 29 * 86400000, '30 days written on the link');

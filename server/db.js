@@ -248,6 +248,15 @@ CREATE TABLE IF NOT EXISTS signup_links (
   expires_at INTEGER
 );
 
+-- «forgot password»: one-time links (only the hash is stored), 1 hour
+CREATE TABLE IF NOT EXISTS password_resets (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER
+);
+
 -- every download of the bot is a separate marked copy: who took it, and it can be switched off
 CREATE TABLE IF NOT EXISTS extension_builds (
   id INTEGER PRIMARY KEY,
@@ -393,6 +402,17 @@ const MIGRATIONS = [
   ['profiles', 'site_about_at', 'INTEGER'],
   // the operator's own few settings: how often «Шанс», how many «Аллчат» passes a night (over the team's)
   ['users', 'prefs', "TEXT NOT NULL DEFAULT '{}'"],
+  // the language of the panel, the bot and the Telegram messages of this person: uk | ru
+  ['users', 'lang', "TEXT NOT NULL DEFAULT 'uk'"],
+  // the team lead suspends the bot of an operator (fines, violations) — the panel stays
+  ['users', 'bot_off', 'INTEGER NOT NULL DEFAULT 0'],
+  ['users', 'bot_off_note', "TEXT NOT NULL DEFAULT ''"],
+  // the team lead switches the team's AI key off for this operator (did not pay for it): texts from templates
+  ['users', 'ai_off', 'INTEGER NOT NULL DEFAULT 0'],
+  // the last bot version this person was told about in Telegram
+  ['users', 'bot_notified', "TEXT NOT NULL DEFAULT ''"],
+  // a new team lead names the team after registering (0 = not yet)
+  ['agencies', 'named', 'INTEGER NOT NULL DEFAULT 1'],
 ];
 
 /** Indexes on migrated columns (created after the columns exist). */

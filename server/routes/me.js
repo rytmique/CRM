@@ -4,6 +4,7 @@ import { linkFor, platformToken } from '../tgbot.js';
 import { getSettings, readPrefs, readSamples } from '../services.js';
 import { bad } from '../util.js';
 import { DEFAULT_PROMPT, DEFAULT_SAMPLES } from '../ai.js';
+import { teamShift, personShift, insideTeam, shiftText } from '../shift.js';
 
 /** The person's own things, for every role (the platform admin too): their Telegram link. */
 export default function meRoutes(db) {
@@ -25,7 +26,10 @@ export default function meRoutes(db) {
     const teamSamples = teamS.invites.length || teamS.letters.length ? teamS : DEFAULT_SAMPLES;
     return { prompt: u.prompt || '', defaultPrompt: DEFAULT_PROMPT, teamPrompt: conf?.ai?.masterPrompt || '',
       samples: own.invites.length || own.letters.length ? own : null, teamSamples, chanceEveryMin: p.chanceEveryMin ?? team?.chance.everyMin ?? 30,
-      allchatPerNight: p.allchatPerNight ?? team?.allchat.perNight ?? 2 };
+      allchatPerNight: p.allchatPerNight ?? team?.allchat.perNight ?? 2,
+      // the shift: the team lead's hours, and mine inside them (an operator can only narrow it)
+      teamShift: conf ? { ...teamShift(conf), text: shiftText(teamShift(conf)) } : null,
+      myShift: conf ? (({ from, to, own: mine }) => ({ from, to, own: mine }))(personShift(conf, u.prefs)) : null };
   };
   const me = (id) => db.prepare('SELECT id, agency_id, prompt, prefs, samples FROM users WHERE id = ?').get(id);
   r.get('/prefs', (req, res) => res.json(prefsView(me(req.user.id))));
@@ -42,7 +46,19 @@ export default function meRoutes(db) {
     const next = {
       chanceEveryMin: b.chanceEveryMin === undefined ? cur.chanceEveryMin : num(b.chanceEveryMin, 10, 240, 'Шанс — кожні N хвилин'),
       allchatPerNight: b.allchatPerNight === undefined ? cur.allchatPerNight : num(b.allchatPerNight, 1, 6, 'Аллчат — разів за ніч'),
+      shiftFrom: cur.shiftFrom, shiftTo: cur.shiftTo,
     };
+    // my own hours: inside the team lead's shift only; null = the team's hours
+    if (b.shiftFrom !== undefined || b.shiftTo !== undefined) {
+      if (b.shiftFrom === null || b.shiftFrom === '' || b.shiftTo === null || b.shiftTo === '') { next.shiftFrom = undefined; next.shiftTo = undefined; }
+      else {
+        const own = { from: num(b.shiftFrom, 0, 23, 'Початок'), to: num(b.shiftTo, 0, 23, 'Кінець') };
+        const team = teamShift(u.agency_id ? getSettings(db, u.agency_id) : {});
+        if (!insideTeam(team, own)) throw bad(`Ваші години мають бути в межах зміни команди: ${shiftText(team)}`);
+        next.shiftFrom = own.from;
+        next.shiftTo = own.to;
+      }
+    }
     db.prepare('UPDATE users SET prefs = ? WHERE id = ?').run(JSON.stringify(next), u.id);
     if (b.samples !== undefined) {
       // her own samples; the same as the team's (or none) = use the team's

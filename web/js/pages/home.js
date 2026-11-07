@@ -21,8 +21,19 @@ export default async function homePage(main, opts = {}) {
   const nights = Number(opts.nights) || 7;
   const who = owner ? String(opts.who || 'all') : 'mine';
   const reload = (o = {}) => homePage(main, { nights, who, ...o });
-  const [{ bots }, shift, tg] = await Promise.all([
-    get('/api/bots'), get(`/api/stats/shift?nights=${nights}&who=${encodeURIComponent(who)}`), get('/api/me/telegram')]);
+  const [{ bots }, shift, tg, prefs] = await Promise.all([
+    get('/api/bots'), get(`/api/stats/shift?nights=${nights}&who=${encodeURIComponent(who)}`), get('/api/me/telegram'), get('/api/me/prefs').catch(() => ({}))]);
+  // the shift hours and what the team lead decided about me (the bot suspended, the AI key off)
+  const hh = (x) => `${String(x).padStart(2, '0')}:00`;
+  const ts = prefs.teamShift;
+  const mineH = prefs.myShift;
+  const hours = ts ? (ts.from === ts.to ? 'цілодобово' : mineH?.own ? `${hh(mineH.from)}–${hh(mineH.to)}` : `${hh(ts.from)}–${hh(ts.to)}`) : '';
+  const me = session.user;
+  const notices = [
+    me.botOff ? h('div.notice.err', '⛔ Керівник команди призупинив ваш доступ до бота', me.botOffNote ? `: ${me.botOffNote}` : '', '. Панель працює; бот не запуститься, доки доступ не повернуть.') : null,
+    me.aiOff ? h('div.notice.warn', '🧠 Керівник команди вимкнув вам ключ ШІ — бот пише текстами з шаблонів.') : null,
+    ts?.auto ? h('div.notice', `⏰ ${owner ? 'Зміна команди' : 'Ваша зміна'}: `, h('b', hours), '. Бот сам вмикається на початку зміни й вимикається в кінці — браузер з ботом має бути відкритий, сайт — у вкладці.') : null,
+  ].filter(Boolean);
 
   // ---- on / off ----
   const mine = (ids) => ids.length ? { ids } : {};
@@ -100,6 +111,7 @@ export default async function homePage(main, opts = {}) {
 
   page.replaceChildren(...[
     h('div.page-head', h('h1', '🏠 Головна'), h('div.row-wrap', onBtn, offBtn)),
+    ...notices,
     h('div.row-wrap.filters', whoSel, range),
     h('div.tiles',
       tile('🎯 Шанс', sum.chance),

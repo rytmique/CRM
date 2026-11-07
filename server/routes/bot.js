@@ -15,6 +15,8 @@ import { profileScenario, followupSteps, filterReason, pickVariant, attempts, us
 import { filesForStep, mediaFile, CHANCE_STEP } from '../media.js';
 import { scoreMen, manFeatures, hostOf, learnSent, learnReply, rankingState } from '../scoring.js';
 import { inviteStats, pickInvite, optimizeProfile, memoryLines } from '../learning.js';
+import { tr } from '../i18n.js';
+import { personShift, inShift, shiftStart, shiftText, shiftHuman } from '../shift.js';
 
 const HOUR = 3600000;
 const MAX_STEP_FAILS = 3;
@@ -137,7 +139,9 @@ export default function botRoutes(db, cfg) {
     const day = dayKey(now(), settings.timezone);
     const plan = planOf(db, req.user.agencyId);
     res.json({
-      bot: { latest: latestBotVersion(), min: platformGet(db, 'minBotVersion', '') }, // for "a new version is out"
+      // for "a new version is out": with strictBotVersion the newest one is the minimum (a running bot finishes its shift)
+      bot: { latest: latestBotVersion(), min: platformGet(db, 'strictBotVersion', '1') === '1' ? latestBotVersion() : platformGet(db, 'minBotVersion', '') },
+      lang: req.user.lang, // the bot speaks the person's language (Settings in the panel)
       profiles: rows.map((p) => {
         const full = db.prepare('SELECT * FROM profiles WHERE id = ?').get(p.id);
         const limits = limitsFor(full, settings);
@@ -185,7 +189,29 @@ export default function botRoutes(db, cfg) {
     return db.prepare('SELECT p.id, p.name, p.age, p.status, p.site_profile_id, p.site_id FROM profiles p WHERE p.agency_id = ? AND p.operator_id = ? AND p.site_id = ? ORDER BY p.id')
       .all(user.agencyId, user.id, siteId).map((p) => ({ ...p, license: accessFor(plan, p) }));
   };
+  /**
+   * The start of a run: only the newest bot works (an old copy is refused with a clear message, here and in Telegram);
+   * outside the shift the bot does not work (🧪 test runs are fine — nothing is sent).
+   */
+  const told = new Map(); // user → version told about (Telegram once per version and 6 hours)
+  const startGate = (req, test) => {
+    const latest = latestBotVersion();
+    const have = req.user.botVersion || '';
+    if (platformGet(db, 'strictBotVersion', '1') === '1' && have && cmpVersion(have, latest) < 0) {
+      const key = `${req.user.id}:${latest}`;
+      if (now() - (told.get(key) || 0) > 6 * HOUR) {
+        told.set(key, now());
+        sendToUsers(db, getSettings(db, req.user.agencyId), [req.user.id], (lang) => tr(lang, '⛔ <b>Бот не запущено: стара версія {have}</b>, потрібна {need}.\nОновіть: панель → «Завантажити бота» → розпакуйте в ту саму теку → chrome://extensions → ⟳.', { have: escapeHtml(have), need: latest })).catch(() => {});
+      }
+      throw new HttpError(426, tr(req.user.lang, 'Бот застарів (версія {have}, потрібна {need}). Оновіть: панель → «Завантажити бота» → розпакуйте в ту саму теку → chrome://extensions → ⟳.', { have, need: latest }));
+    }
+    if (test) return;
+    const settings = getSettings(db, req.user.agencyId);
+    const w = personShift(settings, req.user.prefs);
+    if (w.auto && !inShift(now(), settings.timezone, w)) throw new HttpError(409, tr(req.user.lang, 'Зараз не зміна ({hours}). Бот увімкнеться сам на початку зміни.', { hours: tr(req.user.lang, shiftText(w)) }));
+  };
   r.get('/workspace', (req, res) => {
+    startGate(req, req.query.test === '1');
     const site = workSite(req.user, String(req.query.url || ''));
     if (!site) throw new HttpError(409, 'Сайт команди ще не підключено — напишіть постачальнику.');
     res.json({ site: { id: site.id, name: site.name, base_url: site.base_url, config: configOf(site) }, profiles: myProfiles(req.user, site.id) });
@@ -566,7 +592,7 @@ export default function botRoutes(db, cfg) {
       WHERE messages.status = 'failed'`)
       .run(p.agency_id, p.id, req.user.id, p.site_id, man.id, man.name, man.age, man.country, validInvite,
         str(req.body?.text, { max: 3000 }) || '', ok ? 'sent' : 'failed', ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), day, t,
-        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features), mode, shiftKey(t, settings.timezone, scenario.human), man.hook);
+        next.stage, next.next_at, man.url, t, man.info, JSON.stringify(features), mode, shiftKey(t, settings.timezone, shiftHuman(settings)), man.hook);
     if (ok && written.changes) learnSent(db, features);
     db.prepare('DELETE FROM pool WHERE profile_id = ? AND man_id = ?').run(p.id, man.id);
     const limits = limitsFor(p, settings);
@@ -647,7 +673,7 @@ export default function botRoutes(db, cfg) {
     const settings = getSettings(db, req.user.agencyId);
     const lines = (Array.isArray(req.body?.lines) ? req.body.lines : []).map((x) => escapeHtml(String(x).slice(0, 700))).slice(0, 40);
     const ok = Boolean(req.body?.ok);
-    const text = `🧪 <b>Тест бота ${ok ? 'пройдено ✅' : 'знайшов проблеми ⚠️'}</b> — нічого не надіслано\n\n${lines.join('\n')}`.slice(0, 4000);
+    const text = (lang) => `${tr(lang, ok ? '🧪 <b>Тест бота пройдено ✅</b> — нічого не надіслано' : '🧪 <b>Тест бота знайшов проблеми ⚠️</b> — нічого не надіслано')}\n\n${lines.join('\n')}`.slice(0, 4000);
     const sent = await sendToUsers(db, settings, [req.user.id], text);
     res.json({ ok: true, sent });
   }));
@@ -669,11 +695,12 @@ export default function botRoutes(db, cfg) {
     const t = now();
     if (t - (lastAlert.get(p.id) || 0) < 10 * 60000) return res.json({ ok: true, sent: false });
     lastAlert.set(p.id, t);
-    const text = str(req.body?.text, { max: 200 }) || 'Сайт показав капчу';
-    const msg = `🛑 Анкета <b>${escapeHtml(p.name)}</b>: ${escapeHtml(text)}.\nБот на паузі — відкрийте вкладку сайту й розв’яжіть, далі він продовжить сам.`;
+    const text = str(req.body?.text, { max: 200 }) || '';
+    const msg = (lang) => tr(lang, '🛑 Анкета <b>{name}</b>: {text}.\nБот на паузі — відкрийте вкладку сайту й розв’яжіть, далі він продовжить сам.',
+      { name: escapeHtml(p.name), text: escapeHtml(text || tr(lang, 'Сайт показав капчу')) });
     const token = tgToken(db, settings);
     if (token) sendToUsers(db, settings, [p.operator_id, req.user.id], msg).catch(() => {});
-    if (settings.telegram.botToken && settings.telegram.chatId) sendTelegram(settings.telegram.botToken, settings.telegram.chatId, msg).catch(() => {}); // a team's own chat
+    if (settings.telegram.botToken && settings.telegram.chatId) sendTelegram(settings.telegram.botToken, settings.telegram.chatId, msg('uk')).catch(() => {}); // a team's own chat
     res.json({ ok: true, sent: Boolean(token || (settings.telegram.botToken && settings.telegram.chatId)) });
   });
 
@@ -696,7 +723,12 @@ export default function botRoutes(db, cfg) {
     // (the start time is the browser's clock: shifted by the difference between the two clocks)
     const startedAt = (Number(req.body?.startedAt) || 0) + (Number(req.body?.now) ? t - Number(req.body.now) : 0);
     const stop = Boolean(fresh.stop_at && startedAt && fresh.stop_at > startedAt);
-    res.json({ ok: true, paused: fresh.status !== 'active', stop });
+    // the shift is over: the bot switches off until the next one (a 🧪 test is not stopped)
+    const settings = getSettings(db, req.user.agencyId);
+    const w = personShift(settings, req.user.prefs);
+    const shiftOver = w.auto && !req.body?.test && !inShift(t, settings.timezone, w);
+    res.json({ ok: true, paused: fresh.status !== 'active', stop: stop || shiftOver, why: stop ? 'panel' : shiftOver ? 'shift' : undefined,
+      shift: { from: w.from, to: w.to, text: tr(req.user.lang, shiftText(w)) } });
   });
 
   // ---------- «Аллчат»: a few messages a night on the topic of running talks ----------
@@ -717,7 +749,7 @@ export default function botRoutes(db, cfg) {
     const history = readHistory(req.body?.history);
     const t = now();
     const human = profileScenario(db, p, siteOf(p)).human;
-    const night = shiftKey(t, settings.timezone, human);
+    const night = shiftKey(t, settings.timezone, shiftHuman(settings));
     // the last message as seen now; "quiet since" = when it was first seen unchanged
     const fp = fpOf(history);
     const row = db.prepare('SELECT * FROM dialogs WHERE profile_id = ? AND man_id = ?').get(p.id, man.id);
@@ -771,7 +803,7 @@ export default function botRoutes(db, cfg) {
     if (!man) throw bad('Немає даних чоловіка');
     const t = now();
     const ok = Boolean(req.body?.ok);
-    const night = shiftKey(t, settings.timezone, profileScenario(db, p, siteOf(p)).human);
+    const night = shiftKey(t, settings.timezone, shiftHuman(settings));
     db.prepare('INSERT INTO allchat_log (agency_id, profile_id, operator_id, man_id, man_name, kind, night, text, ok, error, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
       .run(p.agency_id, p.id, req.user.id, man.id, man.name, req.body?.reply ? 'reply' : 'allchat', night, str(req.body?.text, { max: 1000 }) || '', ok ? 1 : 0,
         ok ? '' : (str(req.body?.error, { max: 300 }) || 'помилка'), t);
@@ -789,7 +821,7 @@ export default function botRoutes(db, cfg) {
     const t = now();
     const started = Math.min(t, Number(req.body?.startedAt) || t);
     const info = req.body?.info && typeof req.body.info === 'object' ? JSON.stringify(req.body.info).slice(0, 2000) : '';
-    const night = shiftKey(t, settings.timezone, profileScenario(db, p, siteOf(p)).human);
+    const night = shiftKey(t, settings.timezone, shiftHuman(settings));
     const id = db.prepare('INSERT INTO passes (agency_id, profile_id, operator_id, mode, night, started_at, ended_at, seen, sent, failed, skipped, info) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(p.agency_id, p.id, req.user.id, mode, night, started, t, n('seen'), n('sent'), n('failed'), n('skipped'), info).lastInsertRowid;
     if (settings.reports.eachPass) reportPass(db, Number(id)).catch(() => {});
@@ -797,11 +829,25 @@ export default function botRoutes(db, cfg) {
   });
 
   /** Started from the panel or Telegram: which of my profiles should start now (the extension asks every minute). */
+  const autoStarts = new Map(); // user → when the shift started their bot last (not more often than every 20 min)
   r.get('/control', (req, res) => {
     // only the women of this person: their browser works only as them
+    const t = now();
     const rows = db.prepare(`SELECT p.id, p.name, p.site_id FROM profiles p WHERE p.agency_id = ? AND p.operator_id = ? AND p.status = 'active' AND p.start_at IS NOT NULL
-      AND p.start_at > COALESCE(p.bot_beat_at, 0) AND p.start_at > COALESCE(p.stop_at, 0) AND p.start_at > ? ORDER BY p.start_at`).all(req.user.agencyId, req.user.id, now() - 30 * 60000);
-    res.json({ start: rows });
+      AND p.start_at > COALESCE(p.bot_beat_at, 0) AND p.start_at > COALESCE(p.stop_at, 0) AND p.start_at > ? ORDER BY p.start_at`).all(req.user.agencyId, req.user.id, t - 30 * 60000);
+    const settings = getSettings(db, req.user.agencyId);
+    const w = personShift(settings, req.user.prefs);
+    const shift = { auto: w.auto, from: w.from, to: w.to, on: inShift(t, settings.timezone, w), text: tr(req.user.lang, shiftText(w)) };
+    if (rows.length) return res.json({ start: rows, shift });
+    // the shift is on and the bot is not running (it asks only then): it starts by itself — unless someone pressed ⏹ in this shift
+    if (!w.auto || !shift.on) return res.json({ start: [], shift });
+    const mine = db.prepare("SELECT p.id, p.name, p.site_id, p.stop_at FROM profiles p WHERE p.agency_id = ? AND p.operator_id = ? AND p.status = 'active' ORDER BY p.id")
+      .all(req.user.agencyId, req.user.id);
+    const since = shiftStart(t, settings.timezone, w);
+    if (mine.some((p) => p.stop_at && p.stop_at >= since) || t - (autoStarts.get(req.user.id) || 0) < 20 * 60000) return res.json({ start: [], shift });
+    autoStarts.set(req.user.id, t);
+    // (no women yet: the bot still starts — it finds them on the site)
+    res.json({ start: mine.length ? mine.map(({ stop_at: _s, ...p }) => p) : [{ id: 0, name: '' }], auto: true, shift });
   });
 
   return r;
@@ -828,13 +874,15 @@ function notifyReplies(db, profile, settings, msgs, user) {
   const site = profile.site_id ? db.prepare('SELECT config FROM sites WHERE id = ?').get(profile.site_id) : null;
   let chatTpl = '';
   try { chatTpl = JSON.parse(site?.config || '{}').chatUrl || ''; } catch { /* ignore */ }
-  const lines = msgs.map((m) => {
-    const who = [m.man_name || `ID ${m.man_id}`, m.man_age, m.man_country].filter(Boolean).map(escapeHtml).join(', ');
-    const link = chatTpl ? ` — <a href="${escapeHtml(chatTpl.replace('{id}', encodeURIComponent(m.man_id)))}">відкрити чат</a>` : '';
-    return `• <b>${who}</b>${link}`;
-  });
-  const text = `💌 Нові відповіді для анкети <b>${escapeHtml(profile.name)}</b> (${msgs.length}):\n${lines.join('\n')}\n\nЧас відповідати особисто 🙂`;
-  // the one platform bot: to the profile's operator and to whoever runs the bot (each sees their own)
+  const text = (lang) => {
+    const lines = msgs.map((m) => {
+      const who = [m.man_name || `ID ${m.man_id}`, m.man_age, m.man_country].filter(Boolean).map(escapeHtml).join(', ');
+      const link = chatTpl ? ` — <a href="${escapeHtml(chatTpl.replace('{id}', encodeURIComponent(m.man_id)))}">${tr(lang, 'відкрити чат')}</a>` : '';
+      return `• <b>${who}</b>${link}`;
+    });
+    return tr(lang, '💌 Нові відповіді для анкети <b>{name}</b> ({n}):\n{lines}\n\nЧас відповідати особисто 🙂', { name: escapeHtml(profile.name), n: msgs.length, lines: lines.join('\n') });
+  };
+  // the one platform bot: to the profile's operator and to whoever runs the bot (each sees their own, in their language)
   sendToUsers(db, settings, [profile.operator_id, user.id], text).catch(() => {});
-  if (settings.telegram.botToken && settings.telegram.chatId) sendTelegram(settings.telegram.botToken, settings.telegram.chatId, text).catch(() => {}); // a team's own chat
+  if (settings.telegram.botToken && settings.telegram.chatId) sendTelegram(settings.telegram.botToken, settings.telegram.chatId, text('uk')).catch(() => {}); // a team's own chat
 }

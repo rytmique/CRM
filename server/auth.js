@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { HttpError, forbidden } from './util.js';
 import { now } from './db.js';
+import { tr } from './i18n.js';
 
 const SESSION_TTL = { web: 14 * 86400000, bot: 60 * 86400000 };
 
@@ -43,7 +44,7 @@ export function destroyUserSessions(db, userId) {
 export function authenticate(db) {
   const findSession = db.prepare(`
     SELECT s.token_hash, s.kind, s.expires_at, s.last_used_at, s.version,
-           u.id, u.agency_id, u.role, u.name, u.email, u.active, u.pending, u.tg_chat_id,
+           u.id, u.agency_id, u.role, u.name, u.email, u.active, u.pending, u.tg_chat_id, u.lang, u.bot_off, u.prefs,
            a.active AS agency_active, a.name AS agency_name
     FROM sessions s
     JOIN users u ON u.id = s.user_id
@@ -62,6 +63,8 @@ export function authenticate(db) {
     if (!row.active) return next(new HttpError(401, 'Обліковий запис вимкнено'));
     if (row.pending) return next(new HttpError(401, 'Реєстрацію ще не підтверджено'));
     if (row.role !== 'admin' && !row.agency_active) return next(new HttpError(403, 'Агенцію призупинено. Зверніться до постачальника.'));
+    // the team lead suspended this person's bot: the bot is refused (and stops), the panel keeps working
+    if (row.kind === 'bot' && row.bot_off) return next(new HttpError(403, tr(row.lang, 'Доступ до бота призупинено керівником команди.')));
     if (t - row.last_used_at > 60000) touch.run(t, row.token_hash);
     // which version of the bot this device runs (the bot sends it with every call)
     const botVersion = String(req.get('x-bot-version') || '').slice(0, 20);
@@ -70,6 +73,7 @@ export function authenticate(db) {
     req.user = {
       id: row.id, agencyId: row.agency_id, role: row.role, name: row.name, email: row.email,
       tgChatId: row.tg_chat_id, agencyName: row.agency_name, sessionKind: row.kind, botVersion: botVersion || row.version || '',
+      lang: row.lang === 'ru' ? 'ru' : 'uk', prefs: row.prefs,
     };
     next();
   };

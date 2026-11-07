@@ -77,7 +77,7 @@ try {
   const put = await api('PUT', `/api/admin/agencies/${agencyId}/site`, { url: `${BASE}/demo-site/desk2/chat`, preset: 'desk' }, admin);
   const siteId = put.site.id;
   const owner = await loginApi('lead@desk', 'leadpass1');
-  await api('PUT', '/api/settings', { settings: { timezone: 'UTC', modes: { chance: { on: true, everyMin: 30, onlineOnly: true }, allchat: { on: true, perNight: 2, who: 'silent', silentHours: 2, gapHours: 3 } } } }, owner);
+  await api('PUT', '/api/settings', { settings: { timezone: 'UTC', shift: { auto: false }, modes: { chance: { on: true, everyMin: 30, onlineOnly: true }, allchat: { on: true, perNight: 2, who: 'silent', silentHours: 2, gapHours: 3 } } } }, owner);
   await api('PUT', `/api/sites/${siteId}/scenario`, { scenario: {
     steps: [{ wait: 0, actions: [{ do: 'message', text: 'invite' }] }],
     human: { hoursFrom: 0, hoursTo: 24, windows: [[0, 24]], perHour: 300, breakEvery: 0, typing: false, spread: false, gapFrom: 1, gapTo: 2,

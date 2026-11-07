@@ -5,11 +5,16 @@ import { platformGet, platformSet, now } from './db.js';
 import { tgCall, escapeHtml } from './telegram.js';
 import { summaryFor } from './reports.js';
 import { startBots, stopBotsFor, botStatus } from './control.js';
+import { tr, both, langOf } from './i18n.js';
+import { getSettings } from './services.js';
+import { personShift, inShift, shiftText } from './shift.js';
 
 const BUTTONS = { report: '📊 Звіт', status: '🤖 Стан', start: '▶️ Старт', stop: '⏹ Стоп' };
-const KEYBOARD = { reply_markup: { keyboard: [[{ text: BUTTONS.report }, { text: BUTTONS.status }], [{ text: BUTTONS.start }, { text: BUTTONS.stop }]], resize_keyboard: true } };
+const keyboard = (lang) => ({ reply_markup: { keyboard: [[{ text: tr(lang, BUTTONS.report) }, { text: tr(lang, BUTTONS.status) }], [{ text: tr(lang, BUTTONS.start) }, { text: tr(lang, BUTTONS.stop) }]], resize_keyboard: true } });
 const ROLE = { admin: 'адмін платформи', owner: 'тімлід', operator: 'оператор' };
 const STATE = { running: '🟢 працює', watching: '🟢 стежить', paused: '⏸ пауза', limit: '🔵 ліміт', error: '🔴 помилка', done: '⚪ завершив', idle: '⚪ чекає', starting: '🟡 запускається', off: '⚪ вимкнено' };
+/** A button pressed in either language (the person may have switched it). */
+const pressed = (text, key) => both(BUTTONS[key]).includes(text);
 
 export const platformToken = (db) => platformGet(db, 'tgToken', '') || process.env.TELEGRAM_BOT_TOKEN || '';
 
@@ -32,7 +37,7 @@ export function linkFor(db, userId) {
   return { code, bot: name, url: name ? `https://t.me/${name}?start=${code}` : '' };
 }
 
-const send = (db, chatId, text, extra = KEYBOARD) => tgCall(platformToken(db), 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra });
+const send = (db, chatId, text, extra) => tgCall(platformToken(db), 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...(extra ?? {}) });
 
 /** One incoming message from Telegram. */
 export async function handleUpdate(db, update) {
@@ -44,36 +49,46 @@ export async function handleUpdate(db, update) {
   const code = /^\/start\s+([\w-]{6,40})$/.exec(text)?.[1];
   if (code) {
     const u = db.prepare('SELECT * FROM users WHERE tg_code = ?').get(code);
-    if (!u || !u.active) { await send(db, chatId, 'Посилання застаріло. Натисніть «Підключити Telegram» у панелі ще раз.', {}); return; }
+    if (!u || !u.active) { await send(db, chatId, tr('uk', 'Посилання застаріло. Натисніть «Підключити Telegram» у панелі ще раз.')); return; }
     db.prepare("UPDATE users SET tg_chat_id = NULL WHERE tg_chat_id = ? AND id != ?").run(String(chatId), u.id); // one chat — one person
     db.prepare('UPDATE users SET tg_chat_id = ?, tg_code = NULL WHERE id = ?').run(String(chatId), u.id);
-    await send(db, chatId, `✅ Підключено: <b>${escapeHtml(u.name)}</b> (${ROLE[u.role] || u.role}).\nСюди приходитимуть звіти після кожної розсилки. Кнопки внизу — звіт, стан і керування ботом.`);
+    await send(db, chatId, tr(u.lang, '✅ Підключено: <b>{name}</b> ({role}).\nСюди приходитимуть ваші звіти й сповіщення про нові відповіді. Кнопки внизу — звіт, стан і керування ботом.',
+      { name: escapeHtml(u.name), role: tr(u.lang, ROLE[u.role] || u.role) }), keyboard(u.lang));
     return;
   }
   const u = db.prepare('SELECT * FROM users WHERE tg_chat_id = ?').get(String(chatId));
-  if (!u || !u.active || u.pending) { await send(db, chatId, 'Цей Telegram ще не підключено. У панелі натисніть «Підключити Telegram».', {}); return; }
+  if (!u || !u.active || u.pending) { await send(db, chatId, tr('uk', 'Цей Telegram ще не підключено. У панелі натисніть «Підключити Telegram».')); return; }
+  const lang = langOf(u.lang);
+  const T = (t, v) => tr(lang, t, v);
+  const reply = (t) => send(db, chatId, t, keyboard(lang));
   const user = { ...u, agencyId: u.agency_id };
   const cmd = text.toLowerCase();
-  if (cmd === '/report' || text === BUTTONS.report) { await send(db, chatId, summaryFor(db, u)); return; }
-  if (cmd === '/status' || text === BUTTONS.status) {
-    if (u.role === 'admin') { await send(db, chatId, summaryFor(db, u)); return; }
+  if (cmd === '/report' || pressed(text, 'report')) { await reply(summaryFor(db, u)); return; }
+  if (cmd === '/status' || pressed(text, 'status')) {
+    if (u.role === 'admin') { await reply(summaryFor(db, u)); return; }
     const bots = botStatus(db, user);
-    await send(db, chatId, bots.length ? bots.map((b) => `${STATE[b.state] || b.state} — <b>${escapeHtml(b.name)}</b>${b.paused ? ' (анкета на паузі)' : ''}${b.info ? `\n   ${escapeHtml(b.info.slice(0, 80))}` : ''}`).join('\n') : 'Анкет немає');
+    await reply(bots.length ? bots.map((b) => `${T(STATE[b.state] || b.state)} — <b>${escapeHtml(b.name)}</b>${b.paused ? ` ${T('(анкета на паузі)')}` : ''}${b.info ? `\n   ${escapeHtml(b.info.slice(0, 80))}` : ''}`).join('\n') : T('Анкет немає'));
     return;
   }
-  if (cmd === '/run' || cmd === '/start' || text === BUTTONS.start) {
-    if (u.role === 'admin') { await send(db, chatId, 'Адмін керує ботами команд у панелі («Пульт»).'); return; }
+  if (cmd === '/run' || cmd === '/start' || pressed(text, 'start')) {
+    if (u.role === 'admin') { await reply(T('Адмін керує ботами команд у панелі («Пульт»).')); return; }
+    if (u.bot_off) { await reply(T('⛔ Доступ до бота призупинено керівником команди.')); return; }
+    // outside the shift the bot does not work (it starts by itself when the shift begins)
+    const settings = getSettings(db, u.agency_id);
+    const w = personShift(settings, u.prefs);
+    if (w.auto && !inShift(Date.now(), settings.timezone, w)) { await reply(T('🌙 Зараз не ваша зміна ({hours}). Бот увімкнеться сам на початку зміни.', { hours: tr(lang, shiftText(w)) })); return; }
     const rows = startBots(db, user);
-    await send(db, chatId, rows.length ? `▶️ Запускаю (${rows.length}): ${rows.map((r) => escapeHtml(r.name)).join(', ')}.\nБот у браузері підхопить протягом хвилини — браузер з ботом має бути відкритий.` : 'Немає активних анкет, які можна запустити.');
+    await reply(rows.length ? T('▶️ Запускаю ({n}): {names}.\nБот у браузері підхопить протягом хвилини — браузер з ботом має бути відкритий.', { n: rows.length, names: rows.map((r) => escapeHtml(r.name)).join(', ') })
+      : T('Немає активних анкет, які можна запустити.'));
     return;
   }
-  if (cmd === '/stop' || text === BUTTONS.stop) {
-    if (u.role === 'admin') { await send(db, chatId, 'Адмін керує ботами команд у панелі («Пульт»).'); return; }
+  if (cmd === '/stop' || pressed(text, 'stop')) {
+    if (u.role === 'admin') { await reply(T('Адмін керує ботами команд у панелі («Пульт»).')); return; }
     const rows = stopBotsFor(db, user);
-    await send(db, chatId, rows.length ? `⏹ Зупиняю (${rows.length}): ${rows.map((r) => escapeHtml(r.name)).join(', ')}.` : 'Анкет немає.');
+    await reply(rows.length ? T('⏹ Зупиняю ({n}): {names}.', { n: rows.length, names: rows.map((r) => escapeHtml(r.name)).join(', ') }) : T('Анкет немає'));
     return;
   }
-  await send(db, chatId, `Кнопки внизу: ${Object.values(BUTTONS).join(' · ')}`);
+  await reply(T('Кнопки внизу: {list}', { list: Object.values(BUTTONS).map((b) => T(b)).join(' · ') }));
 }
 
 /** One round of long polling (tests call it directly); returns how many updates came. */

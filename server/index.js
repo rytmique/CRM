@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { openDb } from './db.js';
 import { runLearning } from './learning.js';
 import { startTelegramBot } from './tgbot.js';
+import { startUpdateNotes } from './updates.js';
 import { createApp, ensureAdmin } from './app.js';
 import { seedTestData } from './seed.js';
 import { hashPassword } from './auth.js';
@@ -86,6 +87,8 @@ setInterval(learn, 30 * 60000).unref();
 
 // The platform's Telegram bot (reports, start/stop): runs once the admin saved its token in the panel.
 startTelegramBot(db, console);
+// A new bot version: a Telegram note to everyone who uses the bot, outside their shift.
+startUpdateNotes(db, console);
 
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {

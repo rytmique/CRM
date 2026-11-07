@@ -317,11 +317,15 @@ export default function pultRoutes(db) {
       res.json(tgView());
     } catch (e) { next(e); }
   });
-  r.get('/features', (_req, res) => res.json({ autoReply: platformGet(db, 'autoReply', '0') === '1' }));
+  const featView = () => ({ autoReply: platformGet(db, 'autoReply', '0') === '1', strictBotVersion: platformGet(db, 'strictBotVersion', '1') === '1',
+    mail: Boolean(process.env.SMTP_URL), latestBot: latestBotVersion() });
+  r.get('/features', (_req, res) => res.json(featView()));
   /** 🔒 «the bot answers his reply itself»: closed for everyone until opened here. */
   r.put('/features', (req, res) => {
     if (req.body?.autoReply !== undefined) platformSet(db, 'autoReply', req.body.autoReply ? '1' : '0');
-    res.json({ autoReply: platformGet(db, 'autoReply', '0') === '1' });
+    // only the newest bot may start a shift (an old copy is refused with a clear message)
+    if (req.body?.strictBotVersion !== undefined) platformSet(db, 'strictBotVersion', req.body.strictBotVersion ? '1' : '0');
+    res.json(featView());
   });
 
   return r;

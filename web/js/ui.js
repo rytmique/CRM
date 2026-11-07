@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 /** Hyperscript: h('div.card#id', { onclick, class, ... }, ...children). Text is always set as text (XSS-safe). */
 export function h(tag, props, ...children) {
   const m = /^([a-z0-9-]+)?((?:[.#][\w-]+)*)$/i.exec(tag) || [];
@@ -18,6 +20,7 @@ export function h(tag, props, ...children) {
     else if (k === 'value') el.value = v;
     else if (k === 'checked' || k === 'disabled' || k === 'selected' || k === 'hidden') el[k] = Boolean(v);
     else if (k === 'html') el.innerHTML = v; // only for trusted static markup
+    else if (k === 'placeholder' || k === 'title' || k === 'aria-label') el.setAttribute(k, t(String(v)));
     else el.setAttribute(k, v === true ? '' : v);
   }
   append(el, children);
@@ -28,7 +31,7 @@ function append(el, kids) {
   for (const k of kids) {
     if (k === null || k === undefined || k === false) continue;
     if (Array.isArray(k)) append(el, k);
-    else el.append(k instanceof Node ? k : String(k));
+    else el.append(k instanceof Node ? k : t(String(k))); // UA / RU
   }
 }
 

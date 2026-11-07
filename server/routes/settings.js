@@ -98,6 +98,11 @@ export default function settingsRoutes(db) {
         autoReply: { on: platformGet(db, 'autoReply', '0') === '1' ? Boolean(m.autoReply?.on ?? c.autoReply.on) : false },
       };
     }
+    if (patch.shift) {
+      const hour = (v, d, name) => { if (v === undefined) return d; const x = Number(v); if (!Number.isInteger(x) || x < 0 || x > 23) throw bad(`${name}: година від 0 до 23`); return x; };
+      patch.shift = { auto: patch.shift.auto === undefined ? cur.shift.auto : Boolean(patch.shift.auto),
+        from: hour(patch.shift.from, cur.shift.from, 'Початок зміни'), to: hour(patch.shift.to, cur.shift.to, 'Кінець зміни') };
+    }
     if (patch.reports) patch.reports = { eachPass: patch.reports.eachPass === undefined ? cur.reports.eachPass : Boolean(patch.reports.eachPass) };
     if (patch.inboxCheckEvery !== undefined) patch.inboxCheckEvery = int(patch.inboxCheckEvery, { min: 0, max: 500, field: 'перевірка вхідних' }) ?? 0;
     if (patch.ai) {
@@ -117,7 +122,7 @@ export default function settingsRoutes(db) {
     const next = mergeSettings(cur, patch);
     db.prepare('UPDATE agencies SET settings = ? WHERE id = ?').run(JSON.stringify(next), req.user.agencyId);
     if (req.body?.agencyName) {
-      db.prepare('UPDATE agencies SET name = ? WHERE id = ?').run(str(req.body.agencyName, { max: 120 }), req.user.agencyId);
+      db.prepare('UPDATE agencies SET name = ?, named = 1 WHERE id = ?').run(str(req.body.agencyName, { max: 120 }), req.user.agencyId);
     }
     res.json({ settings: view(next) });
   });

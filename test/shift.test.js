@@ -21,7 +21,12 @@ async function call(method, url, body, who) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const ct = res.headers.get('content-type') || '';
-  return { status: res.status, data: ct.includes('json') ? await res.json() : await res.text() };
+  const out = { status: res.status, data: ct.includes('json') ? await res.json() : await res.text() };
+  // these tests were written before the shift hours: a new team gets «no shift» (the shift has its own test)
+  if (method === 'POST' && /^\/api\/(admin\/agencies|auth\/join\/)/.test(url) && res.status < 300 && db) {
+    db.prepare(`UPDATE agencies SET settings = json_set(settings, '$.shift', json('{"auto":false,"from":20,"to":8}')) WHERE id = (SELECT MAX(id) FROM agencies)`).run();
+  }
+  return out;
 }
 const login = async (who, email, password, kind = 'web') => {
   const r = await call('POST', '/api/auth/login', { email, password, kind });

@@ -23,13 +23,15 @@ export function readPrefs(json) {
   let p = {};
   try { p = JSON.parse(json || '{}') || {}; } catch { p = {}; }
   const n = (v, a, b) => { const x = Math.round(Number(v)); return Number.isFinite(x) && x >= a && x <= b ? x : undefined; };
-  return { chanceEveryMin: n(p.chanceEveryMin, 10, 240), allchatPerNight: n(p.allchatPerNight, 1, 6) };
+  return { chanceEveryMin: n(p.chanceEveryMin, 10, 240), allchatPerNight: n(p.allchatPerNight, 1, 6), shiftFrom: n(p.shiftFrom, 0, 23), shiftTo: n(p.shiftTo, 0, 23) };
 }
 
 export function profileSettings(db, profile) {
   const s = getSettings(db, profile.agency_id);
-  const op = profile.operator_id ? db.prepare('SELECT id, prompt, prompt_examples, prefs, samples FROM users WHERE id = ?').get(profile.operator_id) : null;
+  const op = profile.operator_id ? db.prepare('SELECT id, prompt, prompt_examples, prefs, samples, ai_off FROM users WHERE id = ?').get(profile.operator_id) : null;
   if (op?.prompt?.trim()) s.ai.operatorPrompt = op.prompt;
+  // the team lead switched the AI key off for this operator: no key at all (neither the team's nor the platform's) — templates
+  if (op?.ai_off) { s.ai.apiKey = ''; s.ai.platformKey = false; s.ai.off = true; }
   // the samples the AI learns the style from: the operator's own > the team's > the built-in (the agency's approved ones)
   const mine = readSamples(op?.samples);
   const team = readSamples(s.ai.samples);

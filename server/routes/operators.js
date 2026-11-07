@@ -5,6 +5,10 @@ import { latestBotVersion } from '../version.js';
 import { bad, notFound, str, updateSql } from '../util.js';
 import { today, BOT_ONLINE_MS } from '../services.js';
 import { operatorLink, resetOperatorLink, approveUser, rejectUser, checkOperatorCap, stopBots, setUserActive } from '../team.js';
+import { getSettings } from '../services.js';
+import { sendToUsers } from '../reports.js';
+import { escapeHtml } from '../telegram.js';
+import { tr } from '../i18n.js';
 
 export default function operatorRoutes(db) {
   const r = Router();
@@ -13,7 +17,7 @@ export default function operatorRoutes(db) {
   r.get('/', (req, res) => {
     const day = today(db, req.user.agencyId);
     const rows = db.prepare(`
-      SELECT u.id, u.name, u.email, u.tg_chat_id, u.active, u.pending, u.created_at, u.last_login_at,
+      SELECT u.id, u.name, u.email, u.tg_chat_id, u.active, u.pending, u.created_at, u.last_login_at, u.bot_off, u.bot_off_note, u.ai_off,
         (SELECT COUNT(*) FROM profiles p WHERE p.operator_id = u.id) AS profiles,
         (SELECT COUNT(*) FROM profiles p WHERE p.operator_id = u.id AND p.bot_last_seen > ?) AS bots_online,
         (SELECT COUNT(*) FROM messages m WHERE m.operator_id = u.id AND m.day = ? AND m.status = 'sent') AS sent_today,
@@ -35,7 +39,44 @@ export default function operatorRoutes(db) {
     if (!u) throw notFound('Оператора не знайдено');
     return u;
   };
-  r.post('/:id/approve', (req, res) => { approveUser(db, mine(req.params.id, req).id); res.json({ ok: true }); });
+  const tell = (userId, text) => sendToUsers(db, getSettings(db, req0(userId)), [userId], text).catch(() => {});
+  const req0 = (userId) => db.prepare('SELECT agency_id FROM users WHERE id = ?').get(userId)?.agency_id;
+  r.post('/:id/approve', (req, res) => {
+    const u = mine(req.params.id, req);
+    approveUser(db, u.id);
+    tell(u.id, (lg) => tr(lg, '✅ Вас підтвердили в команді <b>{team}</b>. Можна входити в панель і в бота.', { team: escapeHtml(req.user.agencyName || '') }));
+    res.json({ ok: true });
+  });
+
+  /**
+   * The team lead's levers on one operator (each comes with a Telegram note to them):
+   * botOff — the bot is suspended (fines, violations): it stops now and cannot log in; the panel stays;
+   * aiOff — the team's AI key is off for them (did not pay for it): the bot keeps working with template texts.
+   */
+  r.post('/:id/access', (req, res) => {
+    const u = mine(req.params.id, req);
+    const b = req.body || {};
+    if (b.botOff !== undefined) {
+      const off = Boolean(b.botOff);
+      const note = off ? str(b.note, { max: 200, field: 'причина' }) || '' : '';
+      db.prepare('UPDATE users SET bot_off = ?, bot_off_note = ? WHERE id = ?').run(off ? 1 : 0, note, u.id);
+      if (off && !u.bot_off) {
+        db.prepare("DELETE FROM sessions WHERE user_id = ? AND kind = 'bot'").run(u.id); // the bot is out at once
+        stopBots(db, 'operator_id = ? AND agency_id = ?', [u.id, req.user.agencyId]);
+        tell(u.id, (lg) => tr(lg, '⛔ Керівник команди призупинив ваш доступ до бота.{note}\nПанель працює; бот не запуститься, доки доступ не повернуть.',
+          { note: note ? `\n${tr(lg, 'Причина: {note}', { note: escapeHtml(note) })}` : '' }));
+      } else if (!off && u.bot_off) {
+        tell(u.id, (lg) => tr(lg, '✅ Доступ до бота повернуто. Бот запуститься сам на початку зміни.'));
+      }
+    }
+    if (b.aiOff !== undefined) {
+      const off = Boolean(b.aiOff);
+      db.prepare('UPDATE users SET ai_off = ? WHERE id = ?').run(off ? 1 : 0, u.id);
+      if (off !== Boolean(u.ai_off)) tell(u.id, (lg) => tr(lg, off ? '🧠 Керівник команди вимкнув вам ключ ШІ. Бот працює далі, але тексти — з шаблонів, не від ШІ.' : '🧠 Ключ ШІ знову увімкнено — тексти пише ШІ.'));
+    }
+    const fresh = db.prepare('SELECT bot_off, bot_off_note, ai_off FROM users WHERE id = ?').get(u.id);
+    res.json({ ok: true, botOff: Boolean(fresh.bot_off), note: fresh.bot_off_note, aiOff: Boolean(fresh.ai_off) });
+  });
   r.post('/:id/reject', (req, res) => { rejectUser(db, mine(req.params.id, req).id); res.json({ ok: true }); });
   /** Stops this operator's bots now (they can start again by hand). */
   r.post('/:id/stop-bots', (req, res) => {
@@ -47,7 +88,7 @@ export default function operatorRoutes(db) {
     const name = str(req.body?.name, { required: true, field: 'ім’я', max: 120 });
     const email = str(req.body?.email, { required: true, field: 'email / логін', max: 200 });
     const password = String(req.body?.password || '');
-    if (password.length < 6) throw bad('Пароль — мінімум 6 символів');
+    if (password.length < 8) throw bad('Пароль — мінімум 8 символів');
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw bad('Такий email / логін вже зайнятий');
     checkOperatorCap(db, req.user.agencyId);
     const out = db.prepare('INSERT INTO users (agency_id, role, name, email, pass_hash, tg_chat_id, created_at) VALUES (?,?,?,?,?,?,?)')
@@ -65,7 +106,7 @@ export default function operatorRoutes(db) {
     }
     let passHash;
     if (req.body?.password) {
-      if (String(req.body.password).length < 6) throw bad('Пароль — мінімум 6 символів');
+      if (String(req.body.password).length < 8) throw bad('Пароль — мінімум 8 символів');
       passHash = hashPassword(String(req.body.password));
     }
     const active = req.body?.active === undefined ? undefined : (req.body.active ? 1 : 0);
@@ -82,10 +123,16 @@ export default function operatorRoutes(db) {
     res.json({ ok: true });
   });
 
-  r.delete('/:id', (req, res) => {
-    const out = db.prepare("DELETE FROM users WHERE id = ? AND agency_id = ? AND role = 'operator'").run(Number(req.params.id), req.user.agencyId);
-    if (!out.changes) throw notFound('Оператора не знайдено');
-    res.json({ ok: true });
+  /** Out of the team for good: the person, their sessions (panel and bot) and Telegram link go; her profiles stay with the team. */
+  r.delete('/:id', async (req, res, next) => {
+    try {
+      const u = mine(req.params.id, req);
+      stopBots(db, 'operator_id = ? AND agency_id = ?', [u.id, req.user.agencyId]);
+      // the note goes before the person is gone (afterwards there is nobody to send it to)
+      await sendToUsers(db, getSettings(db, req.user.agencyId), [u.id], (lg) => tr(lg, '👋 Вас видалено з команди <b>{team}</b>. Доступ до панелі й бота закрито.', { team: escapeHtml(req.user.agencyName || '') })).catch(() => {});
+      db.prepare("DELETE FROM users WHERE id = ? AND agency_id = ? AND role = 'operator'").run(u.id, req.user.agencyId); // sessions go with it (ON DELETE CASCADE)
+      res.json({ ok: true });
+    } catch (e) { next(e); }
   });
 
   return r;

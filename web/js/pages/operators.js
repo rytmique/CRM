@@ -45,7 +45,7 @@ export default async function operatorsPage(main) {
             load();
           }) }, '✕ Відхилити'))))) : null,
       h('div.card.table-wrap', team.length ? h('table.table.hover',
-        h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Анкет'), h('th.num', 'Ботів зараз'), h('th.num', 'Надіслано сьогодні'), h('th.num', 'Відповідей сьогодні'), h('th', 'Останній вхід'), h('th', 'Статус'), h('th', ''))),
+        h('thead', h('tr', h('th', 'Оператор'), h('th.num', 'Анкет'), h('th.num', 'Ботів зараз'), h('th.num', 'Надіслано сьогодні'), h('th.num', 'Відповідей сьогодні'), h('th', 'Останній вхід'), h('th', 'Статус'), h('th', 'Бот і ШІ'), h('th', ''))),
         h('tbody', team.map((o) => h('tr', { onclick: () => openForm(o), tabindex: 0 },
           h('td', h('b', o.name), h('div.small.muted', o.email)),
           h('td.num', fmtInt(o.profiles)),
@@ -54,7 +54,12 @@ export default async function operatorsPage(main) {
           h('td.num', fmtInt(o.replies_today)),
           h('td', ago(o.last_login_at)),
           h('td', o.active ? badge('Активний', 'ok') : badge('Вимкнено', 'muted'),
-            o.bot_outdated ? h('div', h('span.badge.warn', { title: 'Попросіть оновити бота: у вікні бота «🔄 Оновити»' }, `старий бот ${o.bot_version || ''}`)) : null),
+            o.bot_outdated ? h('div', h('span.badge.warn', { title: 'Стара версія бота не запуститься — попросіть оновити (прийде й у Telegram)' }, `старий бот ${o.bot_version || ''}`)) : null),
+          h('td', { onclick: (e) => e.stopPropagation() }, h('div.row-wrap',
+            h(`button.btn.sm${o.bot_off ? '.danger' : ''}`, { title: o.bot_off ? `Бот призупинено${o.bot_off_note ? `: ${o.bot_off_note}` : ''} — натисніть, щоб повернути` : 'Призупинити бота (штраф, порушення)', onclick: safe(() => toggleBot(o)) },
+              o.bot_off ? '⛔ Бот призупинено' : '🤖 Бот ✓'),
+            h(`button.btn.sm${o.ai_off ? '.danger' : ''}`, { title: o.ai_off ? 'ШІ вимкнено — тексти з шаблонів. Натисніть, щоб увімкнути' : 'Вимкнути ключ ШІ (не оплатив)', onclick: safe(() => toggleAi(o)) },
+              o.ai_off ? '🧠 ШІ вимкнено' : '🧠 ШІ ✓'))),
           h('td.actions', o.bots_online ? h('button.btn.sm', { title: 'Зупинити ботів цього оператора зараз (~30 с)', onclick: safe(async (e) => {
             e.stopPropagation();
             await post(`/api/operators/${o.id}/stop-bots`);
@@ -64,21 +69,49 @@ export default async function operatorsPage(main) {
     ].filter(Boolean));
   }
 
+  /** ⛔ / ✓ the bot of one operator: suspended — it stops now and cannot start (the panel stays); a Telegram note goes to them. */
+  async function toggleBot(o) {
+    if (o.bot_off) {
+      await post(`/api/operators/${o.id}/access`, { botOff: false });
+      toast(`${o.name}: бот знову доступний`);
+      return load();
+    }
+    const note = input('note', '', { placeholder: 'напр. штраф за порушення правил', maxlength: 200 });
+    const ok = h('button.btn.danger', 'Призупинити');
+    const m = modal({ title: `Призупинити бота: ${o.name}`, body: h('div.stack',
+      h('p', 'Бот зупиниться зараз і не запуститься, доки ви не повернете доступ. Панель у людини працює далі.'),
+      field('Причина (людина побачить її в Telegram)', note)),
+    actions: [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), ok] });
+    ok.addEventListener('click', () => busy(ok, async () => {
+      await post(`/api/operators/${o.id}/access`, { botOff: true, note: note.value });
+      m.close();
+      toast(`${o.name}: бот призупинено`);
+      load();
+    }).catch(() => {}));
+  }
+  /** 🧠 the team's AI key for one operator: off = the bot keeps working with template texts (did not pay for the key). */
+  async function toggleAi(o) {
+    if (!o.ai_off && !(await confirmDialog(`Вимкнути ключ ШІ для «${o.name}»? Бот працюватиме далі, але тексти — з шаблонів. Людина отримає повідомлення в Telegram.`, { ok: 'Вимкнути ШІ', danger: true }))) return;
+    await post(`/api/operators/${o.id}/access`, { aiOff: !o.ai_off });
+    toast(o.ai_off ? `${o.name}: ШІ знову увімкнено` : `${o.name}: ШІ вимкнено`);
+    load();
+  }
+
   function openForm(o = null) {
     const form = h('form.form-grid',
       field('Ім’я *', input('name', o?.name, { required: true })),
       field('Email / логін *', input('email', o?.email, { required: true, autocomplete: 'off' })),
-      field(o ? 'Новий пароль' : 'Пароль *', input('password', '', { type: 'text', minlength: 6, required: !o, autocomplete: 'new-password', placeholder: o ? 'залиште порожнім, щоб не міняти' : 'мінімум 6 символів' })),
+      field(o ? 'Новий пароль' : 'Пароль *', input('password', '', { type: 'text', minlength: 8, required: !o, autocomplete: 'new-password', placeholder: o ? 'залиште порожнім, щоб не міняти' : 'мінімум 8 символів' })),
       o ? h('label.check.span-2', h('input', { type: 'checkbox', name: 'active', checked: Boolean(o.active) }), 'Активний (вимкнений не зможе увійти)') : null);
     const save = h('button.btn.primary', o ? 'Зберегти' : 'Створити');
     const actions = [h('button.btn', { onclick: () => m.close() }, 'Скасувати'), save];
     if (o) actions.unshift(h('button.btn.danger.ghost.left', { onclick: safe(async () => {
-      if (!(await confirmDialog(`Видалити оператора «${o.name}»? Його анкети залишаться без оператора.`, { ok: 'Видалити', danger: true }))) return;
+      if (!(await confirmDialog(`Видалити «${o.name}» з команди назавжди? Доступ до панелі й бота закриється одразу, людина отримає повідомлення в Telegram. Її анкети лишаться в команді.`, { ok: 'Видалити з команди', danger: true }))) return;
       await del(`/api/operators/${o.id}`);
       toast('Оператора видалено');
       m.close();
       load();
-    }) }, 'Видалити'));
+    }) }, 'Видалити з команди'));
     const m = modal({ title: o ? `Оператор: ${o.name}` : 'Новий оператор', body: form, actions });
     const submit = () => busy(save, async () => {
       if (!form.reportValidity()) return;

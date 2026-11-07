@@ -1,10 +1,12 @@
 import { h, field, input, select, textarea, busy, toast, safe } from '../ui.js';
 import { get, put, post, del, patch, upload, blobUrl, session } from '../api.js';
+import { getLang, setLang } from '../i18n.js';
 
 const CHANCE = 300; // media step: the photos of «Шанс» letters
 const EVERY = [[10, 'кожні 10 хв'], [15, 'кожні 15 хв'], [20, 'кожні 20 хв'], [30, 'кожні 30 хв'], [45, 'кожні 45 хв'], [60, 'щогодини'], [90, 'кожні 1,5 год'], [120, 'кожні 2 год']];
 const TIMES = [1, 2, 3, 4, 5, 6].map((n) => [n, `${n} ${n === 1 ? 'раз' : n < 5 ? 'рази' : 'разів'} за ніч`]);
 const WHO = [['silent', 'Хто замовк'], ['replied', 'Хто колись відповідав'], ['all', 'Усім чатам']];
+const HOURS = Array.from({ length: 24 }, (_, i) => [i, `${String(i).padStart(2, '0')}:00`]);
 
 /**
  * ⚙ Налаштування. Operator: the master prompt, how often «Шанс», how many «Аллчат» a night, the photos for «Шанс», the password.
@@ -46,10 +48,28 @@ export default async function settingsPage(main) {
     tz: input('timezone', conf.settings.timezone, { placeholder: 'Europe/Kyiv' }),
   } : null;
 
+  // ---- the shift hours: the team lead sets them, an operator may narrow them for herself ----
+  const ts = owner ? conf.settings.shift : prefs.teamShift;
+  const shiftFrom = select('shiftFrom', owner ? ts.from : (prefs.myShift?.own ? prefs.myShift.from : ''), owner ? HOURS : [['', 'як у команди'], ...HOURS]);
+  const shiftTo = select('shiftTo', owner ? ts.to : (prefs.myShift?.own ? prefs.myShift.to : ''), owner ? HOURS : [['', 'як у команди'], ...HOURS]);
+  const autoShift = owner ? h('input', { type: 'checkbox', checked: ts.auto !== false }) : null;
+  const shiftCard = h('section.card', h('h3', '⏰ Години зміни'),
+    owner ? h('label.check', autoShift, h('span', h('b', 'Бот сам вмикається й вимикається'), ' за цими годинами')) : null,
+    h('div.pair', field(owner ? 'Початок зміни' : 'Мій початок', shiftFrom), field(owner ? 'Кінець зміни' : 'Мій кінець', shiftTo)),
+    h('p.small.muted', owner
+      ? 'На початку зміни бот сам стартує в кожного: спершу Шанс, потім чекає відповідей і кілька разів за ніч — Аллчат. У кінці — сам вимикається до наступної зміни. Оператор може звузити години собі, але не вийти за ці межі.'
+      : `Зміна команди: ${ts?.text || '—'}. Можна звузити години собі, але не вийти за межі команди. «Як у команди» — працюєте всю зміну.`));
+
+  // ---- the language of the panel, the bot and Telegram ----
+  const langSel = select('lang', getLang(), [['uk', 'Українська'], ['ru', 'Русский']]);
+  langSel.addEventListener('change', () => put('/api/auth/lang', { lang: langSel.value }).then((r) => { session.user = r.user; setLang(r.user.lang); location.reload(); }).catch((e) => toast(e.message, 'err')));
+  const langCard = h('section.card', h('h3', '🌐 Мова'), field('Мова панелі, бота й повідомлень у Telegram', langSel));
+
   const save = h('button.btn.primary', 'Зберегти');
   save.addEventListener('click', () => busy(save, async () => {
     if (owner) {
       await put('/api/settings', { agencyName: team.name.value, settings: {
+        shift: { auto: autoShift.checked, from: Number(shiftFrom.value), to: Number(shiftTo.value) },
         timezone: team.tz.value || 'Europe/Kyiv',
         modes: {
           chance: { on: team.chanceOn.checked, everyMin: Number(every.value), onlineOnly: team.online.checked },
@@ -61,7 +81,9 @@ export default async function settingsPage(main) {
       await put('/api/prompts/team', { prompt: prompt.value });
       await put('/api/settings', { settings: { ai: { samples: { invites: split(invitesBox.value), letters: split(lettersBox.value) } } } });
     } else {
+      const own = shiftFrom.value !== '' && shiftTo.value !== '';
       await put('/api/me/prefs', { prompt: prompt.value, chanceEveryMin: Number(every.value), allchatPerNight: Number(times.value),
+        shiftFrom: own ? Number(shiftFrom.value) : null, shiftTo: own ? Number(shiftTo.value) : null,
         samples: { invites: split(invitesBox.value), letters: split(lettersBox.value) } });
     }
     toast('Збережено. Бот візьме нове при наступному запуску');
@@ -84,6 +106,7 @@ export default async function settingsPage(main) {
     h('div.settings-grid',
       h('section.card.span-2', h('div.row-between', h('h3', owner ? '🧠 Мастер-промпт команди' : '🧠 Мій мастер-промпт'), reset), prompt,
         h('p.small.muted', owner ? 'Стиль текстів для всієї команди. Оператор може переписати собі свій.' : 'Як ШІ пише від імені ваших анкет. Порожньо або «Стандартний» — промпт команди.')),
+      shiftCard,
       shift,
       h('section.card.span-2', h('div.row-between', h('h3', '📝 Взірці інвайтів і листів'), resetSamples),
         h('p.small.muted', 'ШІ вчиться на них стилю (не копіює). Кожен взірець — окремо, між ними рядок «---». Ім’я чоловіка можна писати як {name}.'
@@ -92,6 +115,7 @@ export default async function settingsPage(main) {
         h('p.small.muted', 'Бот ще й сам вчиться: інвайти, що отримали відповідь, ШІ бачить як приклади, а тип гачка, що відповідає найчастіше, пише частіше.')),
       photosCard(profiles),
       owner ? h('section.card', h('h3', '👥 Команда'), field('Назва', team.name), field('Часовий пояс', team.tz, 'Від нього рахуються ночі, ліміти й звіти (напр. Europe/Kyiv)')) : null,
+      langCard,
       passwordCard()),
   ].filter(Boolean));
 }

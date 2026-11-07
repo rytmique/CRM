@@ -1,5 +1,7 @@
 import { h, busy } from '../ui.js';
-import { get, post } from '../api.js';
+import { get, post, session } from '../api.js';
+import { getLang, t } from '../i18n.js';
+import { langSwitch } from './auth-extra.js';
 
 /** Registration by a link: a team lead (from the platform admin) or an operator (from the team lead). */
 export async function renderJoin(root, token, { loggedIn, onDone }) {
@@ -15,9 +17,10 @@ export async function renderJoin(root, token, { loggedIn, onDone }) {
   }
   const owner = info.kind === 'owner';
   const err = h('p.form-error', { role: 'alert' });
+  // a new team lead by the admin's link names the team on the next screen; a referral registration waits, so it asks here
   const fields = [
     ['name', 'Ваше ім’я', { autocomplete: 'name', required: true, maxlength: 120 }],
-    owner ? ['agencyName', 'Назва команди', { placeholder: 'напр. Команда Ігоря', maxlength: 120 }] : null,
+    owner && info.referral ? ['agencyName', 'Назва команди', { placeholder: 'напр. Команда Ігоря', maxlength: 120 }] : null,
     ['email', 'Email (буде логіном)', { type: 'email', autocomplete: 'email', required: true }],
     ['password', 'Пароль (мін. 8 символів)', { type: 'password', autocomplete: 'new-password', required: true, minlength: 8 }],
     ['password2', 'Ще раз пароль', { type: 'password', autocomplete: 'new-password', required: true, minlength: 8 }],
@@ -39,12 +42,12 @@ export async function renderJoin(root, token, { loggedIn, onDone }) {
     form.querySelector('[name="agencyName"]').closest('.field').hidden = solo;
   });
   card.replaceChildren(
-    brand,
+    h('div.row-between', brand, langSwitch(() => renderJoin(root, token, { loggedIn, onDone }))),
     h('h2.center', info.referral ? 'Реєстрація' : owner ? 'Реєстрація команди' : `Реєстрація в команду${info.agencyName ? ` «${info.agencyName}»` : ''}`),
     info.referral ? h('p.center', `🎁 Вас запросив(ла) ${info.referrer}. Налаштування бота на вашому сайті — безкоштовно.`) : null,
     choice,
     h('p.muted.center', info.referral ? 'Після реєстрації постачальник підтвердить доступ. Команда: потім додасте своїх операторів. Соло: працюєте самі зі своїми анкетами.'
-      : owner ? 'Ви — керівник команди. Після реєстрації постачальник підтвердить доступ, і ви зможете додати своїх операторів.'
+      : owner ? 'Ви — керівник команди. Після реєстрації одразу потрапите в панель і зможете запросити своїх операторів.'
       : 'Після реєстрації керівник команди підтвердить вас — і можна входити.'),
     loggedIn ? h('p.small.muted.center', 'Ви вже увійшли під іншим акаунтом — цю форму заповнює нова людина.') : null,
     form);
@@ -52,11 +55,13 @@ export async function renderJoin(root, token, { loggedIn, onDone }) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     err.textContent = '';
-    if (val('password') !== val('password2')) { err.textContent = 'Паролі не збігаються'; return; }
+    if (val('password') !== val('password2')) { err.textContent = t('Паролі не збігаються'); return; }
     try {
-      await busy(form.querySelector('button[type=submit]'), () => post(`/api/auth/join/${encodeURIComponent(token)}`, {
-        name: val('name'), email: val('email'), password: val('password'), agencyName: solo ? '' : val('agencyName'), solo,
+      const r = await busy(form.querySelector('button[type=submit]'), () => post(`/api/auth/join/${encodeURIComponent(token)}`, {
+        name: val('name'), email: val('email'), password: val('password'), agencyName: solo ? '' : val('agencyName'), solo, lang: getLang(),
       }));
+      // a team lead by the admin's link is in at once: straight to «name your team», then the panel
+      if (r.token) { session.token = r.token; session.user = r.user; onDone(); return; }
       card.replaceChildren(brand, h('div.join-done',
         h('div.big-emoji', '✅'),
         h('h2', 'Заявку надіслано'),
@@ -64,7 +69,7 @@ export async function renderJoin(root, token, { loggedIn, onDone }) {
         h('p.small.muted', 'Зазвичай це кілька хвилин. Якщо довго — напишіть тому, хто дав посилання.'),
         h('button.btn.primary.block', { onclick: onDone }, 'До входу')));
     } catch (ex) {
-      err.textContent = ex.message;
+      err.textContent = t(ex.message);
     }
   });
   form.querySelector('[name="name"]').focus();

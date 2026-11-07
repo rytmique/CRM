@@ -400,3 +400,13 @@ tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--surf
 .photo-x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0,0,0,.6); color: #fff; font-size: 11px; cursor: pointer; line-height: 20px; padding: 0; }
 .settings-grid textarea { width: 100%; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
 @media (max-width: 560px) { .pair { grid-template-columns: minmax(0, 1fr); } .settings-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* notices on top of a page: the shift, what the team lead decided */
+.notice { border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 12px; font-size: 13.5px; }
+.notice.warn { background: var(--warn-soft); border-color: transparent; color: var(--ink); }
+.notice.err { background: var(--err-soft); border-color: transparent; color: var(--ink); }
+/* UA | RU on the login / registration card */
+.lang-switch { display: inline-flex; gap: 0; flex: none; }
+.lang-switch .seg { padding: 4px 10px; font-size: 12.5px; }
+.login-card .row-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.center.big-emoji { text-align: center; }

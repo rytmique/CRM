@@ -49,6 +49,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     // the bot answers his reply itself — locked until the platform admin opens it
     autoReply: { on: false },
   },
+  // the shift: the bot starts by itself at «from» and switches off at «to» (hours of the team's time zone; from = to → around the clock)
+  shift: { auto: true, from: 20, to: 8 },
   // mini reports in Telegram after each pass (each person gets the reports of what they run)
   reports: { eachPass: true },
 });

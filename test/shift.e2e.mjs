@@ -78,7 +78,7 @@ try {
   const admin = await loginApi('root@shift', 'rootpass123');
   await api('POST', '/api/admin/agencies', { name: 'Shift team', ownerName: 'Lead', ownerEmail: 'lead@shift', ownerPassword: 'leadpass1', licenses: 3, days: 30 }, admin);
   const owner = await loginApi('lead@shift', 'leadpass1');
-  await api('PUT', '/api/settings', { settings: { timezone: 'UTC', modes: { chance: { on: true, everyMin: 30, onlineOnly: true }, allchat: { on: true, perNight: 2, who: 'silent', silentHours: 2, gapHours: 3 } } } }, owner);
+  await api('PUT', '/api/settings', { settings: { timezone: 'UTC', shift: { auto: false }, modes: { chance: { on: true, everyMin: 30, onlineOnly: true }, allchat: { on: true, perNight: 2, who: 'silent', silentHours: 2, gapHours: 3 } } } }, owner);
   const site = await api('POST', '/api/sites', { name: 'Демо: нічна зміна', config: shiftSiteConfig(BASE) }, owner);
   const siteId = site.site?.id ?? site.id;
   await api('PUT', `/api/sites/${siteId}/scenario`, { scenario: {

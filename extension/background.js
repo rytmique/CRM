@@ -1,5 +1,8 @@
 /* global importScripts */
-importScripts('config.js');
+importScripts('config.js', 'i18n.js');
+const T = (s) => self.botI18n.t(s);
+// the person's language (Settings in the panel): from the login and from every /bot/profiles
+chrome.storage.local.get('auth').then(({ auth }) => self.botI18n.setLang(auth?.user?.lang)).catch(() => {});
 
 const DEFAULT_SERVER = self.AGENCY_DEFAULT_SERVER || 'http://localhost:3000';
 const WATCH_EVERY_MS = 3 * 60 * 1000;
@@ -46,6 +49,7 @@ async function setState(patch) {
 }
 
 async function log(text, level = 'info') {
+  text = T(text);
   const entry = { t: Date.now(), text, level };
   await setState({ log: [entry, ...state.log].slice(0, 60), message: text });
 }
@@ -79,7 +83,7 @@ async function getAuth() {
 
 async function api(path, { method = 'GET', body } = {}, attempt = 0) {
   const auth = await getAuth();
-  if (!auth) throw Object.assign(new Error('Спочатку увійдіть у розширення'), { status: 401 });
+  if (!auth) throw Object.assign(new Error(T('Спочатку увійдіть у розширення')), { status: 401 });
   let res;
   try {
     res = await fetch(auth.server + path, {
@@ -111,7 +115,12 @@ async function heartbeat(force = false, botState) {
   try {
     // "active": really working now (writing or pausing between men) — payment for the bot counts only that time
     const active = running && !state.test && ['running', 'waiting'].includes(state.status);
-    const r = await api(`/api/bot/profiles/${state.profileId}/heartbeat`, { method: 'POST', body: { state: botState || mapBotState(), info, active, startedAt: state.startedAt, now: Date.now() } });
+    const r = await api(`/api/bot/profiles/${state.profileId}/heartbeat`, { method: 'POST', body: { state: botState || mapBotState(), info, active, startedAt: state.startedAt, now: Date.now(), test: Boolean(state.test) } });
+    if (r.stop && r.why === 'shift' && running && !stopRequested) {
+      stopRequested = true;
+      shiftEnded = r.shift?.text || '';
+      await log(`⏰ Кінець зміни (${shiftEnded}) — вимикаюсь до наступної`, 'warn');
+    }
     if (r.paused && running && !stopRequested) {
       stopRequested = true;
       await log('Анкету поставлено на паузу в панелі — зупиняюсь', 'warn');
@@ -129,6 +138,7 @@ async function heartbeat(force = false, botState) {
   }
 }
 
+let shiftEnded = ''; // the run was stopped by the end of the shift (its hours, for the message)
 const mapBotState = () => ({ running: 'running', waiting: 'running', sleeping: 'running', watching: 'done', limit: 'limit', error: 'error', blocked: 'error', stopped: 'idle', idle: 'idle' }[state.status] || 'running');
 
 // ---------------- tab helpers ----------------
@@ -1569,9 +1579,10 @@ async function runTest(profileId, tabId, quota = { chance: 2, allchat: 2, chance
 
 // ---------------- all her profiles at once: the women are read from the site ----------------
 /** The site of this operator, her women there (new ones become her profiles in the panel by themselves). */
-async function workspace(tabId) {
+async function workspace(tabId, test = false) {
   const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
-  const ws = await api(`/api/bot/workspace${/^https?:/.test(tab?.url || '') ? `?url=${encodeURIComponent(tab.url)}` : ''}`);
+  const q = [/^https?:/.test(tab?.url || '') ? `url=${encodeURIComponent(tab.url)}` : '', test ? 'test=1' : ''].filter(Boolean).join('&');
+  const ws = await api(`/api/bot/workspace${q ? `?${q}` : ''}`);
   const site = ws.site.config;
   if (!site.messageInput || !(site.chanceItem || site.allchatItem || site.taskItem || site.card)) {
     throw new Error('Сайт команди ще не налаштований для бота — напишіть постачальнику');
@@ -1763,7 +1774,7 @@ async function shiftDry(ctx, tabId, problems, quota) {
 
 /** The test for every woman of hers on the site: walks the whole way, presses nothing, then a report in Telegram. */
 async function testAll(tabId) {
-  const w = await workspace(tabId);
+  const w = await workspace(tabId, true);
   await setState({ ...EMPTY_STATE, log: state.log, status: 'running', test: true, tabId: w.tabId, startedAt: Date.now() });
   await log(`🧪 Тест-режим: анкет ${w.list.length} (${w.list.map((p) => p.name).join(', ')}). ${TEST_CHANCE} чоловіків у Шансі + ${TEST_ALLCHAT} діалогів в Аллчаті, нічого не надсилається`);
   const quota = { chance: TEST_CHANCE, allchat: TEST_ALLCHAT, chanceOk: 0, allchatOk: 0, profiles: 0, hers: 0, women: w.list.length, done: 0, examples: [], waits: [], problems: [] };
@@ -1799,8 +1810,12 @@ async function testAll(tabId) {
 async function controlTick() {
   if (running || !(await getAuth())) return;
   const c = await api('/api/bot/control').catch(() => null);
+  if (c?.shift?.auto && !c.shift.on && !running && ['idle', 'stopped'].includes(state.status)) {
+    const msg = T(`🌙 Чекаю зміни: ${c.shift.text}. Увімкнусь сам.`);
+    if (state.message !== msg) await setState({ message: msg });
+  }
   if (!c?.start?.length || running) return;
-  await log(`▶️ Увімкнули з панелі / Telegram`);
+  await log(c.auto ? '⏰ Початок зміни — вмикаюсь сам' : '▶️ Увімкнули з панелі / Telegram');
   start({ auto: true });
 }
 
@@ -1821,8 +1836,9 @@ async function start({ tabId = null, test = false, auto = false } = {}) {
       await setState({ status: 'stopped' });
       return;
     }
+    shiftEnded = '';
     await runAll(tabId);
-    await setState({ status: 'stopped', message: 'Вимкнено' });
+    await setState({ status: 'stopped', message: shiftEnded ? T(`Зміна закінчилась — увімкнусь сам на початку наступної (${shiftEnded})`) : T('Вимкнено') });
     await heartbeat(true, 'idle');
   } catch (e) {
     await setState({ status: 'error' });
@@ -1861,6 +1877,7 @@ const handlers = {
     if (!data) throw new Error(`За адресою ${base} немає панелі. Вкажіть адресу панелі`);
     if (!res.ok) throw new Error(data.error || 'Не вдалося увійти');
     await chrome.storage.local.set({ auth: { server: base, token: data.token, user: data.user } });
+    self.botI18n.setLang(data.user?.lang);
     return { user: data.user };
   },
   async logout() {
@@ -1872,7 +1889,14 @@ const handlers = {
   },
   /** The version check for the update banner. */
   async profiles() {
-    return api('/api/bot/profiles');
+    const r = await api('/api/bot/profiles');
+    // the language may have been changed in the panel since the login
+    if (r.lang) {
+      self.botI18n.setLang(r.lang);
+      const { auth } = await chrome.storage.local.get('auth');
+      if (auth?.user && auth.user.lang !== r.lang) await chrome.storage.local.set({ auth: { ...auth, user: { ...auth.user, lang: r.lang } } });
+    }
+    return r;
   },
   /** After the new files were unpacked over the old ones: stop the bot and restart the extension with the new code. */
   async reload() {
@@ -1891,6 +1915,7 @@ const handlers = {
   },
   async stop() {
     stopRequested = true;
+    if (!state.test) api('/api/bots/stop', { method: 'POST', body: {} }).catch(() => {});
     if (state.tabId) chrome.scripting.executeScript({ target: { tabId: state.tabId }, func: () => { window.__agencyBotStop = true; } }).catch(() => {});
     await log('Вимикаю…');
     return {};

@@ -1,4 +1,5 @@
 const $ = (id) => document.getElementById(id);
+const t = (s) => self.botI18n.t(s);
 const send = (type, extra = {}) => new Promise((resolve, reject) => {
   chrome.runtime.sendMessage({ type, ...extra }, (res) => {
     if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
@@ -20,14 +21,16 @@ const STATUS = {
 const ACTIVE = ['running', 'waiting', 'sleeping', 'watching', 'limit', 'blocked'];
 const fmtTime = (t) => new Date(t).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
 
+let lastState = null;
 function render(s) {
+  lastState = s;
   let [label, cls] = STATUS[s.status] || STATUS.idle;
   if (s.test) label = { running: '🧪 Тест іде', stopped: '🧪 Тест завершено', error: '🧪 Тест: є проблеми' }[s.status] || label;
   document.body.classList.toggle('testing', Boolean(s.test) && s.status !== 'idle');
-  $('s-sent-label').textContent = s.test ? 'перевірено' : 'надіслано';
-  $('status-text').textContent = label;
+  $('s-sent-label').textContent = t(s.test ? 'перевірено' : 'надіслано');
+  $('status-text').textContent = t(label);
   $('dot').className = `dot ${cls}`;
-  $('status-msg').textContent = s.message || '';
+  $('status-msg').textContent = t(s.message || '');
   $('s-sent').textContent = s.sent ?? 0;
   $('s-replies').textContent = s.replies ?? 0;
   $('s-profile').textContent = ACTIVE.includes(s.status) && s.profileName ? s.profileName : '—';
@@ -41,7 +44,7 @@ function render(s) {
     const time = document.createElement('time');
     time.textContent = fmtTime(e.t);
     const span = document.createElement('span');
-    span.textContent = e.text;
+    span.textContent = t(e.text);
     span.className = e.level;
     li.append(time, span);
     return li;
@@ -54,13 +57,16 @@ async function activeTabId() {
 }
 
 async function showMain(info) {
+  self.botI18n.setLang(info.auth.user?.lang);
+  self.botI18n.translatePage(document.body);
+  showTest();
   $('login-view').hidden = true;
   $('main-view').hidden = false;
   $('logout').hidden = false;
   $('who').textContent = info.auth.user?.name || '';
   $('panel-link').href = info.auth.server;
   render(info.state);
-  send('profiles').then((r) => renderUpdate(r.bot)).catch((e) => {
+  send('profiles').then((r) => { if (r.lang && r.lang !== self.botI18n.getLang()) { self.botI18n.setLang(r.lang); location.reload(); return; } renderUpdate(r.bot); }).catch((e) => {
     $('main-error').textContent = e.message;
     if (/увійдіть|Сесія/.test(e.message)) init();
   });
@@ -82,7 +88,13 @@ async function renderUpdate(bot) {
     if (updateTried) chrome.storage.local.remove('updateTried');
     return;
   }
-  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = t(text); return e; };
+  // never in the middle of a shift: while the bot works, only a note «after the shift»
+  if (lastState && ACTIVE.includes(lastState.status)) {
+    box.replaceChildren(el('div', 'update-head', `🔄 Нова версія ${bot.latest} — оновіть після зміни, коли бот вимкнеться. Під час зміни не оновлюйте.`));
+    box.hidden = false;
+    return;
+  }
   const head = el('div', 'update-head');
   head.append(el('b', '', `🔄 Є нова версія бота: ${bot.latest}`), el('span', 'muted', ` (у вас ${mine})`));
   const steps = el('ol', 'update-steps');
@@ -96,24 +108,24 @@ async function renderUpdate(bot) {
   const li3 = el('li'); li3.append(restart, manual);
   steps.append(li1, li2, li3);
   const note = el('p', 'small muted');
-  if (updateTried === mine) note.textContent = '⚠ Версія не змінилась: схоже, архів розпаковано в іншу папку. Потрібна саме та папка, яку вибирали в chrome://extensions → «Завантажити розпаковане».';
-  else if (bot.min && newer(bot.min, mine)) note.textContent = 'Ця версія вже застаріла — бот не запуститься, доки не оновите.';
+  if (updateTried === mine) note.textContent = t('⚠ Версія не змінилась: схоже, архів розпаковано в іншу папку. Потрібна саме та папка, яку вибирали в chrome://extensions → «Завантажити розпаковане».');
+  else if (bot.min && newer(bot.min, mine)) note.textContent = t('⛔ Стара версія не запуститься. Оновіть до початку зміни — зараз, поки бот вимкнений.');
   dl.addEventListener('click', async () => {
     dl.disabled = true;
     try {
       const { auth } = await chrome.storage.local.get('auth');
       const res = await fetch(`${auth.server}/api/extension/download`, { headers: { authorization: `Bearer ${auth.token}` } });
-      if (!res.ok) throw new Error(`помилка ${res.status}`);
+      if (!res.ok) throw new Error(t(`помилка ${res.status}`));
       const a = document.createElement('a');
       a.href = URL.createObjectURL(await res.blob());
       a.download = 'agency-bot.zip';
       document.body.append(a);
       a.click();
       a.remove();
-      dl.textContent = '✓ Завантажено — тепер крок 2';
+      dl.textContent = t('✓ Завантажено — тепер крок 2');
     } catch (e) {
       dl.disabled = false;
-      $('main-error').textContent = `Не вдалося завантажити: ${e.message}`;
+      $('main-error').textContent = t(`Не вдалося завантажити: ${e.message}`);
     }
   });
   restart.addEventListener('click', () => send('reload').catch(() => {}));
@@ -160,7 +172,7 @@ $('login-form').addEventListener('submit', async (e) => {
 });
 
 $('logout').addEventListener('click', async () => { await send('logout'); init(); });
-const showTest = () => { $('start').textContent = $('test-mode').checked ? '🧪 Запустити тест' : '▶ Увімкнути'; };
+function showTest() { $('start').textContent = t($('test-mode').checked ? '🧪 Запустити тест' : '▶ Увімкнути'); }
 $('test-mode').addEventListener('change', () => { showTest(); chrome.storage.local.set({ testMode: $('test-mode').checked }); });
 chrome.storage.local.get('testMode').then(({ testMode }) => { $('test-mode').checked = Boolean(testMode); showTest(); });
 
