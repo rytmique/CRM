@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { requireRole } from '../auth.js';
 import { bad, mask, mergeSettings, ah, int, str, dayKey } from '../util.js';
-import { getSettings } from '../services.js';
+import { getSettings, readSamples } from '../services.js';
 import { platformGet } from '../db.js';
-import { DEFAULT_PROMPT, PROMPT_VARS } from '../ai.js';
+import { DEFAULT_PROMPT, PROMPT_VARS, DEFAULT_SAMPLES } from '../ai.js';
 import { sendTelegram } from '../telegram.js';
 import { memoryLines } from '../learning.js';
 
@@ -41,6 +41,8 @@ export default function settingsRoutes(db) {
       usageDays: db.prepare(`SELECT day, SUM(calls) AS calls, SUM(input_tokens) AS input, SUM(output_tokens) AS output FROM ai_usage
         WHERE agency_id = ? AND day >= ? GROUP BY day ORDER BY day`).all(req.user.agencyId, dayKey(Date.now() - 29 * 86400000, s.timezone)),
       models: MODELS,
+      samples: readSamples(s.ai.samples).invites.length || readSamples(s.ai.samples).letters.length ? readSamples(s.ai.samples) : DEFAULT_SAMPLES,
+      defaultSamples: DEFAULT_SAMPLES,
       platformKey: s.ai.platformKey !== false && Boolean(process.env.ANTHROPIC_API_KEY),
       autoReplyOpen: platformGet(db, 'autoReply', '0') === '1',
     });
@@ -52,6 +54,12 @@ export default function settingsRoutes(db) {
     // the platform admin's switches: caps, model, learning — the team cannot change them
     delete patch.caps;
     if (patch.ai) for (const k of ['variants', 'autoOptimize', 'sharedMemory', 'platformKey', 'operatorPrompt', 'examples']) delete patch.ai[k];
+    // the team's samples of invites and letters: only texts; the built-in ones again = empty
+    if (patch.ai?.samples !== undefined) {
+      const sm = readSamples(patch.ai.samples);
+      const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+      patch.ai.samples = same(sm.invites, DEFAULT_SAMPLES.invites) && same(sm.letters, DEFAULT_SAMPLES.letters) ? { invites: [], letters: [] } : sm;
+    }
     // the team lead chooses the model (only the known ones)
     if (patch.ai?.model !== undefined && !MODELS.includes(patch.ai.model)) delete patch.ai.model;
     if (patch.ai && (patch.ai.apiKey === undefined || isMasked(patch.ai.apiKey))) delete patch.ai.apiKey;

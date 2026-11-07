@@ -6,8 +6,8 @@ import {
   getSettings, profileSettings, planOf, accessFor, accessError, licenseState, profileScope, getVisibleProfile, profileLicense, activeInvite,
   limitsFor, sentToday, insertInvite, hourWindow, followupTexts, saveFollowup, canEditSite,
 } from '../services.js';
-import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter, generateTopic, templateTopic, generateReply, generateHook, withHook, hookKey } from '../ai.js';
-import { reportPass, shiftKey } from '../reports.js';
+import { generateInvite, generateFollowup, templateFollowup, generateReengage, templateReengage, classifyReply, generateLetter, templateLetter, generateTopic, templateTopic, generateReply, generateChance, HOOK_TYPES } from '../ai.js';
+import { reportPass, shiftKey, sendToUsers, tgToken } from '../reports.js';
 import { personalize } from '../personalize.js';
 import { sendTelegram, escapeHtml } from '../telegram.js';
 import { SITE_FIELDS, sanitizeSiteConfig, fillUrl, siteReady } from '../sites.js';
@@ -47,7 +47,8 @@ export default function botRoutes(db, cfg) {
       via: m.via === 'letter' ? 'letter' : m.via === 'chat' ? 'chat' : '',
       online: m.online === true ? true : m.online === false ? false : null,
       place: String(m.place ?? '').replace(/\s+/g, ' ').trim().slice(0, 80), // his city / country (the chat header)
-      hook: ['personal', 'city', 'flirt'].includes(m.hook) ? m.hook : '',
+      about: String(m.about ?? '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500), // his profile page, as the bot read it
+      hook: HOOK_TYPES.includes(m.hook) ? m.hook : '',
     };
   };
   const siteHost = (site, config) => hostOf(config?.searchUrl || site?.base_url || '');
@@ -334,20 +335,44 @@ export default function botRoutes(db, cfg) {
   };
 
   /**
-   * «Шанс»: her letter with a hook in front written for this man (he sees only the first ~5 characters in his list:
-   * personal / his city / flirt, never the same start as her recent letters), and the photos chosen for «Шанс» (none → step 1).
+   * The hook type that gets the most replies in her team lately (Thompson: each type's reply rate is drawn from its Beta,
+   * the best draw wins — so new types still get tried). Nothing yet (fewer than 20 letters) → '' (the AI chooses).
    */
-  const chanceStep = async (ctx, m, settings) => {
+  const beta = (a, b) => { const g = (k) => { let x = 0; for (let i = 0; i < k; i++) x -= Math.log(Math.random()); return x; }; const x = g(a); return x / (x + g(b)); };
+  const bestHookType = (agencyId) => {
+    const rows = db.prepare(`SELECT hook, COUNT(*) AS n, SUM(replied_at IS NOT NULL AND reply_mood != 'negative') AS r FROM messages
+      WHERE agency_id = ? AND mode = 'chance' AND status = 'sent' AND hook != '' AND sent_at > ? GROUP BY hook`).all(agencyId, now() - 60 * 86400000);
+    if (rows.reduce((a, x) => a + x.n, 0) < 20) return '';
+    let best = '';
+    let top = -1;
+    for (const t of HOOK_TYPES) {
+      const x = rows.find((y) => y.hook === t) || { n: 0, r: 0 };
+      const v = beta(1 + Math.min(x.r, 50), 1 + Math.min(x.n - x.r, 200));
+      if (v > top) { top = v; best = t; }
+    }
+    return best;
+  };
+
+  /**
+   * «Шанс»: first an invite in the chat with a hook in the first characters (~250), right after it a letter — both written
+   * for this man from his profile (never the same text twice), with the photos chosen for «Шанс» (none → step 1; a site with
+   * her gallery — photos from it). The AI learns from the team's invites that got replies and prefers the hook type that
+   * answers best now. A «probe» only says whether he may get it (before the bot reads his profile).
+   */
+  const chanceStep = async (ctx, m, settings, probe = false) => {
     const { features, ...man } = m;
-    const last = db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent' ORDER BY id DESC LIMIT 40").all(ctx.p.id).map((r) => r.text);
-    const recent = new Set(last.map(hookKey));
+    if (probe) return { ...man, probe: true, mode: 'chance', actions: [] };
+    const recent = db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent' ORDER BY id DESC LIMIT 40").all(ctx.p.id).map((r) => r.text);
+    const winners = db.prepare(`SELECT text FROM messages WHERE agency_id = ? AND mode = 'chance' AND status = 'sent' AND replied_at IS NOT NULL
+      AND reply_mood != 'negative' AND sent_at > ? ORDER BY replied_at DESC LIMIT 8`).all(ctx.p.agency_id, now() - 30 * 86400000).map((r) => r.text);
     const seed = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent'").get(ctx.p.id).n;
-    const h = await generateHook({ profile: ctx.p, settings, man, recent, seed, lately: last.slice(0, 8) });
-    const text = personalize(fillHer(withHook(h.hook, ctx.followups.get(LETTER_STEP) || templateLetter(ctx.p).text), ctx.p), m);
+    const g = await generateChance({ profile: ctx.p, settings, man, seed, recent, winners, wantType: bestHookType(ctx.p.agency_id) });
+    const invite = personalize(fillHer(g.invite, ctx.p), m);
+    const letter = personalize(fillHer(g.letter, ctx.p), m);
     let files = filesForStep(db, ctx.p.id, CHANCE_STEP);
     if (!files.length) files = filesForStep(db, ctx.p.id, 1);
-    return { ...man, hook: h.category, url: manUrl(ctx, m.id, m.url), step: 1, mode: 'chance', via: 'letter', text, invite_id: null,
-      actions: [{ do: 'message', via: 'letter', text, files }] };
+    return { ...man, hook: g.type, url: manUrl(ctx, m.id, m.url), step: 1, mode: 'chance', via: 'chat', text: invite, letter, source: g.source, invite_id: null,
+      actions: [{ do: 'message', via: 'chat', text: invite, files: [] }, { do: 'message', via: 'letter', text: letter, files }] };
   };
 
   const firstStep = (ctx, m) => {
@@ -373,7 +398,7 @@ export default function botRoutes(db, cfg) {
     skipped.limit = Math.max(0, ranked.length - cap);
     const take = ranked.slice(0, cap);
     const allowed = [];
-    for (const m of take) allowed.push(chance ? await chanceStep(ctx, m, settings) : firstStep(ctx, m)); // (one man at a time in «Шанс»)
+    for (const m of take) allowed.push(chance ? await chanceStep(ctx, m, settings, Boolean(req.body?.probe)) : firstStep(ctx, m)); // (one man at a time in «Шанс»)
     res.json({ allowed, remaining, skipped, hourLeft: hour.left, hourResetAt: hour.resetAt });
   }));
 
@@ -604,6 +629,25 @@ export default function botRoutes(db, cfg) {
     res.json({ ok: true, new: fresh.length, negative, men: fresh.map((m) => ({ id: m.man_id, name: m.man_name, mood: m.reply_mood })) });
   });
 
+  /** Her profile as the bot read it on the site (she types nothing in the panel): goes into every text the AI writes for her. */
+  r.post('/profiles/:id/about', (req, res) => {
+    const p = getVisibleProfile(db, req.user, req.params.id);
+    const text = String(req.body?.text ?? '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 2500);
+    if (text.length < 20) throw bad('Профіль порожній');
+    db.prepare('UPDATE profiles SET site_about = ?, site_about_at = ? WHERE id = ?').run(text, now(), p.id);
+    res.json({ ok: true, length: text.length });
+  });
+
+  /** The 🧪 test of a whole run is over: a short report with examples of the texts goes to the person's Telegram. */
+  r.post('/test-report', ah(async (req, res) => {
+    const settings = getSettings(db, req.user.agencyId);
+    const lines = (Array.isArray(req.body?.lines) ? req.body.lines : []).map((x) => escapeHtml(String(x).slice(0, 700))).slice(0, 40);
+    const ok = Boolean(req.body?.ok);
+    const text = `🧪 <b>Тест бота ${ok ? 'пройдено ✅' : 'знайшов проблеми ⚠️'}</b> — нічого не надіслано\n\n${lines.join('\n')}`.slice(0, 4000);
+    const sent = await sendToUsers(db, settings, [req.user.id], text);
+    res.json({ ok: true, sent });
+  }));
+
   /** Result of a 🧪 test run (nothing else of the test is stored). */
   r.post('/profiles/:id/test', (req, res) => {
     const p = getVisibleProfile(db, req.user, req.params.id);
@@ -622,13 +666,9 @@ export default function botRoutes(db, cfg) {
     if (t - (lastAlert.get(p.id) || 0) < 10 * 60000) return res.json({ ok: true, sent: false });
     lastAlert.set(p.id, t);
     const text = str(req.body?.text, { max: 200 }) || 'Сайт показав капчу';
-    const token = settings.telegram.botToken;
-    if (token) {
-      const operator = p.operator_id ? db.prepare('SELECT tg_chat_id FROM users WHERE id = ?').get(p.operator_id) : null;
-      const targets = new Set([operator?.tg_chat_id, settings.telegram.chatId, req.user.tgChatId].filter(Boolean));
-      const msg = `🛑 Анкета <b>${escapeHtml(p.name)}</b>: ${escapeHtml(text)}.\nБот на паузі — відкрийте вкладку сайту й розв’яжіть, далі він продовжить сам.`;
-      for (const chatId of targets) sendTelegram(token, chatId, msg).catch(() => {});
-    }
+    const msg = `🛑 Анкета <b>${escapeHtml(p.name)}</b>: ${escapeHtml(text)}.\nБот на паузі — відкрийте вкладку сайту й розв’яжіть, далі він продовжить сам.`;
+    const token = tgToken(db, settings);
+    if (token) sendToUsers(db, settings, [p.operator_id, req.user.id], msg).catch(() => {});
     res.json({ ok: true, sent: Boolean(token) });
   });
 
@@ -780,8 +820,6 @@ let autoReplyUnlocked = () => false;
 export function setAutoReplyGate(fn) { autoReplyUnlocked = fn; }
 
 function notifyReplies(db, profile, settings, msgs, user) {
-  const token = settings.telegram.botToken;
-  if (!token) return;
   const site = profile.site_id ? db.prepare('SELECT config FROM sites WHERE id = ?').get(profile.site_id) : null;
   let chatTpl = '';
   try { chatTpl = JSON.parse(site?.config || '{}').chatUrl || ''; } catch { /* ignore */ }
@@ -791,7 +829,6 @@ function notifyReplies(db, profile, settings, msgs, user) {
     return `• <b>${who}</b>${link}`;
   });
   const text = `💌 Нові відповіді для анкети <b>${escapeHtml(profile.name)}</b> (${msgs.length}):\n${lines.join('\n')}\n\nЧас відповідати особисто 🙂`;
-  const operator = profile.operator_id ? db.prepare('SELECT tg_chat_id FROM users WHERE id = ?').get(profile.operator_id) : null;
-  const targets = new Set([profile.tg_chat_id, operator?.tg_chat_id, settings.telegram.chatId, user.tgChatId].filter(Boolean));
-  for (const chatId of targets) sendTelegram(token, chatId, text).catch(() => {});
+  // the one platform bot: to the profile's operator and to whoever runs the bot (each sees their own)
+  sendToUsers(db, settings, [profile.operator_id, user.id], text).catch(() => {});
 }

@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     language: 'English',
     instructions: '',
     masterPrompt: '',
+    samples: { invites: [], letters: [] }, // the team's samples of invites and letters (empty = the built-in ones)
     variants: 3, // invite variants live at once per profile (A/B/C test)
     autoOptimize: true, // retire weak variants, write new ones
     sharedMemory: true, // use the platform lessons in prompts

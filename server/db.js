@@ -388,6 +388,9 @@ const MIGRATIONS = [
   // the shift («night») a message was sent in: the stats per night and mode
   ['messages', 'night', "TEXT NOT NULL DEFAULT ''"],
   ['messages', 'hook', "TEXT NOT NULL DEFAULT ''"],
+  ['users', 'samples', "TEXT NOT NULL DEFAULT '{}'"],
+  ['profiles', 'site_about', "TEXT NOT NULL DEFAULT ''"],
+  ['profiles', 'site_about_at', 'INTEGER'],
   // the operator's own few settings: how often «Шанс», how many «Аллчат» passes a night (over the team's)
   ['users', 'prefs', "TEXT NOT NULL DEFAULT '{}'"],
 ];

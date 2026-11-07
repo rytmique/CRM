@@ -93,12 +93,18 @@ test('night shift: «Шанс», «Аллчат», reports, start/stop and stats
   assert.equal(f.data.skipped.offline, 1);
   const robert = f.data.allowed[0];
   assert.equal(robert.mode, 'chance');
-  assert.equal(robert.actions.length, 1);
-  assert.equal(robert.actions[0].via, 'letter');
-  assert.doesNotMatch(robert.actions[0].text, /^(Hello|Hi|Hey|Dear)\b/, 'a hook first, not «Hello»');
-  assert.match(robert.actions[0].text, /^\S/);
-  assert.ok(['personal', 'city', 'flirt'].includes(robert.hook), `the hook category: ${robert.hook}`);
-  assert.deepEqual(robert.actions[0].files.map((x) => x.name), ['chance.png']);
+  // first the invite in the chat (a CAPS hook, ~250), right after it the letter (his own, with the photo)
+  assert.equal(robert.actions.length, 2);
+  assert.equal(robert.actions[0].via, 'chat');
+  assert.equal(robert.actions[1].via, 'letter');
+  const inv = robert.actions[0].text;
+  assert.equal(inv.slice(0, 5), inv.slice(0, 5).toUpperCase(), `a CAPS hook: ${inv.slice(0, 30)}`);
+  assert.ok(inv.length >= 150 && inv.length <= 380, `invite length ${inv.length}`);
+  assert.match(robert.actions[1].text, /Robert/, 'the letter is his');
+  assert.ok(robert.actions[1].text.length >= 500, `letter length ${robert.actions[1].text.length}`);
+  assert.ok(['name', 'city', 'place', 'hobby', 'flirt', 'meeting'].includes(robert.hook), `the hook type: ${robert.hook}`);
+  assert.deepEqual(robert.actions[1].files.map((x) => x.name), ['chance.png']);
+  assert.deepEqual(robert.actions[0].files, []);
   const sent = await call('POST', `/api/bot/profiles/${p.id}/sent`, { man: robert, ok: true, text: robert.text, mode: 'chance' }, 'bot');
   assert.equal(sent.status, 200);
   const row = db.prepare('SELECT mode, night, stage, next_at FROM messages WHERE profile_id = ? AND man_id = ?').get(p.id, '700001');
@@ -316,7 +322,8 @@ test('«Шанс» hook: the first 5 characters under each man, 3 categories, on
     const f = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', candidates: [{ id: String(910000 + i), name: ['Tom', 'Bob', 'Sam', 'Max', 'Leo', 'Ian'][i], age: 50, place: i % 2 ? 'Denver, USA' : '', online: true }] }, 'lead4bot');
     assert.equal(f.status, 200, JSON.stringify(f.data));
     const man = f.data.allowed[0];
-    if (i % 2) assert.ok(man.text.startsWith('Denver') || man.hook !== 'city', 'the city hook is his city');
+    if (i % 2) assert.ok(man.hook !== 'city' || /DENVER/.test(man.text.slice(0, 40)), 'the city hook is his city');
+    if (!(i % 2)) assert.notEqual(man.hook, 'city', 'no city he did not give');
     await call('POST', `/api/bot/profiles/${p.id}/sent`, { man, ok: true, text: man.text, mode: 'chance' }, 'lead4bot');
     starts.add(hookKey(man.text));
   }
@@ -326,5 +333,41 @@ test('«Шанс» hook: the first 5 characters under each man, 3 categories, on
     .map((r) => r.text.replace(/\b(Tom|Bob|Sam|Max|Leo|Ian|Denver)\b/g, '·').slice(0, 30));
   for (let i = 1; i < bodies.length; i++) assert.notEqual(bodies[i], bodies[i - 1], `the same hook twice in a row: ${bodies[i]}`);
   const cats = db.prepare("SELECT hook FROM messages WHERE profile_id = ? AND mode = 'chance'").all(p.id).map((r) => r.hook);
-  assert.ok(cats.every((c) => ['personal', 'city', 'flirt'].includes(c)), `stored categories: ${cats}`);
+  assert.ok(cats.every((c) => ['name', 'city', 'place', 'hobby', 'flirt', 'meeting'].includes(c)), `stored types: ${cats}`);
+  // the letters differ man to man and carry his own details
+  const f2 = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', candidates: [{ id: '919001', name: 'Greg', age: 58, place: 'Leeds, UK', online: true, about: 'Hobbies: fishing, chess\nAbout me: I am a quiet man who loves the sea and old films.' }] }, 'lead4bot');
+  const f3 = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', candidates: [{ id: '919002', name: 'Hank', age: 61, place: 'York, UK', online: true, about: 'Hobbies: gardening\nAbout me: Retired engineer, I love my garden and long drives.' }] }, 'lead4bot');
+  const [g, hk] = [f2.data.allowed[0], f3.data.allowed[0]];
+  assert.notEqual(g.letter, hk.letter, 'never the same letter');
+  assert.match(g.letter + g.text, /fishing|chess|Leeds|sea/i, 'the letter uses his profile');
+  assert.match(hk.letter + hk.text, /garden|York|drives/i, 'the letter uses his profile');
+  // a probe (before the bot reads his profile): only whether he may get it, no texts written
+  const pr = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', probe: true, candidates: [{ id: '919003', name: 'Ivan', online: true }] }, 'lead4bot');
+  assert.equal(pr.data.allowed[0].probe, true);
+  assert.deepEqual(pr.data.allowed[0].actions, []);
+  // her profile from the site: stored, goes into the texts
+  assert.equal((await call('POST', `/api/bot/profiles/${p.id}/about`, { text: 'About me: I teach music and love the mountains.\nHobbies: piano, hiking' }, 'lead4bot')).status, 200);
+  assert.match(db.prepare('SELECT site_about FROM profiles WHERE id = ?').get(p.id).site_about, /teach music/);
+  const f4 = await call('POST', `/api/bot/profiles/${p.id}/filter`, { mode: 'chance', candidates: [{ id: '919004', name: 'Jack', online: true }] }, 'lead4bot');
+  assert.match(f4.data.allowed[0].letter, /teach music|piano|hiking/i, 'her own words from the site');
 });
+
+test('samples: the team sets its own, an operator her own; the built-in ones are the agency\'s', async () => {
+  await login('lead5', 'lead@hooks', 'leadpass1');
+  const conf = (await call('GET', '/api/settings', undefined, 'lead5')).data;
+  assert.ok(conf.samples.invites.length >= 4, 'the built-in samples');
+  assert.match(conf.samples.invites[0], /^[A-Z ]{5}/);
+  const put = await call('PUT', '/api/settings', { settings: { ai: { samples: { invites: ['GARDEN OR ME? I saw your roses and could not stop smiling. Do you grow them yourself?'], letters: [] } } } }, 'lead5');
+  assert.equal(put.status, 200);
+  assert.equal((await call('GET', '/api/settings', undefined, 'lead5')).data.samples.invites[0].slice(0, 6), 'GARDEN');
+  // back to the built-in ones
+  await call('PUT', '/api/settings', { settings: { ai: { samples: conf.defaultSamples } } }, 'lead5');
+  assert.equal((await call('GET', '/api/settings', undefined, 'lead5')).data.samples.invites.length, conf.defaultSamples.invites.length);
+  // an operator's own samples
+  const prefs = (await call('GET', '/api/me/prefs', undefined, 'lead5')).data;
+  assert.equal(prefs.samples, null);
+  assert.ok(prefs.teamSamples.invites.length >= 4);
+  await call('PUT', '/api/me/prefs', { samples: { invites: ['MY OWN HOOK! Something warm about you made me write first. What is your favourite evening like?'], letters: [] } }, 'lead5');
+  assert.match((await call('GET', '/api/me/prefs', undefined, 'lead5')).data.samples.invites[0], /^MY OWN/);
+});
+

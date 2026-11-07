@@ -10,6 +10,14 @@ export function getSettings(db, agencyId) {
 }
 
 /** The team's settings for one profile's texts: + its operator's own prompt and "what works for me" examples. */
+/** {invites:[…], letters:[…]} from a stored JSON: only texts, a few of each (the operator's or the team's samples). */
+export function readSamples(v) {
+  let o = v;
+  if (typeof v === 'string') { try { o = JSON.parse(v || '{}'); } catch { o = {}; } }
+  const list = (x, n, max) => (Array.isArray(x) ? x : []).map((t) => String(t ?? '').replace(/\r\n/g, '\n').trim().slice(0, max)).filter((t) => t.length >= 20).slice(0, n);
+  return { invites: list(o?.invites, 12, 1500), letters: list(o?.letters, 8, 3000) };
+}
+
 /** users.prefs → { chanceEveryMin, allchatPerNight } (only sane numbers; missing = the team's). */
 export function readPrefs(json) {
   let p = {};
@@ -20,8 +28,12 @@ export function readPrefs(json) {
 
 export function profileSettings(db, profile) {
   const s = getSettings(db, profile.agency_id);
-  const op = profile.operator_id ? db.prepare('SELECT id, prompt, prompt_examples, prefs FROM users WHERE id = ?').get(profile.operator_id) : null;
+  const op = profile.operator_id ? db.prepare('SELECT id, prompt, prompt_examples, prefs, samples FROM users WHERE id = ?').get(profile.operator_id) : null;
   if (op?.prompt?.trim()) s.ai.operatorPrompt = op.prompt;
+  // the samples the AI learns the style from: the operator's own > the team's > the built-in (the agency's approved ones)
+  const mine = readSamples(op?.samples);
+  const team = readSamples(s.ai.samples);
+  s.ai.samples = mine.invites.length || mine.letters.length ? mine : team.invites.length || team.letters.length ? team : undefined;
   // the operator's own «Шанс» interval and «Аллчат» passes a night win over the team's
   const pref = readPrefs(op?.prefs);
   if (pref.chanceEveryMin) s.modes.chance.everyMin = pref.chanceEveryMin;

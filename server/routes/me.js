@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { platformGet } from '../db.js';
 import { linkFor, platformToken } from '../tgbot.js';
-import { getSettings, readPrefs } from '../services.js';
+import { getSettings, readPrefs, readSamples } from '../services.js';
 import { bad } from '../util.js';
-import { DEFAULT_PROMPT } from '../ai.js';
+import { DEFAULT_PROMPT, DEFAULT_SAMPLES } from '../ai.js';
 
 /** The person's own things, for every role (the platform admin too): their Telegram link. */
 export default function meRoutes(db) {
@@ -20,10 +20,14 @@ export default function meRoutes(db) {
     const conf = u.agency_id ? getSettings(db, u.agency_id) : null;
     const team = conf?.modes;
     const p = readPrefs(u.prefs);
-    return { prompt: u.prompt || '', defaultPrompt: DEFAULT_PROMPT, teamPrompt: conf?.ai?.masterPrompt || '', chanceEveryMin: p.chanceEveryMin ?? team?.chance.everyMin ?? 30,
+    const own = readSamples(u.samples);
+    const teamS = readSamples(conf?.ai?.samples);
+    const teamSamples = teamS.invites.length || teamS.letters.length ? teamS : DEFAULT_SAMPLES;
+    return { prompt: u.prompt || '', defaultPrompt: DEFAULT_PROMPT, teamPrompt: conf?.ai?.masterPrompt || '',
+      samples: own.invites.length || own.letters.length ? own : null, teamSamples, chanceEveryMin: p.chanceEveryMin ?? team?.chance.everyMin ?? 30,
       allchatPerNight: p.allchatPerNight ?? team?.allchat.perNight ?? 2 };
   };
-  const me = (id) => db.prepare('SELECT id, agency_id, prompt, prefs FROM users WHERE id = ?').get(id);
+  const me = (id) => db.prepare('SELECT id, agency_id, prompt, prefs, samples FROM users WHERE id = ?').get(id);
   r.get('/prefs', (req, res) => res.json(prefsView(me(req.user.id))));
   r.put('/prefs', (req, res) => {
     const u = me(req.user.id);
@@ -40,6 +44,15 @@ export default function meRoutes(db) {
       allchatPerNight: b.allchatPerNight === undefined ? cur.allchatPerNight : num(b.allchatPerNight, 1, 6, 'Аллчат — разів за ніч'),
     };
     db.prepare('UPDATE users SET prefs = ? WHERE id = ?').run(JSON.stringify(next), u.id);
+    if (b.samples !== undefined) {
+      // her own samples; the same as the team's (or none) = use the team's
+      const sm = readSamples(b.samples);
+      const conf = u.agency_id ? getSettings(db, u.agency_id) : null;
+      const teamS = readSamples(conf?.ai?.samples);
+      const team = teamS.invites.length || teamS.letters.length ? teamS : DEFAULT_SAMPLES;
+      const same = sm.invites.join('\u0000') === team.invites.join('\u0000') && sm.letters.join('\u0000') === team.letters.join('\u0000');
+      db.prepare('UPDATE users SET samples = ? WHERE id = ?').run(JSON.stringify(same ? {} : sm), u.id);
+    }
     if (b.prompt !== undefined) {
       const p = String(b.prompt ?? '').replace(/\r\n/g, '\n').trim();
       if (p.length > 8000) throw bad('Промпт задовгий (макс. 8000 символів)');
