@@ -339,9 +339,10 @@ export default function botRoutes(db, cfg) {
    */
   const chanceStep = async (ctx, m, settings) => {
     const { features, ...man } = m;
-    const recent = new Set(db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent' ORDER BY id DESC LIMIT 40").all(ctx.p.id).map((r) => hookKey(r.text)));
-    const seed = [...String(m.id)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, recent.size);
-    const h = await generateHook({ profile: ctx.p, settings, man, recent, seed });
+    const last = db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent' ORDER BY id DESC LIMIT 40").all(ctx.p.id).map((r) => r.text);
+    const recent = new Set(last.map(hookKey));
+    const seed = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE profile_id = ? AND mode = 'chance' AND status = 'sent'").get(ctx.p.id).n;
+    const h = await generateHook({ profile: ctx.p, settings, man, recent, seed, lately: last.slice(0, 8) });
     const text = personalize(fillHer(withHook(h.hook, ctx.followups.get(LETTER_STEP) || templateLetter(ctx.p).text), ctx.p), m);
     let files = filesForStep(db, ctx.p.id, CHANCE_STEP);
     if (!files.length) files = filesForStep(db, ctx.p.id, 1);

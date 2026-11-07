@@ -321,6 +321,10 @@ test('«Шанс» hook: the first 5 characters under each man, 3 categories, on
     starts.add(hookKey(man.text));
   }
   assert.equal(starts.size, 6, `different starts: ${[...starts].join(' | ')}`);
+  // letters in a row: not the same sentence with another name
+  const bodies = db.prepare("SELECT text FROM messages WHERE profile_id = ? AND mode = 'chance' ORDER BY id").all(p.id)
+    .map((r) => r.text.replace(/\b(Tom|Bob|Sam|Max|Leo|Ian|Denver)\b/g, '·').slice(0, 30));
+  for (let i = 1; i < bodies.length; i++) assert.notEqual(bodies[i], bodies[i - 1], `the same hook twice in a row: ${bodies[i]}`);
   const cats = db.prepare("SELECT hook FROM messages WHERE profile_id = ? AND mode = 'chance'").all(p.id).map((r) => r.hook);
   assert.ok(cats.every((c) => ['personal', 'city', 'flirt'].includes(c)), `stored categories: ${cats}`);
 });

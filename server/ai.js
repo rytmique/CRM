@@ -360,17 +360,26 @@ export function hookOk(text, man = {}, recent = new Set()) {
   return true;
 }
 
-/** Without AI (or when it fails): the templates of the 3 categories, a different start for each man. */
-export function templateHook(man = {}, recent = new Set(), seed = 0) {
+const tplRe = (t) => new RegExp(`^${t.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{(name|place)\}/g, '.+?')}`, 'i');
+/**
+ * Without AI (or when it fails): the templates of the 3 categories, a different start for each man and never the
+ * template of one of her last letters («lately» — their texts) with another name in it.
+ */
+export function templateHook(man = {}, recent = new Set(), seed = 0, lately = []) {
   const name = manFirst(man.name);
   const place = String(man.place || '').split(',')[0].trim();
   const cats = [place ? 'city' : '', name ? 'personal' : '', 'flirt'].filter(Boolean);
   const order = cats.map((_, i) => cats[(i + seed) % cats.length]);
-  for (const cat of order) {
-    const list = HOOK_TEMPLATES[cat];
-    for (let i = 0; i < list.length; i++) {
-      const text = list[(i + seed) % list.length].replaceAll('{name}', name).replaceAll('{place}', place);
-      if (hookOk(text, man, recent)) return { hook: text, category: cat, source: 'template', model: null };
+  const used = (tpl) => lately.some((x) => tplRe(tpl).test(String(x || '').trim()));
+  for (const strict of [true, false]) {
+    for (const cat of order) {
+      const list = HOOK_TEMPLATES[cat];
+      for (let i = 0; i < list.length; i++) {
+        const tpl = list[(i + seed) % list.length];
+        if (strict && used(tpl)) continue;
+        const text = tpl.replaceAll('{name}', name).replaceAll('{place}', place);
+        if (hookOk(text, man, recent)) return { hook: text, category: cat, source: 'template', model: null };
+      }
     }
   }
   const any = HOOK_TEMPLATES.flirt[seed % HOOK_TEMPLATES.flirt.length];
@@ -378,9 +387,9 @@ export function templateHook(man = {}, recent = new Set(), seed = 0) {
 }
 
 /** The hook for this man: AI writes 3 (personal / city / flirt), the first that passes the checks is taken. */
-export async function generateHook({ profile, settings, man = {}, recent = new Set(), seed = 0 }) {
+export async function generateHook({ profile, settings, man = {}, recent = new Set(), seed = 0, lately = [] }) {
   const apiKey = keyFor(settings);
-  if (!apiKey) return templateHook(man, recent, seed);
+  if (!apiKey) return templateHook(man, recent, seed, lately);
   const language = profile.language || settings.ai.language || 'English';
   const about = [manFirst(man.name) && `First name: ${manFirst(man.name)}`, man.age && `Age: ${man.age}`, man.place && `City / country: ${man.place}`].filter(Boolean).join('\n') || 'Nothing is known about him.';
   const style = resolvePrompt({ profile, settings });
@@ -400,7 +409,7 @@ export async function generateHook({ profile, settings, man = {}, recent = new S
       }
     }
   } catch { /* AI down or a bad answer: the templates */ }
-  return templateHook(man, recent, seed);
+  return templateHook(man, recent, seed, lately);
 }
 
 /** Her letter with the hook in front: her own greeting line goes (the hook greets him). */
