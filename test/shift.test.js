@@ -225,3 +225,56 @@ test('Telegram: the admin sets one bot; each person links with one tap and contr
   const kate = db.prepare("SELECT start_at FROM profiles WHERE name = 'Kate'").get();
   assert.ok(kate.start_at);
 });
+
+test('the operator sets only her own: master prompt, «Шанс» interval, «Аллчат» count; the bot picks her women from the site itself', async () => {
+  await login('admin3', 'root@test', 'rootpass123');
+  const ag = await call('POST', '/api/admin/agencies', { name: 'Auto', ownerName: 'Lead', ownerEmail: 'lead@auto', ownerPassword: 'leadpass1', licenses: 3, days: 30 }, 'admin3');
+  assert.equal(ag.status, 201, JSON.stringify(ag.data));
+  await login('lead3', 'lead@auto', 'leadpass1');
+  const siteId = (await call('GET', '/api/sites', undefined, 'lead3')).data.sites[0].id;
+  await call('POST', '/api/operators', { name: 'Ola', email: 'ola@auto', password: 'olapass1' }, 'lead3');
+  await call('POST', '/api/operators', { name: 'Nina', email: 'nina@auto', password: 'ninapass1' }, 'lead3');
+  await login('ola', 'ola@auto', 'olapass1');
+  await login('olaBot', 'ola@auto', 'olapass1', 'bot');
+  await login('ninaBot', 'nina@auto', 'ninapass1', 'bot');
+
+  // ---- her settings ----
+  const before = (await call('GET', '/api/me/prefs', undefined, 'ola')).data;
+  assert.equal(before.prompt, '');
+  assert.ok(before.defaultPrompt.length > 50, 'she sees the built-in prompt to start from');
+  assert.equal(before.chanceEveryMin, 30, 'the team value until she changes it');
+  assert.equal((await call('PUT', '/api/me/prefs', { chanceEveryMin: 3 }, 'ola')).status, 400, 'at least every 10 minutes');
+  assert.equal((await call('PUT', '/api/me/prefs', { allchatPerNight: 9 }, 'ola')).status, 400);
+  const saved = await call('PUT', '/api/me/prefs', { prompt: 'Write warm and short. Mention the sea.', chanceEveryMin: 20, allchatPerNight: 4 }, 'ola');
+  assert.equal(saved.status, 200, JSON.stringify(saved.data));
+  assert.deepEqual([saved.data.chanceEveryMin, saved.data.allchatPerNight], [20, 4]);
+
+  // ---- the bot: the site of the team, her women from the site ----
+  const ws = await call('GET', '/api/bot/workspace', undefined, 'olaBot');
+  assert.equal(ws.status, 200, JSON.stringify(ws.data));
+  assert.equal(ws.data.site.id, siteId);
+  assert.deepEqual(ws.data.profiles, []);
+  const hers = (who, list) => call('POST', '/api/bot/hers', { site_id: siteId, hers: list }, who);
+  const a = await hers('olaBot', [{ id: '5000000001', name: 'Alina', age: 31 }, { id: '5000000002', name: 'Bella', age: 28 }]);
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  assert.deepEqual(a.data.profiles.map((p) => [p.name, p.site_profile_id, p.status]), [['Alina', '5000000001', 'active'], ['Bella', '5000000002', 'active']]);
+  // seen again with a new name: updated, not doubled
+  const again = await hers('olaBot', [{ id: '5000000001', name: 'Alina K', age: 31 }]);
+  assert.equal(again.data.added.length, 0);
+  assert.ok(again.data.profiles.some((p) => p.name === 'Alina K'));
+  // another operator sees the same woman: never taken from Ola; her own new one is added; beyond the plan — paused
+  const n = await hers('ninaBot', [{ id: '5000000001', name: 'Alina' }, { id: '5000000003', name: 'Chloe' }, { id: '5000000004', name: 'Dana' }]);
+  assert.deepEqual(n.data.profiles.map((p) => [p.name, p.status]), [['Chloe', 'active'], ['Dana', 'paused']]);
+  assert.equal(db.prepare("SELECT operator_id FROM profiles WHERE site_profile_id = '5000000001'").get().operator_id,
+    db.prepare("SELECT id FROM users WHERE email = 'ola@auto'").get().id);
+
+  // ---- her numbers reach the bot ----
+  const alina = a.data.profiles.find((p) => p.site_profile_id === '5000000001');
+  const cfg = await call('GET', `/api/bot/profiles/${alina.id}/config`, undefined, 'olaBot');
+  assert.equal(cfg.status, 200, JSON.stringify(cfg.data));
+  assert.equal(cfg.data.modes.chance.everyMin, 20);
+  assert.equal(cfg.data.modes.allchat.perNight, 4);
+  const chloe = n.data.profiles[0];
+  const cfg2 = await call('GET', `/api/bot/profiles/${chloe.id}/config`, undefined, 'ninaBot');
+  assert.equal(cfg2.data.modes.chance.everyMin, 30, 'Nina keeps the team value');
+});

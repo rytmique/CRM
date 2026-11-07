@@ -155,6 +155,53 @@ export default function botRoutes(db, cfg) {
     });
   });
 
+  // ---------- one button for everything: the bot finds the women on the site itself and works for all of them ----------
+  /** The site this person works on (the one their profiles use, else the team's newest) and their profiles there. */
+  const workSite = (user) => {
+    const scope = profileScope(user);
+    return db.prepare(`SELECT s.* FROM profiles p JOIN sites s ON s.id = p.site_id WHERE ${scope.where} ORDER BY p.bot_beat_at DESC NULLS LAST, p.id DESC LIMIT 1`).get(...scope.params)
+      || db.prepare('SELECT * FROM sites WHERE agency_id = ? ORDER BY id DESC LIMIT 1').get(user.agencyId);
+  };
+  const myProfiles = (user, siteId) => {
+    const scope = profileScope(user);
+    const plan = planOf(db, user.agencyId);
+    return db.prepare(`SELECT p.id, p.name, p.age, p.status, p.site_profile_id, p.site_id FROM profiles p WHERE ${scope.where} AND p.site_id = ? ORDER BY p.id`)
+      .all(...scope.params, siteId).map((p) => ({ ...p, license: accessFor(plan, p) }));
+  };
+  r.get('/workspace', (req, res) => {
+    const site = workSite(req.user);
+    if (!site) throw new HttpError(409, 'Сайт команди ще не підключено — напишіть постачальнику.');
+    res.json({ site: { id: site.id, name: site.name, base_url: site.base_url, config: configOf(site) }, profiles: myProfiles(req.user, site.id) });
+  });
+  /** The women the bot sees on the site (ID, name, age): new ones become profiles of this person; others' are never taken. */
+  r.post('/hers', (req, res) => {
+    const site = db.prepare('SELECT * FROM sites WHERE id = ? AND agency_id = ?').get(int(req.body?.site_id, { min: 1, field: 'site_id' }), req.user.agencyId);
+    if (!site) throw notFound('Сайт не знайдено');
+    const list = (Array.isArray(req.body?.hers) ? req.body.hers : []).slice(0, 100).map((h) => ({
+      id: String(h?.id ?? '').replace(/\s+/g, '').slice(0, 40), name: String(h?.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      age: Number.isInteger(Number(h?.age)) && Number(h.age) >= 18 && Number(h.age) < 100 ? Number(h.age) : null,
+    })).filter((h) => h.name || h.id);
+    const t = now();
+    const added = [];
+    for (const h of list) {
+      const have = h.id
+        ? db.prepare('SELECT * FROM profiles WHERE agency_id = ? AND site_id = ? AND site_profile_id = ?').get(req.user.agencyId, site.id, h.id)
+        : db.prepare("SELECT * FROM profiles WHERE agency_id = ? AND site_id = ? AND site_profile_id = '' AND lower(name) = lower(?)").get(req.user.agencyId, site.id, h.name);
+      if (have) {
+        if (have.operator_id === req.user.id || req.user.role === 'owner') {
+          db.prepare('UPDATE profiles SET name = ?, age = COALESCE(?, age) WHERE id = ?').run(h.name || have.name, h.age, have.id);
+        }
+        continue; // another operator's woman: never taken over
+      }
+      const plan = planOf(db, req.user.agencyId);
+      const room = !plan.profiles || plan.used < plan.profiles;
+      db.prepare('INSERT INTO profiles (agency_id, operator_id, site_id, name, age, site_profile_id, status, created_at) VALUES (?,?,?,?,?,?,?,?)')
+        .run(req.user.agencyId, req.user.id, site.id, h.name || `ID ${h.id}`, h.age, h.id, room ? 'active' : 'paused', t);
+      added.push({ name: h.name, paused: !room });
+    }
+    res.json({ added, profiles: myProfiles(req.user, site.id) });
+  });
+
   r.get('/profiles/:id/config', ah(async (req, res) => {
     const { p, lic, settings, limits, remaining } = runnable(req);
     if (!p.site_id) throw bad('Для анкети не вибрано сайт. Вкажіть сайт у панелі.');

@@ -1042,10 +1042,13 @@ test('control panel: caps of the admin win, remote stop, blocking, overview and 
   const cfg = (await call('GET', `/api/bot/profiles/${p1.id}/config`, undefined, 'violetBot')).data;
   assert.equal(cfg.limits.dailyLimit, 50);
   assert.ok(cfg.limits.minDelay >= 60 && cfg.limits.maxDelay >= 60);
-  // the team cannot lift the caps or switch the model
-  await call('PUT', '/api/settings', { settings: { caps: { dailyMax: 0 }, ai: { model: 'claude-opus-5-5' } } }, 'violet');
+  // the team cannot lift the caps; the team lead picks the model, only from the list
+  await call('PUT', '/api/settings', { settings: { caps: { dailyMax: 0 }, ai: { model: 'claude-sonnet-5-5' } } }, 'violet');
   assert.equal(getSettings(db, a.id).caps.dailyMax, 50);
-  assert.equal(getSettings(db, a.id).ai.model, 'claude-haiku-5-5');
+  assert.equal(getSettings(db, a.id).ai.model, 'claude-sonnet-5-5');
+  await call('PUT', '/api/settings', { settings: { ai: { model: 'some-other-model' } } }, 'violet');
+  assert.equal(getSettings(db, a.id).ai.model, 'claude-sonnet-5-5', 'an unknown model is ignored');
+  await call('PUT', '/api/settings', { settings: { ai: { model: 'claude-haiku-5-5' } } }, 'violet');
   // remote stop: a bot started before the stop stops; a new start works again
   const startedAt = Date.now() - 60000;
   assert.equal((await call('POST', `/api/bot/profiles/${p1.id}/heartbeat`, { state: 'running', startedAt, now: Date.now() }, 'violetBot')).data.stop, false);

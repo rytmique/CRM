@@ -8,6 +8,7 @@ import { sendTelegram } from '../telegram.js';
 import { memoryLines } from '../learning.js';
 
 const isMasked = (v) => typeof v === 'string' && v.includes('••••');
+export const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
 
 export default function settingsRoutes(db) {
   const r = Router();
@@ -47,7 +48,9 @@ export default function settingsRoutes(db) {
     const patch = structuredClone(req.body?.settings || {});
     // the platform admin's switches: caps, model, learning — the team cannot change them
     delete patch.caps;
-    if (patch.ai) for (const k of ['model', 'variants', 'autoOptimize', 'sharedMemory', 'platformKey', 'operatorPrompt', 'examples']) delete patch.ai[k];
+    if (patch.ai) for (const k of ['variants', 'autoOptimize', 'sharedMemory', 'platformKey', 'operatorPrompt', 'examples']) delete patch.ai[k];
+    // the team lead chooses the model (only the known ones)
+    if (patch.ai?.model !== undefined && !MODELS.includes(patch.ai.model)) delete patch.ai.model;
     if (patch.ai && (patch.ai.apiKey === undefined || isMasked(patch.ai.apiKey))) delete patch.ai.apiKey;
     if (patch.telegram && (patch.telegram.botToken === undefined || isMasked(patch.telegram.botToken))) delete patch.telegram.botToken;
     if (patch.billing) {
