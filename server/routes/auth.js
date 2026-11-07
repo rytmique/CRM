@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   verifyPassword, hashPassword, createSession, destroySession, authenticate,
-  loginLimiter, registerFailedLogin, clearLoginAttempts, destroyOtherSessions,
+  loginLimiter, registerFailedLogin, clearLoginAttempts, destroyOtherSessions, checkPassword,
 } from '../auth.js';
 import { HttpError, bad, str, oneOf } from '../util.js';
 import { now, tx, platformGet } from '../db.js';
@@ -33,7 +33,7 @@ export default function authRoutes(db, cfg = {}) {
     const password = String(req.body?.password || '');
     const kind = oneOf(req.body?.kind || 'web', ['web', 'bot'], 'kind');
     const u = db.prepare(`SELECT u.*, a.active AS agency_active FROM users u LEFT JOIN agencies a ON a.id = u.agency_id WHERE u.email = ?`).get(email);
-    if (!u || !verifyPassword(password, u.pass_hash)) {
+    if (!checkPassword(password, u?.pass_hash)) {
       registerFailedLogin(req.loginAttemptKey);
       throw new HttpError(401, 'Невірний email або пароль');
     }

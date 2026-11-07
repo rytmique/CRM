@@ -50,8 +50,17 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Referrer-Policy', 'same-origin');
+    res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    if (!req.path.startsWith('/demo-site')) {
+      // the panel: only its own scripts, never inside someone else's frame (clickjacking)
+      res.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; "
+        + "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
+      res.set('X-Frame-Options', 'DENY');
+    }
+    if (req.secure) res.set('Strict-Transport-Security', 'max-age=15552000');
     next();
   });
+  app.use('/api', rateLimit);
 
   // The extension calls the API from chrome-extension://… ; auth is a Bearer token (no cookies), so * is safe.
   app.use('/api', (req, res, next) => {
@@ -117,6 +126,29 @@ export function createApp({ db, publicUrl = 'http://localhost:3000', demoSite = 
   });
 
   return app;
+}
+
+/**
+ * A flood guard for the API (a competitor hammering the server, a broken script): per address and per session, per minute.
+ * Generous on purpose — a whole office of operators often shares one address.
+ */
+const hits = new Map();
+let hitsMinute = 0;
+function rateLimit(req, res, next) {
+  const minute = Math.floor(Date.now() / 60000);
+  if (minute !== hitsMinute) { hits.clear(); hitsMinute = minute; }
+  const auth = req.get('authorization') || '';
+  const keys = [`ip:${req.ip}`, auth ? `t:${auth.slice(-24)}` : null].filter(Boolean);
+  for (const k of keys) {
+    const n = (hits.get(k) || 0) + 1;
+    hits.set(k, n);
+    if (n > (k.startsWith('ip:') ? 3000 : 600)) {
+      res.set('Retry-After', '60');
+      return res.status(429).json({ error: 'Забагато запитів. Спробуйте за хвилину.' });
+    }
+  }
+  if (hits.size > 50000) hits.clear();
+  next();
 }
 
 /** The extension folder as a zip: this server's address and the copy's mark baked in, code without comments. */

@@ -411,6 +411,8 @@ const MIGRATIONS = [
   ['users', 'ai_off', 'INTEGER NOT NULL DEFAULT 0'],
   // the last bot version this person was told about in Telegram
   ['users', 'bot_notified', "TEXT NOT NULL DEFAULT ''"],
+  // the Telegram linking code works 30 minutes (a code seen by someone else later is useless)
+  ['users', 'tg_code_at', 'INTEGER'],
   // a new team lead names the team after registering (0 = not yet)
   ['agencies', 'named', 'INTEGER NOT NULL DEFAULT 1'],
 ];

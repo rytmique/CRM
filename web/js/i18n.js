@@ -17,7 +17,7 @@ export function setLang(l) {
 const CYR = /[А-ЩЬЮЯЄІЇҐа-щьюяєіїґ’]/;
 const esc = (s) => s.replace(/[.*+?^$()|[\]\\]/g, '\\$&');
 // «{}» in a key = any value (a number, a name): "Чекають підтвердження: {}"
-const PATTERNS = Object.entries(RU_PATTERNS).map(([ua, ru]) => [new RegExp(`^${esc(ua).replace(/\{\}/g, '([\\s\\S]+?)')}$`), ru]);
+const PATTERNS = Object.entries(RU_PATTERNS).map(([ua, ru]) => [new RegExp(`^${esc(ua.trim()).replace(/\{\}/g, '([\\s\\S]+?)')}$`), ru.trim()]);
 
 /** A text in the current language (unknown texts stay as they are). */
 export function t(s) {

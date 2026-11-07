@@ -84,13 +84,15 @@ export const requireRole = (...roles) => (req, _res, next) => {
   next();
 };
 
-/** Very small in-memory limiter for login brute force: 10 attempts / 10 min per ip+email. */
+/**
+ * Login brute force: 10 wrong tries / 10 min per address+email, and 40 per address whatever the emails
+ * (someone trying many accounts from one place).
+ */
 const attempts = new Map();
+const blocked = (key, max) => { const rec = attempts.get(key); return rec && now() - rec.first < 600000 && rec.count >= max; };
 export function loginLimiter(req, _res, next) {
   const key = `${req.ip}|${String(req.body?.email || '').toLowerCase()}`;
-  const t = now();
-  const rec = attempts.get(key);
-  if (rec && t - rec.first < 600000 && rec.count >= 10) {
+  if (blocked(key, 10) || blocked(`${req.ip}|*`, 40)) {
     return next(new HttpError(429, 'Забагато спроб входу. Спробуйте за 10 хвилин.'));
   }
   req.loginAttemptKey = key;
@@ -98,11 +100,16 @@ export function loginLimiter(req, _res, next) {
 }
 export function registerFailedLogin(key) {
   const t = now();
-  const rec = attempts.get(key);
-  if (!rec || t - rec.first > 600000) attempts.set(key, { first: t, count: 1 });
-  else rec.count++;
+  for (const k of [key, `${String(key).split('|')[0]}|*`]) {
+    const rec = attempts.get(k);
+    if (!rec || t - rec.first > 600000) attempts.set(k, { first: t, count: 1 });
+    else rec.count++;
+  }
   if (attempts.size > 5000) attempts.clear();
 }
+/** A wrong email costs the same time as a wrong password (nobody can tell by timing which emails exist). */
+const DUMMY = hashPassword('not-a-real-password');
+export const checkPassword = (password, stored) => verifyPassword(password, stored || DUMMY) && Boolean(stored);
 export function clearLoginAttempts(key) {
   attempts.delete(key);
 }

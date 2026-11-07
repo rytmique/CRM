@@ -32,7 +32,7 @@ export async function setPlatformBot(db, token) {
 /** A one-time link for the panel: «open the bot, press Start» links this person. */
 export function linkFor(db, userId) {
   const code = crypto.randomBytes(9).toString('base64url');
-  db.prepare('UPDATE users SET tg_code = ? WHERE id = ?').run(code, userId);
+  db.prepare('UPDATE users SET tg_code = ?, tg_code_at = ? WHERE id = ?').run(code, now(), userId);
   const name = platformGet(db, 'tgBotName', '');
   return { code, bot: name, url: name ? `https://t.me/${name}?start=${code}` : '' };
 }
@@ -49,7 +49,7 @@ export async function handleUpdate(db, update) {
   const code = /^\/start\s+([\w-]{6,40})$/.exec(text)?.[1];
   if (code) {
     const u = db.prepare('SELECT * FROM users WHERE tg_code = ?').get(code);
-    if (!u || !u.active) { await send(db, chatId, tr('uk', 'Посилання застаріло. Натисніть «Підключити Telegram» у панелі ще раз.')); return; }
+    if (!u || !u.active || (u.tg_code_at && now() - u.tg_code_at > 30 * 60000)) { await send(db, chatId, tr(u?.lang, 'Посилання застаріло. Натисніть «Підключити Telegram» у панелі ще раз.')); return; }
     db.prepare("UPDATE users SET tg_chat_id = NULL WHERE tg_chat_id = ? AND id != ?").run(String(chatId), u.id); // one chat — one person
     db.prepare('UPDATE users SET tg_chat_id = ?, tg_code = NULL WHERE id = ?').run(String(chatId), u.id);
     await send(db, chatId, tr(u.lang, '✅ Підключено: <b>{name}</b> ({role}).\nСюди приходитимуть ваші звіти й сповіщення про нові відповіді. Кнопки внизу — звіт, стан і керування ботом.',

@@ -1,5 +1,5 @@
 import { h, toast, busy } from './ui.js';
-import { api, post, session, setUnauthorizedHandler } from './api.js';
+import { api, post, put, session, setUnauthorizedHandler } from './api.js';
 import operators from './pages/operators.js';
 import adminAgencies from './pages/admin-agencies.js';
 import adminLicenses from './pages/admin-licenses.js';
@@ -92,12 +92,13 @@ applyTheme(currentTheme());
 const themeLabel = (t) => ({ auto: 'Тема: авто', light: 'Тема: світла', dark: 'Тема: темна' }[t]);
 
 // ---------- login ----------
+let langPicked = false; // UA / RU pressed on the login screen
 function renderLogin(message) {
   cleanup?.();
   const err = h('p.form-error', { role: 'alert' }, message || '');
   const form = h('form.login-card',
     h('div.row-between', h('div.brand.big', h('img', { src: 'favicon.png', alt: '', width: 32, height: 32 }), h('span', 'Agency CRM')),
-      langSwitch(() => renderLogin(message))),
+      langSwitch(() => { langPicked = true; renderLogin(message); })),
     h('p.muted', 'Вхід для керівників і операторів'),
     h('div.field', h('label', { for: 'l-email' }, 'Email'), h('input#l-email', { name: 'email', autocomplete: 'username', required: true })),
     h('div.field', h('label', { for: 'l-pass' }, 'Пароль'), h('input#l-pass', { name: 'password', type: 'password', autocomplete: 'current-password', required: true })),
@@ -114,6 +115,8 @@ function renderLogin(message) {
         const r = await post('/api/auth/login', { email: form.email.value, password: form.password.value });
         session.token = r.token;
         session.user = r.user;
+        // the language picked on this screen becomes the person's language (the bot and Telegram follow it)
+        if (langPicked && r.user.lang !== getLang()) session.user = (await put('/api/auth/lang', { lang: getLang() })).user;
       });
       location.hash = '';
       route();
